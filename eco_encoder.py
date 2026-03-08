@@ -1,7 +1,14 @@
 import io
 
 from goodwe.protocol import ProtocolResponse
-from goodwe.sensor import Schedule, ScheduleType, decode_day_of_week, decode_months
+from goodwe.sensor import (
+    DAY_NAMES,
+    MONTH_NAMES,
+    Schedule,
+    ScheduleType,
+    decode_day_of_week,
+    decode_months,
+)
 
 
 def read_byte(buffer: ProtocolResponse, offset: int = None) -> int:
@@ -83,4 +90,68 @@ def encode_schedule(self: Schedule) -> bytes:
     output.write(encode_bytes2_signed(self.soc))
     output.write(encode_bytes2_signed(self.month_bits))
     # self.months = decode_months(self.month_bits)  # this should be a property
+    return output.getvalue()
+
+
+def encode_day_of_week(days: str | list[int]) -> int:
+    """Encode days to day_bits. days: 'Mon-Sun' | 'Mon,Tue,Wed' | list of 0..6 (Sun=0)."""
+    if isinstance(days, list):
+        bits = 0
+        for d in days:
+            if 0 <= d <= 6:
+                bits |= 1 << d
+        return bits
+    s = (days or "").strip()
+    if not s or s.lower() == "none":
+        return 0
+    if "sun" in s.lower() and "-" in s:
+        return 127  # Mon-Sun / all days
+    bits = 0
+    for part in s.replace(" ", "").split(","):
+        part = part.strip()
+        for i, name in enumerate(DAY_NAMES):
+            if name.lower() == part.lower():
+                bits |= 1 << i
+                break
+    return bits
+
+
+def encode_months(months: str | list[int] | None) -> int:
+    """Encode months to month_bits. months: None | '' | 'Jan,Feb' | list of 1..12. 0 = all/none."""
+    if months is None or (isinstance(months, str) and not (months or "").strip()):
+        return 0
+    if isinstance(months, list):
+        bits = 0
+        for m in months:
+            if 1 <= m <= 12:
+                bits |= 1 << (m - 1)
+        return bits
+    bits = 0
+    for part in months.replace(" ", "").split(","):
+        part = part.strip()
+        for i, name in enumerate(MONTH_NAMES):
+            if name.lower() == part.lower():
+                bits |= 1 << i
+                break
+    return bits
+
+
+def encode_eco_v1(
+    start_h: int,
+    start_m: int,
+    end_h: int,
+    end_m: int,
+    power: int,
+    day_bits: int,
+    on_off: int = -1,
+) -> bytes:
+    """Encode EcoMode V1 slot (8 bytes). power: negative=charge, positive=discharge %."""
+    output: io.BytesIO = io.BytesIO()
+    output.write(encode_byte(start_h))
+    output.write(encode_byte(start_m))
+    output.write(encode_byte(end_h))
+    output.write(encode_byte(end_m))
+    output.write(encode_bytes2_signed(power))
+    output.write(encode_byte(on_off))
+    output.write(encode_byte(day_bits))
     return output.getvalue()
