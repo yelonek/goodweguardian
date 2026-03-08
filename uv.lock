@@ -1,0 +1,22 @@
+version = 1
+requires-python = ">=3.12"
+
+[[package]]
+name = "goodwe"
+version = "0.4.9"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/45/3f/a94fb6a369de5447e4148e6bfd47166fce122dc3625540af1318089ec7fb/goodwe-0.4.9.tar.gz", hash = "sha256:614fa0e8512d125ca1874bbadb45e5dda928ffc40023d77f5cebbe2afa4dc478", size = 58431 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2b/ac/8d8fb6e7e4315f2734fa787c9635df0b064982283005cac83d0da08a09ae/goodwe-0.4.9-py3-none-any.whl", hash = "sha256:78f75d2b72902006f64f51c625d7cab2640fd32cfae57bfdd418e0e0805f6e03", size = 45895 },
+]
+
+[[package]]
+name = "goodweguardian"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "goodwe" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "goodwe", specifier = ">=0.4.9" }]
