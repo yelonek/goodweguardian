@@ -1,0 +1,161 @@
+"""
+Logika guardiana: stan zbilansowania, próg mocy, histereza, wyznaczanie mocy baterii i czasu.
+
+Konwencja: remaining_kWh = E_imp_so_far − E_exp_so_far (minus = przewaga importu).
+Cel: bilans 0 na koniec godziny. Moc baterii: dodatnia = rozładowanie, ujemna = ładowanie.
+"""
+from dataclasses import dataclass
+
+
+@dataclass
+class BalanceInputs:
+    """Wejścia do wyznaczenia interwencji (bez inwertera)."""
+    remaining_kwh: float
+    time_to_end_s: float
+    pv_w: float
+    consumption_w: float
+    grid_w: float
+    soc_pct: float
+    p_inverter_w: float
+    p_battery_w: float
+    current_ecoslot_pct: int | None  # None = brak ustawienia w tej godzinie
+    slot_active: bool
+    hysteresis_start: float
+    hysteresis_end: float
+    balance_threshold_kw: float = 0.6
+    watts_per_percent: float = 70.0
+
+
+@dataclass
+class BalanceOutput:
+    """Wyjście: czy interweniować oraz parametry baterii."""
+    intervene: bool
+    battery_power_w: float
+    battery_power_pct: int
+    duration_s: float
+    reason: str = ""
+
+
+def power_needed_kw(remaining_kwh: float, time_to_end_s: float) -> float:
+    """Moc potrzebna do zbilansowania [kW] (zawsze >= 0)."""
+    if time_to_end_s <= 0:
+        return 9999.0
+    hours_left = time_to_end_s / 3600.0
+    return abs(remaining_kwh) / hours_left
+
+
+def tolerance_pct(time_to_end_s: float, start_pct: float, end_pct: float) -> float:
+    """Tolerancja histerezy [%] – liniowa od start (dużo czasu) do end (mało czasu)."""
+    if time_to_end_s >= 3600:
+        return start_pct
+    if time_to_end_s <= 0:
+        return end_pct
+    rem_min = time_to_end_s / 60.0
+    return end_pct + (start_pct - end_pct) * (rem_min / 60.0)
+
+
+def _discharge_cap_w(p_inverter_w: float, pv_w: float, p_battery_w: float) -> float:
+    """Maks. moc rozładowania [W] – ograniczenie inwertera (PV + BATERIA <= P_INVERTER)."""
+    headroom = max(0.0, p_inverter_w - pv_w)
+    return min(p_battery_w, headroom)
+
+
+def _kw_to_pct(power_kw: float, watts_per_percent: float) -> int:
+    """Przelicza moc [kW] na % ecoslota (znak zachowany)."""
+    power_w = power_kw * 1000.0
+    pct = power_w / watts_per_percent
+    return max(-100, min(100, int(round(pct))))
+
+
+def _pct_to_w(pct: int, watts_per_percent: float) -> float:
+    """Przelicza % na moc [W] (przybliżenie)."""
+    return pct * watts_per_percent
+
+
+def compute_intervention(inp: BalanceInputs) -> BalanceOutput:
+    """
+    Wyznacza, czy wykonać interwencję oraz moc baterii [W], [%] i czas ustawienia [s].
+    """
+    # 1) Slot aktywny → nie zmieniamy
+    if inp.slot_active:
+        return BalanceOutput(
+            intervene=False,
+            battery_power_w=0.0,
+            battery_power_pct=0,
+            duration_s=0.0,
+            reason="slot_active",
+        )
+
+    # 2) Moc potrzebna do zbilansowania
+    power_kw = power_needed_kw(inp.remaining_kwh, inp.time_to_end_s)
+    if power_kw <= inp.balance_threshold_kw:
+        return BalanceOutput(
+            intervene=False,
+            battery_power_w=0.0,
+            battery_power_pct=0,
+            duration_s=0.0,
+            reason="power_below_threshold",
+        )
+
+    # 3) Kierunek: remaining < 0 (import) → trzeba więcej eksportu → rozładowanie (battery > 0)
+    #    remaining > 0 (eksport) → trzeba więcej importu → ładowanie (battery < 0)
+    sign = -1.0 if inp.remaining_kwh > 0 else 1.0
+    target_power_kw = power_kw * sign
+
+    # 4) Cap rozładowanie: nie więcej niż P_INVERTER - PV
+    if target_power_kw > 0:
+        cap_w = _discharge_cap_w(inp.p_inverter_w, inp.pv_w, inp.p_battery_w)
+        target_power_kw = min(target_power_kw, cap_w / 1000.0)
+    else:
+        target_power_kw = max(target_power_kw, -inp.p_battery_w / 1000.0)
+
+    target_pct = _kw_to_pct(target_power_kw, inp.watts_per_percent)
+
+    # 5) Histereza: porównanie w %
+    tol = tolerance_pct(inp.time_to_end_s, inp.hysteresis_start, inp.hysteresis_end)
+    if inp.current_ecoslot_pct is not None:
+        if abs(target_pct - inp.current_ecoslot_pct) <= tol:
+            return BalanceOutput(
+                intervene=False,
+                battery_power_w=_pct_to_w(inp.current_ecoslot_pct, inp.watts_per_percent),
+                battery_power_pct=inp.current_ecoslot_pct,
+                duration_s=0.0,
+                reason="hysteresis",
+            )
+    # 6) Unikanie oscylacji: jeśli obecna ustawiona jest po drugiej stronie zera (inny znak),
+    #    nie zmieniaj znaku dopóki wymagana moc nie jest wyraźna (np. |target_pct| > tol)
+    if inp.current_ecoslot_pct is not None:
+        cur = inp.current_ecoslot_pct
+        if (cur > 0 and target_pct < 0) or (cur < 0 and target_pct > 0):
+            if abs(target_pct) <= tol:
+                return BalanceOutput(
+                    intervene=False,
+                    battery_power_w=_pct_to_w(cur, inp.watts_per_percent),
+                    battery_power_pct=cur,
+                    duration_s=0.0,
+                    reason="oscillation_avoid",
+                )
+
+    # 7) Czas ustawienia: nie przestrzelić – duration = energia / moc, cap na time_to_end_s
+    if inp.time_to_end_s <= 0:
+        duration_s = 0.0
+    else:
+        energy_kwh = abs(inp.remaining_kwh)
+        power_avail_kw = abs(target_power_kw)
+        if power_avail_kw <= 0:
+            duration_s = 0.0
+        else:
+            duration_s = min(
+                inp.time_to_end_s,
+                (energy_kwh / power_avail_kw) * 3600.0,
+            )
+        duration_s = max(0.0, duration_s)
+
+    battery_w = target_power_kw * 1000.0
+    return BalanceOutput(
+        intervene=True,
+        battery_power_w=battery_w,
+        battery_power_pct=target_pct,
+        duration_s=duration_s,
+        reason="ok",
+    )
