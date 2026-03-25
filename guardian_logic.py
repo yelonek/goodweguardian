@@ -1,15 +1,23 @@
 """
 Logika guardiana: stan zbilansowania, próg mocy, histereza, wyznaczanie mocy baterii i czasu.
 
-Konwencja: remaining_kWh = E_imp_so_far − E_exp_so_far (minus = przewaga importu).
+Konwencja znaku (ujednolicona z mocą sieci):
+  − remaining_kWh = ΔE_export − ΔE_import w bieżącej godzinie [kWh].
+  − Dodatnie: przewaga energii oddanej do sieci; ujemne: przewaga pobranej z sieci.
+  − moc sieci (grid): dodatnie = do sieci (eksport), ujemne = z sieci (import).
 Cel: bilans 0 na koniec godziny. Moc baterii: dodatnia = rozładowanie, ujemna = ładowanie.
 """
+
 from dataclasses import dataclass
 
 
 @dataclass
 class BalanceInputs:
-    """Wejścia do wyznaczenia interwencji (bez inwertera)."""
+    """Wejścia do wyznaczenia interwencji (bez inwertera).
+
+    remaining_kwh: Δeksport − Δimport w tej godzinie [kWh]; + = więcej oddane do sieci.
+    """
+
     remaining_kwh: float
     time_to_end_s: float
     pv_w: float
@@ -22,13 +30,19 @@ class BalanceInputs:
     slot_active: bool
     hysteresis_start: float
     hysteresis_end: float
-    balance_threshold_kw: float = 0.6
+    balance_threshold_kw: float = 0.3
     watts_per_percent: float = 70.0
+    # True = % z odczytu traktujemy jako „na żywo” (histereza/oscylacja). W runnerze = slot_active
+    # (on_off≠0 i czas w oknie); w testach można True przy slot_active=False.
+    balancing_slot_time_active: bool = True
+    # Inny eco_mode_1..4 (nie balansujący) ma teraz on_off i okno czasu — nie nadpisujemy slotu balansu.
+    other_eco_slot_active: bool = False
 
 
 @dataclass
 class BalanceOutput:
     """Wyjście: czy interweniować oraz parametry baterii."""
+
     intervene: bool
     battery_power_w: float
     battery_power_pct: int
@@ -76,7 +90,7 @@ def compute_intervention(inp: BalanceInputs) -> BalanceOutput:
     """
     Wyznacza, czy wykonać interwencję oraz moc baterii [W], [%] i czas ustawienia [s].
     """
-    # 1) Slot aktywny → nie zmieniamy
+    # 1) Slot balansujący aktywny → nie zmieniamy
     if inp.slot_active:
         return BalanceOutput(
             intervene=False,
@@ -84,6 +98,16 @@ def compute_intervention(inp: BalanceInputs) -> BalanceOutput:
             battery_power_pct=0,
             duration_s=0.0,
             reason="slot_active",
+        )
+
+    # 1b) Inny ecoslot (1–4) aktywny → nie uruchamiamy zapisu slotu balansującego
+    if inp.other_eco_slot_active:
+        return BalanceOutput(
+            intervene=False,
+            battery_power_w=0.0,
+            battery_power_pct=0,
+            duration_s=0.0,
+            reason="other_eco_slot_active",
         )
 
     # 2) Moc potrzebna do zbilansowania
@@ -97,8 +121,7 @@ def compute_intervention(inp: BalanceInputs) -> BalanceOutput:
             reason="power_below_threshold",
         )
 
-    # 3) Kierunek: remaining < 0 (import) → trzeba więcej eksportu → rozładowanie (battery > 0)
-    #    remaining > 0 (eksport) → trzeba więcej importu → ładowanie (battery < 0)
+    # 3) Kierunek: remaining < 0 (nadmiar importu) → rozładowanie (+P bat); remaining > 0 (nadmiar eksportu) → ładowanie
     sign = -1.0 if inp.remaining_kwh > 0 else 1.0
     target_power_kw = power_kw * sign
 
@@ -111,21 +134,24 @@ def compute_intervention(inp: BalanceInputs) -> BalanceOutput:
 
     target_pct = _kw_to_pct(target_power_kw, inp.watts_per_percent)
 
-    # 5) Histereza: porównanie w %
+    live_pct = (
+        inp.current_ecoslot_pct if inp.balancing_slot_time_active else None
+    )
+
+    # 5) Histereza: porównanie w % (tylko gdy balancing_slot_time_active — inaczej % z rejestru jest tylko konfiguracją)
     tol = tolerance_pct(inp.time_to_end_s, inp.hysteresis_start, inp.hysteresis_end)
-    if inp.current_ecoslot_pct is not None:
-        if abs(target_pct - inp.current_ecoslot_pct) <= tol:
+    if live_pct is not None:
+        if abs(target_pct - live_pct) <= tol:
             return BalanceOutput(
                 intervene=False,
-                battery_power_w=_pct_to_w(inp.current_ecoslot_pct, inp.watts_per_percent),
-                battery_power_pct=inp.current_ecoslot_pct,
+                battery_power_w=_pct_to_w(live_pct, inp.watts_per_percent),
+                battery_power_pct=live_pct,
                 duration_s=0.0,
                 reason="hysteresis",
             )
-    # 6) Unikanie oscylacji: jeśli obecna ustawiona jest po drugiej stronie zera (inny znak),
-    #    nie zmieniaj znaku dopóki wymagana moc nie jest wyraźna (np. |target_pct| > tol)
-    if inp.current_ecoslot_pct is not None:
-        cur = inp.current_ecoslot_pct
+    # 6) Unikanie oscylacji (tylko przy live_pct — bez „żywego” slotu nie blokuj znaku na starym %)
+    if live_pct is not None:
+        cur = live_pct
         if (cur > 0 and target_pct < 0) or (cur < 0 and target_pct > 0):
             if abs(target_pct) <= tol:
                 return BalanceOutput(

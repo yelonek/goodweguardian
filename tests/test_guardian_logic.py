@@ -45,6 +45,16 @@ class TestComputeIntervention:
         assert out.intervene is False
         assert out.reason == "slot_active"
 
+    def test_other_eco_slot_active_no_intervention(
+        self, default_inputs: BalanceInputs
+    ) -> None:
+        default_inputs.remaining_kwh = -0.5
+        default_inputs.time_to_end_s = 1800
+        default_inputs.other_eco_slot_active = True
+        out = compute_intervention(default_inputs)
+        assert out.intervene is False
+        assert out.reason == "other_eco_slot_active"
+
     def test_power_below_threshold_no_intervention(
         self, default_inputs: BalanceInputs
     ) -> None:
@@ -120,3 +130,16 @@ class TestComputeIntervention:
         out = compute_intervention(default_inputs)
         if not out.intervene and out.reason == "oscillation_avoid":
             assert out.battery_power_pct == -10
+
+    def test_no_oscillation_when_outside_slot_time_window(
+        self, default_inputs: BalanceInputs
+    ) -> None:
+        """balancing_slot_time_active=False (np. on_off=0 lub poza oknem): stary % nie blokuje interwencji."""
+        default_inputs.remaining_kwh = -0.5
+        default_inputs.time_to_end_s = 1800
+        default_inputs.current_ecoslot_pct = -10
+        default_inputs.balancing_slot_time_active = False
+        out = compute_intervention(default_inputs)
+        assert out.intervene is True
+        assert out.reason == "ok"
+        assert out.battery_power_w > 0

@@ -28,4 +28,5 @@ def default_inputs() -> BalanceInputs:
         hysteresis_end=2.0,
         balance_threshold_kw=0.6,
         watts_per_percent=70.0,
+        other_eco_slot_active=False,
     )

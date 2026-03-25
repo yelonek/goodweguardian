@@ -11,7 +11,7 @@ from datetime import datetime
 
 import goodwe
 
-from ecoslot_config import set_ecoslot
+from ecoslot_config import ECO_SETTING_IDS, set_ecoslot
 from guardian_config import (
     BALANCE_POWER_THRESHOLD_KW,
     get_slot_id,
@@ -53,12 +53,9 @@ def _get_float(data: dict, key: str, default: float = 0.0) -> float:
         return default
 
 
-def _slot_active(slot: object | None, now: datetime) -> bool:
-    """Slot jest aktywny gdy on_off != 0 i bieżący czas w [start, end]."""
+def _slot_time_in_window(slot: object | None, now: datetime) -> bool:
+    """Czy bieżący czas mieści się w [start, end] slotu (bez sprawdzania on_off)."""
     if slot is None:
-        return False
-    on_off = getattr(slot, "on_off", 0)
-    if on_off == 0:
         return False
     sh = getattr(slot, "start_h", 0)
     sm = getattr(slot, "start_m", 0)
@@ -69,6 +66,16 @@ def _slot_active(slot: object | None, now: datetime) -> bool:
     end_min = eh * 60 + em
     now_min = h * 60 + m
     return start_min <= now_min <= end_min
+
+
+def _slot_active(slot: object | None, now: datetime) -> bool:
+    """Slot jest aktywny gdy on_off != 0 i bieżący czas w [start, end]."""
+    if slot is None:
+        return False
+    on_off = getattr(slot, "on_off", 0)
+    if on_off == 0:
+        return False
+    return _slot_time_in_window(slot, now)
 
 
 def _current_ecoslot_pct(slot: object | None) -> int | None:
@@ -95,6 +102,23 @@ def _seconds_until_next_minute_start() -> float:
     now = datetime.now()
     elapsed = now.second + now.microsecond / 1_000_000
     return max(0.05, 60.0 - elapsed + 0.05)
+
+
+async def _any_other_eco_slot_active(
+    inverter: object, skip_slot_id: str, now: datetime
+) -> bool:
+    """True, gdy któryś z eco_mode_1..4 (oprócz slotu balansującego) ma on_off i czas w oknie."""
+    log = logging.getLogger("guardian")
+    for sid in ECO_SETTING_IDS:
+        if sid == skip_slot_id:
+            continue
+        try:
+            s = await inverter.read_setting(sid)
+            if _slot_active(s, now):
+                return True
+        except Exception as e:
+            log.debug("read_setting %s (other eco): %s", sid, e)
+    return False
 
 
 async def run_one_cycle() -> None:
@@ -130,7 +154,8 @@ async def run_one_cycle() -> None:
 
     delta_imp = E_imp - E_imp_start
     delta_exp = E_exp - E_exp_start
-    remaining_kwh = delta_imp - delta_exp  # minus = przewaga importu (plan)
+    # Dodatnie = więcej energii ODDANEJ do sieci niż pobrane (Δexp − Δimp), spójnie z grid_w > 0 = eksport.
+    remaining_kwh = delta_exp - delta_imp
 
     time_to_end_s = (59 - now.minute) * 60 + (60 - now.second)
     if now.minute == 59:
@@ -156,6 +181,7 @@ async def run_one_cycle() -> None:
 
     slot_active = _slot_active(current_slot, now)
     current_pct = _current_ecoslot_pct(current_slot)
+    other_eco_active = await _any_other_eco_slot_active(inverter, slot_id, now)
 
     inp = BalanceInputs(
         remaining_kwh=remaining_kwh,
@@ -172,8 +198,11 @@ async def run_one_cycle() -> None:
         hysteresis_end=HYSTERESIS_TOLERANCE_END,
         balance_threshold_kw=BALANCE_POWER_THRESHOLD_KW,
         watts_per_percent=WATTS_PER_PERCENT,
+        balancing_slot_time_active=slot_active,
+        other_eco_slot_active=other_eco_active,
     )
     out = compute_intervention(inp)
+
     power_kw = power_needed_kw(remaining_kwh, time_to_end_s)
     bal_kw = balancing_power_kw_signed(remaining_kwh, time_to_end_s)
 
@@ -190,6 +219,7 @@ async def run_one_cycle() -> None:
         delta_imp_kwh=delta_imp,
         delta_exp_kwh=delta_exp,
         slot_active=slot_active,
+        other_eco_active=other_eco_active,
         ecoslot_pct=current_pct,
         intervene=out.intervene,
         reason=out.reason,

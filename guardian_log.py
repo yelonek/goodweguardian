@@ -27,7 +27,7 @@ def setup_logging() -> None:
 
 
 def balancing_power_kw_signed(remaining_kwh: float, time_to_end_s: float) -> float:
-    """Moc bilansowania ze znakiem [kW]: remaining_kWh / (czas_do_końca w h)."""
+    """Średnia moc „domykająca” bilans [kW], znak jak remaining_kWh (+ = strona eksportu)."""
     if time_to_end_s <= 0:
         return 0.0
     return remaining_kwh * 3600.0 / time_to_end_s
@@ -47,6 +47,7 @@ def log_dashboard(
     delta_imp_kwh: float,
     delta_exp_kwh: float,
     slot_active: bool,
+    other_eco_active: bool = False,
     ecoslot_pct: int | None,
     intervene: bool,
     reason: str,
@@ -64,9 +65,9 @@ def log_dashboard(
         if duration_s is not None:
             extra += f" {duration_s:.0f}s"
     log.info(
-        "dashboard | %s | balans_godz=%+.3f kWh (Δimp=%.3f Δexp=%.3f) | moc_bilans=%+.3f kW | "
+        "dashboard | %s | balans_godz=%+.3f kWh (Δexp−Δimp; Δimp=%.3f Δexp=%.3f) | moc_bilans=%+.3f kW | "
         "sieć=%+.2f kW | PV=%.2f kW | dom=%.0f W | SOC=%.0f%% | P_bat=%+.0f W | "
-        "do_końca=%.0fs | slot_aktywny=%s ecoslot%%=%s | próg=%.2f kW | interwen=%s%s",
+        "do_końca=%.0fs | slot_bal=%s inny_eco=%s ecoslot%%=%s | próg=%.2f kW | interwen=%s%s",
         now.strftime("%H:%M:%S"),
         remaining_kwh,
         delta_imp_kwh,
@@ -79,6 +80,7 @@ def log_dashboard(
         battery_w,
         time_to_end_s,
         slot_active,
+        other_eco_active,
         pct,
         threshold_kw,
         intervene,
