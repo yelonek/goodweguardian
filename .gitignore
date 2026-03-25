@@ -34,6 +34,10 @@ wheels/
 # Debug / experiments
 debug/
 
+# Guardian state (per-day balance baseline)
+state/
+logs/
+
 # IDE
 .idea/
 .vscode/
