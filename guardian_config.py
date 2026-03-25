@@ -1,10 +1,12 @@
 """Konfiguracja guardiana (godzinowy balans) z .env."""
+
 import os
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
 
 # Moc [W] – w .env w watach (int lub float z kropką)
 def _float_env(name: str, default: float | None = None) -> float:
@@ -36,7 +38,7 @@ HYSTERESIS_TOLERANCE_START = _float_env("HYSTERESIS_TOLERANCE_START", 15.0)
 HYSTERESIS_TOLERANCE_END = _float_env("HYSTERESIS_TOLERANCE_END", 2.0)
 
 # Próg mocy bilansowania [kW]
-BALANCE_POWER_THRESHOLD_KW = 0.6
+BALANCE_POWER_THRESHOLD_KW = _float_env("BALANCE_POWER_THRESHOLD_KW", 0.3)
 
 # ~70 W na 1% (plan)
 WATTS_PER_PERCENT = 70.0
