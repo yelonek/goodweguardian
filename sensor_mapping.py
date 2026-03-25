@@ -3,15 +3,17 @@
 Dane z miernika (meter_*) używamy dla obciążeń po stronie sieci;
 inwerter nie obsługuje całości instalacji. Dla każdej wielkości
 wybieramy moc chwilową [W] tam gdzie to ma sens.
+
+Konwencja znaku (cały guardian): DODATNIE = energia/moc w kierunku DO SIECI (eksport);
+ujemne = z sieci (import / pobór).
 """
 
 # Moc chwilowa [W] — z miernika (całość sieci)
-# Znak: ujemne = pobór z sieci (import), dodatnie = wysyłanie do sieci (eksport)
 GRID_POWER = "meter_active_power_total"
 
 # Moc chwilowa [W] — z inwertera
 PV_POWER = "ppv"
-# Znak: ujemne = ładowanie baterii, dodatnie = rozładowanie
+# Bateria: dodatnie = rozładowanie (moc na AC), ujemne = ładowanie — typowo zwiększa/zmniejsza eksport netto.
 BATTERY_POWER = "pbattery1"
 HOUSE_CONSUMPTION_POWER = "house_consumption"
 
