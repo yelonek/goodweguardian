@@ -34,6 +34,7 @@ from guardian_config import (
     SOC_FULL_DEFENSE_CHARGE_PCT,
     SOC_FULL_DEFENSE_EARLY_RELEASE_KWH,
     SOC_FULL_DEFENSE_LATE_RELEASE_KWH,
+    SOC_FULL_DEFENSE_MAX_SLOT_MIN,
     SOC_FULL_DEFENSE_THRESHOLD_PCT,
     WATCHDOG_MAX_SLOT_MIN,
 )
@@ -333,7 +334,10 @@ async def run_one_cycle() -> None:
     # Bezpieczniej przy nieliniowościach: nie ustawiaj długich okien.
     # Pętla i tak wykonuje się co minutę, więc dłuższe interwencje będą przedłużane kolejnymi cyklami,
     # a krótkie okna ograniczają przestrzelenie gdy realna moc ≠ model.
-    MAX_SLOT_MIN = max(1, int(WATCHDOG_MAX_SLOT_MIN))
+    if decision.reason == "soc_full_defense_hold":
+        MAX_SLOT_MIN = max(1, int(SOC_FULL_DEFENSE_MAX_SLOT_MIN))
+    else:
+        MAX_SLOT_MIN = max(1, int(WATCHDOG_MAX_SLOT_MIN))
     duration_min = max(1, int(math.ceil((decision.duration_s or 0.0) / 60.0)))
     duration_min = min(MAX_SLOT_MIN, duration_min)
     end_m = min(59, start_m + duration_min)

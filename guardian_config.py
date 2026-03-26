@@ -70,6 +70,8 @@ SOC_FULL_DEFENSE_LATE_RELEASE_KWH = _float_env("SOC_FULL_DEFENSE_LATE_RELEASE_KW
 
 # Maksymalna długość pojedynczego okna zapisu ecoslota [min]
 WATCHDOG_MAX_SLOT_MIN = _int_env("WATCHDOG_MAX_SLOT_MIN", 5)
+# Maksymalna długość pojedynczego okna dla SOC-full defense [min]
+SOC_FULL_DEFENSE_MAX_SLOT_MIN = _int_env("SOC_FULL_DEFENSE_MAX_SLOT_MIN", 15)
 
 # Ścieżki – katalog projektu
 PROJECT_ROOT = Path(__file__).resolve().parent
