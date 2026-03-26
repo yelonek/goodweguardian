@@ -38,7 +38,8 @@ class TestTolerancePct:
 
 class TestComputeIntervention:
     def test_slot_active_can_adjust_when_far(self, default_inputs: BalanceInputs) -> None:
-        default_inputs.remaining_kwh = -0.5
+        # Make target large enough that oscillation_avoid doesn't block a sign flip.
+        default_inputs.remaining_kwh = -2.0
         default_inputs.slot_active = True
         # force a large delta vs current setting so hysteresis does not block
         default_inputs.current_ecoslot_pct = -10
@@ -89,13 +90,15 @@ class TestComputeIntervention:
         assert out.intervene is False
 
     def test_discharge_intervention(self, default_inputs: BalanceInputs) -> None:
-        # remaining < 0 (import) -> need export -> discharge (positive battery)
+        # remaining < 0 (import) -> need export (+grid); with default pv-cons=500W we need +1000W
+        # so battery should discharge about +500W
         default_inputs.remaining_kwh = -0.5
         default_inputs.time_to_end_s = 1800
         out = compute_intervention(default_inputs)
         assert out.intervene is True
         assert out.battery_power_w > 0
         assert out.battery_power_pct > 0
+        assert out.battery_power_w == pytest.approx(500.0, abs=80.0)
         assert out.duration_s > 0
         assert out.duration_s <= 1800
 
@@ -123,10 +126,40 @@ class TestComputeIntervention:
         default_inputs.remaining_kwh = -2.0
         default_inputs.time_to_end_s = 3600
         default_inputs.pv_w = 6000
+        default_inputs.consumption_w = 7500  # net import 1.5kW before battery
         default_inputs.p_inverter_w = 8000
         out = compute_intervention(default_inputs)
         assert out.intervene is True
         assert out.battery_power_w <= 2000
+
+    def test_high_pv_reduce_charge_instead_of_discharge(self) -> None:
+        """Reprodukcja nieliniowości: przy dużym PV i małym domu wystarczy zmniejszyć ładowanie.
+
+        remaining=-0.06kWh i 660s → ~0.327kW eksportu potrzebne.
+        pv=3120W, dom=642W → pv-dom=2478W; aby eksportować ~327W, bateria powinna ładować ~2151W.
+        """
+        inp = BalanceInputs(
+            remaining_kwh=-0.06,
+            time_to_end_s=660,
+            pv_w=3120,
+            consumption_w=642,
+            grid_w=0.0,
+            soc_pct=33.0,
+            p_inverter_w=8200.0,
+            p_battery_w=5000.0,
+            current_ecoslot_pct=None,
+            slot_active=False,
+            hysteresis_start=15.0,
+            hysteresis_end=2.0,
+            balance_threshold_kw=0.3,
+            watts_per_percent=70.0,
+            balancing_slot_time_active=False,
+            other_eco_slot_active=False,
+        )
+        out = compute_intervention(inp)
+        assert out.intervene is True
+        assert out.battery_power_w < 0
+        assert out.battery_power_w == pytest.approx(-2151.0, abs=120.0)
 
     def test_duration_not_overshoot(self, default_inputs: BalanceInputs) -> None:
         default_inputs.remaining_kwh = -0.1

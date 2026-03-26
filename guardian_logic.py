@@ -111,18 +111,26 @@ def compute_intervention(inp: BalanceInputs) -> BalanceOutput:
             reason="power_below_threshold",
         )
 
-    # 3) Kierunek: remaining < 0 (nadmiar importu) → rozładowanie (+P bat); remaining > 0 (nadmiar eksportu) → ładowanie
-    sign = -1.0 if inp.remaining_kwh > 0 else 1.0
-    target_power_kw = power_kw * sign
+    # 3) Zamiast mapować remaining_kwh -> znak baterii, wyznacz docelową moc SIECI.
+    # remaining_kwh < 0 (więcej importu) → chcemy eksport (+grid) o wielkości power_kw
+    # remaining_kwh > 0 (więcej eksportu) → chcemy import (−grid) o wielkości power_kw
+    target_grid_w = (power_kw * 1000.0) * (1.0 if inp.remaining_kwh < 0 else -1.0)
 
-    # 4) Cap rozładowanie: nie więcej niż P_INVERTER - PV
-    if target_power_kw > 0:
+    # Model bilansu chwilowego:
+    #   grid_w ≈ pv_w - consumption_w + battery_w
+    # stąd:
+    #   battery_w_target ≈ target_grid_w - (pv_w - consumption_w)
+    target_battery_w = target_grid_w - (inp.pv_w - inp.consumption_w)
+
+    # 4) Ograniczenia baterii oraz inwertera.
+    # Bateria: |P| <= P_BATTERY
+    target_battery_w = max(-inp.p_battery_w, min(inp.p_battery_w, target_battery_w))
+    # Inwerter: PV + rozładowanie <= P_INVERTER (dla discharge)
+    if target_battery_w > 0:
         cap_w = _discharge_cap_w(inp.p_inverter_w, inp.pv_w, inp.p_battery_w)
-        target_power_kw = min(target_power_kw, cap_w / 1000.0)
-    else:
-        target_power_kw = max(target_power_kw, -inp.p_battery_w / 1000.0)
+        target_battery_w = min(target_battery_w, cap_w)
 
-    target_pct = _kw_to_pct(target_power_kw, inp.watts_per_percent)
+    target_pct = max(-100, min(100, int(round(target_battery_w / inp.watts_per_percent))))
 
     live_pct = (
         inp.current_ecoslot_pct if inp.balancing_slot_time_active else None
@@ -157,7 +165,7 @@ def compute_intervention(inp: BalanceInputs) -> BalanceOutput:
         duration_s = 0.0
     else:
         energy_kwh = abs(inp.remaining_kwh)
-        power_avail_kw = abs(target_power_kw)
+        power_avail_kw = abs(target_battery_w) / 1000.0
         if power_avail_kw <= 0:
             duration_s = 0.0
         else:
@@ -167,10 +175,9 @@ def compute_intervention(inp: BalanceInputs) -> BalanceOutput:
             )
         duration_s = max(0.0, duration_s)
 
-    battery_w = target_power_kw * 1000.0
     return BalanceOutput(
         intervene=True,
-        battery_power_w=battery_w,
+        battery_power_w=target_battery_w,
         battery_power_pct=target_pct,
         duration_s=duration_s,
         reason="ok",
