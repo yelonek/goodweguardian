@@ -291,6 +291,15 @@ def decide_watchdog(
 
     target_pct = max(-100, min(100, int(round(target_battery_w / inp.watts_per_percent))))
 
+    # Reguła kierunku dla polityki watchdog:
+    # - remaining<0 (za dużo importu energii w godzinie): nie dopuszczaj CHARGE
+    # - remaining>0 (za dużo eksportu energii): nie dopuszczaj DISCHARGE
+    # To zapobiega sytuacjom, gdzie watchdog "naprawia" bilans w przeciwną stronę.
+    if inp.remaining_kwh < 0 and target_pct < 0:
+        target_pct = 0
+    elif inp.remaining_kwh > 0 and target_pct > 0:
+        target_pct = 0
+
     # Anti flip-flop: jeśli jesteśmy świeżo po zmianie trybu, nie zmieniaj znaku (chyba że late lub awaryjnie)
     seconds_in_mode = (
         999999.0
@@ -302,6 +311,15 @@ def decide_watchdog(
         desired_mode = "discharge"
     elif target_pct < 0:
         desired_mode = "charge"
+    else:
+        return WatchdogDecision(
+            write_slot=False,
+            enabled=False,
+            power_pct=0,
+            duration_s=0.0,
+            mode="neutral",
+            reason="direction_guard_neutral",
+        )
 
     if (
         state.mode in ("charge", "discharge")

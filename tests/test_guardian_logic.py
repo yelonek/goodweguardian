@@ -220,6 +220,8 @@ class TestWatchdogPolicy:
         default_inputs.remaining_kwh = -0.01
         default_inputs.time_to_end_s = 2400  # early
         default_inputs.grid_w = -800  # import
+        default_inputs.pv_w = 500
+        default_inputs.consumption_w = 3000
         state = WatchdogState(mode="neutral", mode_since_s=None, import_streak=3)
         cfg = WatchdogConfig(late_window_s=600, import_streak_min=3)
         d = decide_watchdog(default_inputs, now_s=1000.0, state=state, cfg=cfg)
@@ -234,3 +236,18 @@ class TestWatchdogPolicy:
         cfg = WatchdogConfig(late_window_s=600, unrecoverable_fraction=0.9)
         d = decide_watchdog(default_inputs, now_s=1000.0, state=state, cfg=cfg)
         assert d.write_slot is True
+
+    def test_direction_guard_no_charge_when_remaining_negative(
+        self, default_inputs: BalanceInputs
+    ) -> None:
+        # Duże PV i mały dom mogą matematycznie sugerować charge, ale przy remaining<0
+        # polityka watchdog nie może aktywnie ładować.
+        default_inputs.remaining_kwh = -0.06
+        default_inputs.time_to_end_s = 300  # late window
+        default_inputs.pv_w = 5000
+        default_inputs.consumption_w = 800
+        state = WatchdogState(mode="neutral", mode_since_s=None, import_streak=0)
+        cfg = WatchdogConfig(late_window_s=600, late_power_threshold_kw=0.45, grid_export_bias_w=150.0)
+        d = decide_watchdog(default_inputs, now_s=1000.0, state=state, cfg=cfg)
+        assert d.write_slot is False
+        assert d.reason == "direction_guard_neutral"
