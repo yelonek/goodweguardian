@@ -3,7 +3,6 @@ import pytest
 
 from guardian_logic import (
     BalanceInputs,
-    BalanceOutput,
     compute_intervention,
     power_needed_kw,
     tolerance_pct,
@@ -38,12 +37,27 @@ class TestTolerancePct:
 
 
 class TestComputeIntervention:
-    def test_slot_active_no_intervention(self, default_inputs: BalanceInputs) -> None:
+    def test_slot_active_can_adjust_when_far(self, default_inputs: BalanceInputs) -> None:
         default_inputs.remaining_kwh = -0.5
         default_inputs.slot_active = True
+        # force a large delta vs current setting so hysteresis does not block
+        default_inputs.current_ecoslot_pct = -10
+        default_inputs.balancing_slot_time_active = True
+        default_inputs.hysteresis_end = 2
+        out = compute_intervention(default_inputs)
+        assert out.intervene is True
+
+    def test_slot_active_no_adjust_when_close(self, default_inputs: BalanceInputs) -> None:
+        # target ~ 10% for 0.7kW with 70W/%; if already 10% then hysteresis should block changes
+        default_inputs.remaining_kwh = -0.35  # 0.7kW over 1800s
+        default_inputs.time_to_end_s = 1800
+        default_inputs.slot_active = True
+        default_inputs.current_ecoslot_pct = 10
+        default_inputs.balancing_slot_time_active = True
+        default_inputs.hysteresis_end = 2
         out = compute_intervention(default_inputs)
         assert out.intervene is False
-        assert out.reason == "slot_active"
+        assert out.reason == "hysteresis"
 
     def test_other_eco_slot_active_no_intervention(
         self, default_inputs: BalanceInputs

@@ -90,17 +90,7 @@ def compute_intervention(inp: BalanceInputs) -> BalanceOutput:
     """
     Wyznacza, czy wykonać interwencję oraz moc baterii [W], [%] i czas ustawienia [s].
     """
-    # 1) Slot balansujący aktywny → nie zmieniamy
-    if inp.slot_active:
-        return BalanceOutput(
-            intervene=False,
-            battery_power_w=0.0,
-            battery_power_pct=0,
-            duration_s=0.0,
-            reason="slot_active",
-        )
-
-    # 1b) Inny ecoslot (1–4) aktywny → nie uruchamiamy zapisu slotu balansującego
+    # 1) Inny ecoslot (1–4) aktywny → nie uruchamiamy zapisu slotu balansującego
     if inp.other_eco_slot_active:
         return BalanceOutput(
             intervene=False,
