@@ -7,6 +7,7 @@ Jeden przebieg: `uv run python hourly_balance_run.py --once` (np. z harmonogramu
 import argparse
 import asyncio
 import logging
+import math
 from datetime import datetime
 
 import goodwe
@@ -246,10 +247,13 @@ async def run_one_cycle() -> None:
     # Ustawienie slotu: od teraz do min(end bieżącej godziny, now + duration)
     start_h, start_m = now.hour, now.minute
     end_h = now.hour
-    duration_min = out.duration_s / 60.0
-    end_m = min(59, start_m + int(round(duration_min)))
-    if end_m <= start_m:
-        end_m = min(59, start_m + 1)
+    # Bezpieczniej przy nieliniowościach: nie ustawiaj długich okien.
+    # Pętla i tak wykonuje się co minutę, więc dłuższe interwencje będą przedłużane kolejnymi cyklami,
+    # a krótkie okna ograniczają przestrzelenie gdy realna moc ≠ model.
+    MAX_SLOT_MIN = 2
+    duration_min = max(1, int(math.ceil((out.duration_s or 0.0) / 60.0)))
+    duration_min = min(MAX_SLOT_MIN, duration_min)
+    end_m = min(59, start_m + duration_min)
 
     days = _days_today_only(now)
     try:
