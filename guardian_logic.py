@@ -50,6 +50,41 @@ class BalanceOutput:
     reason: str = ""
 
 
+@dataclass
+class WatchdogConfig:
+    """Polityka watchdog: domyślnie nie steruj, interweniuj późno / awaryjnie."""
+
+    late_window_s: int = 600
+    late_power_threshold_kw: float = 0.45
+    grid_export_bias_w: float = 150.0
+    import_w_threshold: float = -300.0
+    import_streak_min: int = 3
+    dwell_s: int = 600
+    unrecoverable_fraction: float = 0.9
+
+
+@dataclass
+class WatchdogState:
+    """Lekki stan anti-flip-flop + watchdog importu."""
+
+    mode: str = "neutral"  # "charge" | "discharge" | "neutral"
+    mode_since_s: float | None = None  # unix seconds
+    import_streak: int = 0
+    last_remaining_kwh: float | None = None
+
+
+@dataclass
+class WatchdogDecision:
+    """Decyzja watchdog: czy ustawić slot, czy wrócić do neutral."""
+
+    write_slot: bool
+    enabled: bool
+    power_pct: int
+    duration_s: float
+    mode: str
+    reason: str
+
+
 def power_needed_kw(remaining_kwh: float, time_to_end_s: float) -> float:
     """Moc potrzebna do zbilansowania [kW] (zawsze >= 0)."""
     if time_to_end_s <= 0:
@@ -181,4 +216,128 @@ def compute_intervention(inp: BalanceInputs) -> BalanceOutput:
         battery_power_pct=target_pct,
         duration_s=duration_s,
         reason="ok",
+    )
+
+
+def decide_watchdog(
+    inp: BalanceInputs,
+    *,
+    now_s: float,
+    state: WatchdogState,
+    cfg: WatchdogConfig,
+) -> WatchdogDecision:
+    """Watchdog: pozwól GoodWe działać; interweniuj tylko gdy trzeba, potem wróć do neutral."""
+
+    # Nigdy nie nadpisuj, gdy inny eco-slot aktywny.
+    if inp.other_eco_slot_active:
+        return WatchdogDecision(
+            write_slot=False,
+            enabled=False,
+            power_pct=0,
+            duration_s=0.0,
+            mode="neutral",
+            reason="other_eco_slot_active",
+        )
+
+    power_kw = power_needed_kw(inp.remaining_kwh, inp.time_to_end_s)
+
+    late = inp.time_to_end_s <= float(cfg.late_window_s)
+
+    # Awaryjny watchdog importu (drogi import): streak gdy import poniżej progu
+    emergency_import = state.import_streak >= cfg.import_streak_min
+
+    # Awaryjny watchdog „unrecoverable”: bilans energii już nie do odrobienia w samym late window
+    # E_max_late ≈ P_battery * T_late
+    pmax_kw = max(0.0, float(inp.p_battery_w) / 1000.0)
+    emax_late_kwh = pmax_kw * (float(cfg.late_window_s) / 3600.0)
+    emergency_unrecoverable = abs(inp.remaining_kwh) > (emax_late_kwh * float(cfg.unrecoverable_fraction))
+
+    # Wcześnie: nie panikuj — tylko awaryjnie.
+    if not late and not emergency_import and not emergency_unrecoverable:
+        return WatchdogDecision(
+            write_slot=False,
+            enabled=False,
+            power_pct=0,
+            duration_s=0.0,
+            mode="neutral",
+            reason="early_window_no_intervention",
+        )
+
+    # W late window: interweniuj dopiero gdy wymagane P jest sensownie duże.
+    if late and power_kw <= cfg.late_power_threshold_kw and not emergency_import and not emergency_unrecoverable:
+        return WatchdogDecision(
+            write_slot=False,
+            enabled=False,
+            power_pct=0,
+            duration_s=0.0,
+            mode="neutral",
+            reason="late_but_below_threshold",
+        )
+
+    # Docelowa moc sieci z biasem na lekki eksport.
+    required_w = power_kw * 1000.0
+    if inp.remaining_kwh < 0:
+        # za dużo importu w energii -> chcemy eksport
+        target_grid_w = cfg.grid_export_bias_w + required_w
+    else:
+        # za dużo eksportu w energii -> chcemy zmniejszyć eksport; unikaj importu jeśli się da
+        target_grid_w = max(cfg.grid_export_bias_w, cfg.grid_export_bias_w - required_w)
+
+    target_battery_w = target_grid_w - (inp.pv_w - inp.consumption_w)
+    target_battery_w = max(-inp.p_battery_w, min(inp.p_battery_w, target_battery_w))
+    if target_battery_w > 0:
+        cap_w = _discharge_cap_w(inp.p_inverter_w, inp.pv_w, inp.p_battery_w)
+        target_battery_w = min(target_battery_w, cap_w)
+
+    target_pct = max(-100, min(100, int(round(target_battery_w / inp.watts_per_percent))))
+
+    # Anti flip-flop: jeśli jesteśmy świeżo po zmianie trybu, nie zmieniaj znaku (chyba że late lub awaryjnie)
+    seconds_in_mode = (
+        999999.0
+        if state.mode_since_s is None
+        else max(0.0, now_s - float(state.mode_since_s))
+    )
+    desired_mode = "neutral"
+    if target_pct > 0:
+        desired_mode = "discharge"
+    elif target_pct < 0:
+        desired_mode = "charge"
+
+    if (
+        state.mode in ("charge", "discharge")
+        and desired_mode in ("charge", "discharge")
+        and desired_mode != state.mode
+        and seconds_in_mode < float(cfg.dwell_s)
+        and not emergency_import
+        and not late
+    ):
+        # Za wcześnie na flip: wróć do neutral i poczekaj (sieć jako bufor)
+        return WatchdogDecision(
+            write_slot=False,
+            enabled=False,
+            power_pct=0,
+            duration_s=0.0,
+            mode="neutral",
+            reason="dwell_block_flip",
+        )
+
+    # Ustaw krótko; runner i tak ogranicza okno slotu.
+    duration_s = min(inp.time_to_end_s, max(60.0, inp.time_to_end_s))
+    if emergency_unrecoverable and not late:
+        reason = "emergency_unrecoverable"
+    elif emergency_import and not late:
+        reason = "emergency_import"
+    elif emergency_unrecoverable and late:
+        reason = "late_unrecoverable"
+    elif emergency_import and late:
+        reason = "late_emergency_import"
+    else:
+        reason = "ok"
+    return WatchdogDecision(
+        write_slot=True,
+        enabled=True,
+        power_pct=target_pct,
+        duration_s=duration_s,
+        mode=desired_mode,
+        reason=reason,
     )

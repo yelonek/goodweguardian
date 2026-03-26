@@ -3,6 +3,9 @@ import pytest
 
 from guardian_logic import (
     BalanceInputs,
+    WatchdogConfig,
+    WatchdogState,
+    decide_watchdog,
     compute_intervention,
     power_needed_kw,
     tolerance_pct,
@@ -190,3 +193,44 @@ class TestComputeIntervention:
         assert out.intervene is True
         assert out.reason == "ok"
         assert out.battery_power_w > 0
+
+
+class TestWatchdogPolicy:
+    def test_early_window_no_intervention(self, default_inputs: BalanceInputs) -> None:
+        default_inputs.remaining_kwh = -0.5
+        default_inputs.time_to_end_s = 2400  # 40 min left
+        state = WatchdogState(mode="neutral", mode_since_s=None, import_streak=0)
+        cfg = WatchdogConfig(late_window_s=600)
+        d = decide_watchdog(default_inputs, now_s=1000.0, state=state, cfg=cfg)
+        assert d.write_slot is False
+        assert d.reason == "early_window_no_intervention"
+
+    def test_late_window_intervention_when_needed(self, default_inputs: BalanceInputs) -> None:
+        # 0.06kWh in 300s => 0.72kW required, above late threshold
+        default_inputs.remaining_kwh = -0.06
+        default_inputs.time_to_end_s = 300
+        state = WatchdogState(mode="neutral", mode_since_s=None, import_streak=0)
+        cfg = WatchdogConfig(late_window_s=600, late_power_threshold_kw=0.45, grid_export_bias_w=150.0)
+        d = decide_watchdog(default_inputs, now_s=1000.0, state=state, cfg=cfg)
+        assert d.write_slot is True
+        assert d.enabled is True
+        assert d.reason == "ok"
+
+    def test_emergency_import_triggers_even_early(self, default_inputs: BalanceInputs) -> None:
+        default_inputs.remaining_kwh = -0.01
+        default_inputs.time_to_end_s = 2400  # early
+        default_inputs.grid_w = -800  # import
+        state = WatchdogState(mode="neutral", mode_since_s=None, import_streak=3)
+        cfg = WatchdogConfig(late_window_s=600, import_streak_min=3)
+        d = decide_watchdog(default_inputs, now_s=1000.0, state=state, cfg=cfg)
+        assert d.write_slot is True
+
+    def test_emergency_unrecoverable_triggers_even_early(self, default_inputs: BalanceInputs) -> None:
+        # Jeśli w late window (np. 10 min) nie da się już odrobić energii mocą baterii, trzeba zacząć wcześniej.
+        # P_battery=5kW -> Emax_late = 5kW * (600s/3600) = 0.833kWh; przy fraction=0.9 daje ~0.75kWh.
+        default_inputs.remaining_kwh = -0.8
+        default_inputs.time_to_end_s = 2400  # early
+        state = WatchdogState(mode="neutral", mode_since_s=None, import_streak=0)
+        cfg = WatchdogConfig(late_window_s=600, unrecoverable_fraction=0.9)
+        d = decide_watchdog(default_inputs, now_s=1000.0, state=state, cfg=cfg)
+        assert d.write_slot is True

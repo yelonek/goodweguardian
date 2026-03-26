@@ -1,4 +1,8 @@
-"""Stan godziny (E_exp_start, E_imp_start) – plik z datą w nazwie."""
+"""Stan guardiana – pliki w katalogu state/.
+
+- hourly_balance_YYYY-MM-DD.json: stan startu godziny (E_exp_start, E_imp_start)
+- watchdog_state.json: lekki stan polityki watchdog (anti flip-flop, streak importu)
+"""
 import json
 from datetime import datetime
 from pathlib import Path
@@ -45,3 +49,33 @@ def save_state(now: datetime, E_exp_start: float, E_imp_start: float) -> None:
         "E_imp_start": E_imp_start,
     }
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def _watchdog_path() -> Path:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    return STATE_DIR / "watchdog_state.json"
+
+
+def load_watchdog_state() -> dict:
+    """Wczytuje stan watchdog (bez wyjątków); zwraca dict z domyślnymi wartościami."""
+    path = _watchdog_path()
+    if not path.exists():
+        return {"mode": "neutral", "mode_since": None, "import_streak": 0, "last_remaining_kwh": None}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {"mode": "neutral", "mode_since": None, "import_streak": 0, "last_remaining_kwh": None}
+    if not isinstance(data, dict):
+        return {"mode": "neutral", "mode_since": None, "import_streak": 0, "last_remaining_kwh": None}
+    data.setdefault("mode", "neutral")
+    data.setdefault("mode_since", None)
+    data.setdefault("import_streak", 0)
+    data.setdefault("last_remaining_kwh", None)
+    return data
+
+
+def save_watchdog_state(state: dict) -> None:
+    """Zapisuje stan watchdog."""
+    path = _watchdog_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, indent=2), encoding="utf-8")

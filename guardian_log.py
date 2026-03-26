@@ -52,22 +52,23 @@ def log_dashboard(
     intervene: bool,
     reason: str,
     threshold_kw: float,
-    target_battery_w: float | None = None,
-    target_battery_pct: int | None = None,
-    duration_s: float | None = None,
+    # Command (to co guardian chce ustawić TERAZ; różni się od ecoslot_pct, który jest readback)
+    commanded_enabled: bool | None = None,
+    commanded_pct: int | None = None,
+    commanded_duration_s: float | None = None,
 ) -> None:
     """Jedna linia „pulpit”: balans godz., moc bilansowania, sieć/PV/dom, bateria, slot, próg."""
     log = logging.getLogger("guardian")
     pct = "—" if ecoslot_pct is None else str(ecoslot_pct)
     extra = f" | {reason}" if reason else ""
-    if intervene and target_battery_w is not None and target_battery_pct is not None:
-        extra += f" | cel_bat={target_battery_w:+.0f}W {target_battery_pct}%"
-        if duration_s is not None:
-            extra += f" {duration_s:.0f}s"
+    if commanded_pct is not None and commanded_enabled is not None:
+        extra += f" | cmd={'On' if commanded_enabled else 'Off'} {commanded_pct:+d}%"
+        if commanded_duration_s is not None:
+            extra += f" {commanded_duration_s:.0f}s"
     log.info(
         "dashboard | %s | balans_godz=%+.3f kWh (Δexp−Δimp; Δimp=%.3f Δexp=%.3f) | moc_bilans=%+.3f kW | "
         "sieć=%+.2f kW | PV=%.2f kW | dom=%.0f W | SOC=%.0f%% | P_bat=%+.0f W | "
-        "do_końca=%.0fs | slot_bal=%s inny_eco=%s ecoslot%%=%s | próg=%.2f kW | interwen=%s%s",
+        "do_końca=%.0fs | slot_bal=%s inny_eco=%s ecoslot_read%%=%s | próg=%.2f kW | interwen=%s%s",
         now.strftime("%H:%M:%S"),
         remaining_kwh,
         delta_imp_kwh,

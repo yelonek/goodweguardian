@@ -9,21 +9,35 @@ import asyncio
 import logging
 import math
 from datetime import datetime
+from time import time
 
 import goodwe
 
 from ecoslot_config import ECO_SETTING_IDS, set_ecoslot
 from guardian_config import (
     BALANCE_POWER_THRESHOLD_KW,
+    GRID_EXPORT_BIAS_W,
     get_slot_id,
     HYSTERESIS_TOLERANCE_END,
     HYSTERESIS_TOLERANCE_START,
     INVERTER_IP,
+    LATE_WINDOW_S,
     P_BATTERY_W,
     P_INVERTER_W,
     WATTS_PER_PERCENT,
+    WATCHDOG_DWELL_S,
+    WATCHDOG_IMPORT_STREAK_MIN,
+    WATCHDOG_IMPORT_W_THRESHOLD,
+    WATCHDOG_LATE_POWER_THRESHOLD_KW,
+    WATCHDOG_UNRECOVERABLE_FRACTION,
 )
-from guardian_logic import BalanceInputs, compute_intervention, power_needed_kw
+from guardian_logic import (
+    BalanceInputs,
+    WatchdogConfig,
+    WatchdogState,
+    decide_watchdog,
+    power_needed_kw,
+)
 from guardian_log import (
     balancing_power_kw_signed,
     log_dashboard,
@@ -32,7 +46,7 @@ from guardian_log import (
     log_intervention,
     setup_logging,
 )
-from guardian_state import load_state, save_state
+from guardian_state import load_state, load_watchdog_state, save_state, save_watchdog_state
 from sensor_mapping import (
     BATTERY_POWER,
     BATTERY_SOC,
@@ -202,7 +216,33 @@ async def run_one_cycle() -> None:
         balancing_slot_time_active=slot_active,
         other_eco_slot_active=other_eco_active,
     )
-    out = compute_intervention(inp)
+
+    # Watchdog state (anti flip-flop + streak importu)
+    wd_raw = load_watchdog_state()
+    wd_state = WatchdogState(
+        mode=str(wd_raw.get("mode") or "neutral"),
+        mode_since_s=wd_raw.get("mode_since"),
+        import_streak=int(wd_raw.get("import_streak") or 0),
+        last_remaining_kwh=wd_raw.get("last_remaining_kwh"),
+    )
+    # Aktualizacja streak importu (drogi import)
+    if grid_w < WATCHDOG_IMPORT_W_THRESHOLD:
+        wd_state.import_streak += 1
+    else:
+        wd_state.import_streak = 0
+    wd_state.last_remaining_kwh = remaining_kwh
+
+    wd_cfg = WatchdogConfig(
+        late_window_s=int(LATE_WINDOW_S),
+        late_power_threshold_kw=float(WATCHDOG_LATE_POWER_THRESHOLD_KW),
+        grid_export_bias_w=float(GRID_EXPORT_BIAS_W),
+        import_w_threshold=float(WATCHDOG_IMPORT_W_THRESHOLD),
+        import_streak_min=int(WATCHDOG_IMPORT_STREAK_MIN),
+        dwell_s=int(WATCHDOG_DWELL_S),
+        unrecoverable_fraction=float(WATCHDOG_UNRECOVERABLE_FRACTION),
+    )
+
+    decision = decide_watchdog(inp, now_s=time(), state=wd_state, cfg=wd_cfg)
 
     power_kw = power_needed_kw(remaining_kwh, time_to_end_s)
     bal_kw = balancing_power_kw_signed(remaining_kwh, time_to_end_s)
@@ -222,26 +262,52 @@ async def run_one_cycle() -> None:
         slot_active=slot_active,
         other_eco_active=other_eco_active,
         ecoslot_pct=current_pct,
-        intervene=out.intervene,
-        reason=out.reason,
+        intervene=decision.write_slot,
+        reason=decision.reason,
         threshold_kw=BALANCE_POWER_THRESHOLD_KW,
-        target_battery_w=out.battery_power_w if out.intervene else None,
-        target_battery_pct=out.battery_power_pct if out.intervene else None,
-        duration_s=out.duration_s if out.intervene else None,
+        commanded_enabled=(True if decision.write_slot else False),
+        commanded_pct=(decision.power_pct if decision.write_slot else 0),
+        commanded_duration_s=(decision.duration_s if decision.write_slot else 0.0),
     )
 
     log_intervention(
         now=now,
         remaining_kwh=remaining_kwh,
         power_needed_kw=power_kw,
-        intervene=out.intervene,
-        battery_power_w=out.battery_power_w if out.intervene else None,
-        battery_power_pct=out.battery_power_pct if out.intervene else None,
-        duration_s=out.duration_s if out.intervene else None,
-        reason=out.reason,
+        intervene=decision.write_slot,
+        battery_power_w=(decision.power_pct * WATTS_PER_PERCENT) if decision.write_slot else None,
+        battery_power_pct=decision.power_pct if decision.write_slot else None,
+        duration_s=decision.duration_s if decision.write_slot else None,
+        reason=decision.reason,
     )
 
-    if not out.intervene:
+    if not decision.write_slot:
+        # Powrót do normy: jeśli slot balansujący aktywny, wyłącz go, żeby GoodWe działało samodzielnie.
+        if slot_active:
+            try:
+                await set_ecoslot(
+                    inverter,
+                    slot_id,
+                    start_h=now.hour,
+                    start_m=now.minute,
+                    end_h=now.hour,
+                    end_m=min(59, now.minute + 1),
+                    power=0,
+                    days=_days_today_only(now),
+                    enabled=False,
+                )
+            except Exception as e:
+                log_ecoslot_failure(slot_id, e)
+        wd_state.mode = "neutral"
+        wd_state.mode_since_s = None
+        save_watchdog_state(
+            {
+                "mode": wd_state.mode,
+                "mode_since": wd_state.mode_since_s,
+                "import_streak": wd_state.import_streak,
+                "last_remaining_kwh": wd_state.last_remaining_kwh,
+            }
+        )
         return
 
     # Ustawienie slotu: od teraz do min(end bieżącej godziny, now + duration)
@@ -251,7 +317,7 @@ async def run_one_cycle() -> None:
     # Pętla i tak wykonuje się co minutę, więc dłuższe interwencje będą przedłużane kolejnymi cyklami,
     # a krótkie okna ograniczają przestrzelenie gdy realna moc ≠ model.
     MAX_SLOT_MIN = 2
-    duration_min = max(1, int(math.ceil((out.duration_s or 0.0) / 60.0)))
+    duration_min = max(1, int(math.ceil((decision.duration_s or 0.0) / 60.0)))
     duration_min = min(MAX_SLOT_MIN, duration_min)
     end_m = min(59, start_m + duration_min)
 
@@ -264,12 +330,25 @@ async def run_one_cycle() -> None:
             start_m=start_m,
             end_h=end_h,
             end_m=end_m,
-            power=out.battery_power_pct,
+            power=decision.power_pct,
             days=days,
             enabled=True,
         )
     except Exception as e:
         log_ecoslot_failure(slot_id, e)
+
+    # Aktualizacja stanu watchdog po skutecznym zapisie (anti flip-flop)
+    wd_state.mode = decision.mode
+    if decision.mode in ("charge", "discharge"):
+        wd_state.mode_since_s = time()
+    save_watchdog_state(
+        {
+            "mode": wd_state.mode,
+            "mode_since": wd_state.mode_since_s,
+            "import_streak": wd_state.import_streak,
+            "last_remaining_kwh": wd_state.last_remaining_kwh,
+        }
+    )
 
 
 async def run_loop_forever() -> None:

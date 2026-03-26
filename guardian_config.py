@@ -43,6 +43,22 @@ BALANCE_POWER_THRESHOLD_KW = _float_env("BALANCE_POWER_THRESHOLD_KW", 0.3)
 # ~70 W na 1% (plan)
 WATTS_PER_PERCENT = 70.0
 
+# Watchdog policy (domyślnie: pozwól GoodWe działać, interweniuj późno / awaryjnie)
+# Okno „domykania” na końcu godziny [s]
+LATE_WINDOW_S = _int_env("LATE_WINDOW_S", 600)
+# Próg mocy wymaganej do domknięcia, powyżej którego zaczynamy interweniować w late window [kW]
+WATCHDOG_LATE_POWER_THRESHOLD_KW = _float_env("WATCHDOG_LATE_POWER_THRESHOLD_KW", 0.45)
+# Bias na lekki eksport (żeby unikać drogiego importu) [W]
+GRID_EXPORT_BIAS_W = _float_env("GRID_EXPORT_BIAS_W", 150.0)
+# Awaryjna interwencja, gdy utrwalony import poniżej progu [W] przez N cykli
+WATCHDOG_IMPORT_W_THRESHOLD = _float_env("WATCHDOG_IMPORT_W_THRESHOLD", -300.0)
+WATCHDOG_IMPORT_STREAK_MIN = _int_env("WATCHDOG_IMPORT_STREAK_MIN", 3)
+# Minimalny czas trzymania kierunku (anti flip-flop) [s]
+WATCHDOG_DWELL_S = _int_env("WATCHDOG_DWELL_S", 600)
+# Awaryjnie: jeśli bilans energii jest już „nie do odrobienia” w samym late window,
+# to interweniuj wcześniej (ułamek marginesu bezpieczeństwa).
+WATCHDOG_UNRECOVERABLE_FRACTION = _float_env("WATCHDOG_UNRECOVERABLE_FRACTION", 0.9)
+
 # Ścieżki – katalog projektu
 PROJECT_ROOT = Path(__file__).resolve().parent
 STATE_DIR = PROJECT_ROOT / "state"
