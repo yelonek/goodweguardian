@@ -61,6 +61,10 @@ class WatchdogConfig:
     import_streak_min: int = 3
     dwell_s: int = 600
     unrecoverable_fraction: float = 0.9
+    soc_full_threshold_pct: float = 99.5
+    soc_full_defense_charge_pct: int = -1
+    soc_full_defense_early_release_kwh: float = -0.3
+    soc_full_defense_late_release_kwh: float = 0.1
 
 
 @dataclass
@@ -165,11 +169,11 @@ def compute_intervention(inp: BalanceInputs) -> BalanceOutput:
         cap_w = _discharge_cap_w(inp.p_inverter_w, inp.pv_w, inp.p_battery_w)
         target_battery_w = min(target_battery_w, cap_w)
 
-    target_pct = max(-100, min(100, int(round(target_battery_w / inp.watts_per_percent))))
-
-    live_pct = (
-        inp.current_ecoslot_pct if inp.balancing_slot_time_active else None
+    target_pct = max(
+        -100, min(100, int(round(target_battery_w / inp.watts_per_percent)))
     )
+
+    live_pct = inp.current_ecoslot_pct if inp.balancing_slot_time_active else None
 
     # 5) Histereza: porównanie w % (tylko gdy balancing_slot_time_active — inaczej % z rejestru jest tylko konfiguracją)
     tol = tolerance_pct(inp.time_to_end_s, inp.hysteresis_start, inp.hysteresis_end)
@@ -243,6 +247,27 @@ def decide_watchdog(
 
     late = inp.time_to_end_s <= float(cfg.late_window_s)
 
+    # SOC=100% defense: utrzymuj CHARGE 1% (blokuj discharge) dopóki bilans nie przekroczy progu.
+    # Intencja: przy pełnej baterii tryb CHARGE powinien uniemożliwiać rozładowanie,
+    # a PV może i tak trafiać do sieci (brak miejsca w baterii).
+    if float(inp.soc_pct) >= float(cfg.soc_full_threshold_pct):
+        release_kwh = (
+            float(cfg.soc_full_defense_late_release_kwh)
+            if late
+            else float(cfg.soc_full_defense_early_release_kwh)
+        )
+        # Trzymaj defense, dopóki bilans jest "nie tak zły", tzn. remaining_kwh > release_kwh.
+        if float(inp.remaining_kwh) > release_kwh:
+            duration_s = min(inp.time_to_end_s, max(60.0, inp.time_to_end_s))
+            return WatchdogDecision(
+                write_slot=True,
+                enabled=True,
+                power_pct=int(cfg.soc_full_defense_charge_pct),
+                duration_s=duration_s,
+                mode="charge",
+                reason="soc_full_defense_hold",
+            )
+
     # Awaryjny watchdog importu (drogi import): streak gdy import poniżej progu
     emergency_import = state.import_streak >= cfg.import_streak_min
 
@@ -250,7 +275,9 @@ def decide_watchdog(
     # E_max_late ≈ P_battery * T_late
     pmax_kw = max(0.0, float(inp.p_battery_w) / 1000.0)
     emax_late_kwh = pmax_kw * (float(cfg.late_window_s) / 3600.0)
-    emergency_unrecoverable = abs(inp.remaining_kwh) > (emax_late_kwh * float(cfg.unrecoverable_fraction))
+    emergency_unrecoverable = abs(inp.remaining_kwh) > (
+        emax_late_kwh * float(cfg.unrecoverable_fraction)
+    )
 
     # Wcześnie: nie panikuj — tylko awaryjnie.
     if not late and not emergency_import and not emergency_unrecoverable:
@@ -264,7 +291,12 @@ def decide_watchdog(
         )
 
     # W late window: interweniuj dopiero gdy wymagane P jest sensownie duże.
-    if late and power_kw <= cfg.late_power_threshold_kw and not emergency_import and not emergency_unrecoverable:
+    if (
+        late
+        and power_kw <= cfg.late_power_threshold_kw
+        and not emergency_import
+        and not emergency_unrecoverable
+    ):
         return WatchdogDecision(
             write_slot=False,
             enabled=False,
@@ -289,7 +321,9 @@ def decide_watchdog(
         cap_w = _discharge_cap_w(inp.p_inverter_w, inp.pv_w, inp.p_battery_w)
         target_battery_w = min(target_battery_w, cap_w)
 
-    target_pct = max(-100, min(100, int(round(target_battery_w / inp.watts_per_percent))))
+    target_pct = max(
+        -100, min(100, int(round(target_battery_w / inp.watts_per_percent)))
+    )
 
     # Reguła kierunku dla polityki watchdog:
     # - remaining<0 (za dużo importu energii w godzinie): nie dopuszczaj CHARGE

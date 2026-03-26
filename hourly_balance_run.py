@@ -4,6 +4,7 @@ Guardian: godzinowy balans export/import.
 Domyślnie: pętla wykonująca cykl co minutę (wyrównanie do początku następnej minuty lokalnej).
 Jeden przebieg: `uv run python hourly_balance_run.py --once` (np. z harmonogramu).
 """
+
 import argparse
 import asyncio
 import logging
@@ -30,6 +31,11 @@ from guardian_config import (
     WATCHDOG_IMPORT_W_THRESHOLD,
     WATCHDOG_LATE_POWER_THRESHOLD_KW,
     WATCHDOG_UNRECOVERABLE_FRACTION,
+    SOC_FULL_DEFENSE_CHARGE_PCT,
+    SOC_FULL_DEFENSE_EARLY_RELEASE_KWH,
+    SOC_FULL_DEFENSE_LATE_RELEASE_KWH,
+    SOC_FULL_DEFENSE_THRESHOLD_PCT,
+    WATCHDOG_MAX_SLOT_MIN,
 )
 from guardian_logic import (
     BalanceInputs,
@@ -46,7 +52,12 @@ from guardian_log import (
     log_intervention,
     setup_logging,
 )
-from guardian_state import load_state, load_watchdog_state, save_state, save_watchdog_state
+from guardian_state import (
+    load_state,
+    load_watchdog_state,
+    save_state,
+    save_watchdog_state,
+)
 from sensor_mapping import (
     BATTERY_POWER,
     BATTERY_SOC,
@@ -240,6 +251,10 @@ async def run_one_cycle() -> None:
         import_streak_min=int(WATCHDOG_IMPORT_STREAK_MIN),
         dwell_s=int(WATCHDOG_DWELL_S),
         unrecoverable_fraction=float(WATCHDOG_UNRECOVERABLE_FRACTION),
+        soc_full_threshold_pct=float(SOC_FULL_DEFENSE_THRESHOLD_PCT),
+        soc_full_defense_charge_pct=int(SOC_FULL_DEFENSE_CHARGE_PCT),
+        soc_full_defense_early_release_kwh=float(SOC_FULL_DEFENSE_EARLY_RELEASE_KWH),
+        soc_full_defense_late_release_kwh=float(SOC_FULL_DEFENSE_LATE_RELEASE_KWH),
     )
 
     decision = decide_watchdog(inp, now_s=time(), state=wd_state, cfg=wd_cfg)
@@ -275,7 +290,9 @@ async def run_one_cycle() -> None:
         remaining_kwh=remaining_kwh,
         power_needed_kw=power_kw,
         intervene=decision.write_slot,
-        battery_power_w=(decision.power_pct * WATTS_PER_PERCENT) if decision.write_slot else None,
+        battery_power_w=(decision.power_pct * WATTS_PER_PERCENT)
+        if decision.write_slot
+        else None,
         battery_power_pct=decision.power_pct if decision.write_slot else None,
         duration_s=decision.duration_s if decision.write_slot else None,
         reason=decision.reason,
@@ -316,7 +333,7 @@ async def run_one_cycle() -> None:
     # Bezpieczniej przy nieliniowościach: nie ustawiaj długich okien.
     # Pętla i tak wykonuje się co minutę, więc dłuższe interwencje będą przedłużane kolejnymi cyklami,
     # a krótkie okna ograniczają przestrzelenie gdy realna moc ≠ model.
-    MAX_SLOT_MIN = 2
+    MAX_SLOT_MIN = max(1, int(WATCHDOG_MAX_SLOT_MIN))
     duration_min = max(1, int(math.ceil((decision.duration_s or 0.0) / 60.0)))
     duration_min = min(MAX_SLOT_MIN, duration_min)
     end_m = min(59, start_m + duration_min)

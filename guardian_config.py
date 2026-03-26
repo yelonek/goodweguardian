@@ -59,6 +59,18 @@ WATCHDOG_DWELL_S = _int_env("WATCHDOG_DWELL_S", 600)
 # to interweniuj wcześniej (ułamek marginesu bezpieczeństwa).
 WATCHDOG_UNRECOVERABLE_FRACTION = _float_env("WATCHDOG_UNRECOVERABLE_FRACTION", 0.9)
 
+# SOC=100% “battery defense”: utrzymuj CHARGE 1% (blokuj discharge) dopóki bilans nie jest „wystarczająco zły”.
+# Progi są różne dla early/late window.
+SOC_FULL_DEFENSE_THRESHOLD_PCT = _float_env("SOC_FULL_DEFENSE_THRESHOLD_PCT", 99.5)
+SOC_FULL_DEFENSE_CHARGE_PCT = _int_env("SOC_FULL_DEFENSE_CHARGE_PCT", -1)
+SOC_FULL_DEFENSE_EARLY_RELEASE_KWH = _float_env(
+    "SOC_FULL_DEFENSE_EARLY_RELEASE_KWH", -0.3
+)
+SOC_FULL_DEFENSE_LATE_RELEASE_KWH = _float_env("SOC_FULL_DEFENSE_LATE_RELEASE_KWH", 0.1)
+
+# Maksymalna długość pojedynczego okna zapisu ecoslota [min]
+WATCHDOG_MAX_SLOT_MIN = _int_env("WATCHDOG_MAX_SLOT_MIN", 5)
+
 # Ścieżki – katalog projektu
 PROJECT_ROOT = Path(__file__).resolve().parent
 STATE_DIR = PROJECT_ROOT / "state"
