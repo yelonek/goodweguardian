@@ -8,15 +8,36 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse
+from pydantic import BaseModel
+
+import guardian_config as guardian_cfg
 
 from guardian_config import LOG_DIR
+from guardian_control import effective_control_enabled, write_control_override
 
 app = FastAPI(title="GoodWeGuardian Dashboard", version="0.1.0")
 
 
 LOG_PATH = Path(os.environ.get("GUARDIAN_LOG_PATH") or (LOG_DIR / "guardian.log"))
+
+
+class GuardianControlBody(BaseModel):
+    control_enabled: bool
+
+
+def _require_guardian_api_key(
+    x_guardian_api_key: str | None = Header(default=None),
+) -> None:
+    expected = guardian_cfg.GUARDIAN_API_KEY
+    if not expected:
+        raise HTTPException(
+            status_code=503,
+            detail="GUARDIAN_API_KEY is not set; control API disabled",
+        )
+    if x_guardian_api_key != expected:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 
 @dataclass(frozen=True)
@@ -155,6 +176,24 @@ def index() -> str:
     <div class="tag">updated: <span id="updatedAt">—</span></div>
   </div>
 
+  <h2>Guardian control</h2>
+  <div class="card" style="max-width: 520px;">
+    <div class="k">API key (stored in browser localStorage)</div>
+    <input id="apiKey" type="password" placeholder="GUARDIAN_API_KEY" style="width: 100%; margin: 8px 0; padding: 6px;" />
+    <div class="row">
+      <button type="button" id="saveKey">Save key</button>
+      <button type="button" id="refreshControl">Refresh status</button>
+      <button type="button" id="enableControl">Enable writes</button>
+      <button type="button" id="disableControl">Disable writes</button>
+    </div>
+    <div class="muted" style="margin-top:8px;">Status: <span id="controlStatus">—</span></div>
+    <div class="muted" style="font-size:12px;">
+      Same switch as <code>state/guardian_control_override.json</code> (<code>control_enabled</code>): these buttons only write that file.
+      While the file exists, it overrides <code>GUARDIAN_CONTROL_ENABLED</code> in <code>.env</code> (no process restart). Delete the file to follow <code>.env</code> again.
+      Runner and dashboard must share the same <code>state/</code> directory.
+    </div>
+  </div>
+
   <h2>Current state</h2>
   <div class="grid" id="cards"></div>
 
@@ -182,6 +221,40 @@ const fmt = (v) => (v === null || v === undefined) ? "—" : v;
 function card(key, val) {
   return `<div class="card"><div class="k">${key}</div><div class="v">${fmt(val)}</div></div>`;
 }
+
+function getKey() { return (localStorage.getItem("guardianApiKey") || "").trim(); }
+
+async function refreshControl() {
+  const key = getKey();
+  const el = document.getElementById("controlStatus");
+  if (!key) { el.textContent = "set API key"; return; }
+  const r = await fetch("/api/guardian/control", { headers: { "X-Guardian-Api-Key": key } });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { el.textContent = (j.detail || r.statusText || "error"); return; }
+  el.textContent = `enabled=${j.control_enabled} source=${j.source}`;
+}
+
+async function putControl(enabled) {
+  const key = getKey();
+  if (!key) { alert("Set API key first"); return; }
+  const r = await fetch("/api/guardian/control", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", "X-Guardian-Api-Key": key },
+    body: JSON.stringify({ control_enabled: enabled }),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { alert(j.detail || r.statusText || "error"); return; }
+  document.getElementById("controlStatus").textContent = `enabled=${j.control_enabled} source=${j.source}`;
+}
+
+document.getElementById("saveKey").addEventListener("click", () => {
+  const v = document.getElementById("apiKey").value.trim();
+  localStorage.setItem("guardianApiKey", v);
+  refreshControl().catch(console.error);
+});
+document.getElementById("refreshControl").addEventListener("click", () => refreshControl().catch(console.error));
+document.getElementById("enableControl").addEventListener("click", () => putControl(true));
+document.getElementById("disableControl").addEventListener("click", () => putControl(false));
 
 async function refresh() {
   const [statusRes, histRes] = await Promise.all([
@@ -232,7 +305,9 @@ async function refresh() {
   document.getElementById("hist").innerHTML = rows;
 }
 
+document.getElementById("apiKey").value = getKey();
 refresh().catch(console.error);
+refreshControl().catch(console.error);
 setInterval(() => refresh().catch(console.error), 2500);
 </script>
 </body>
@@ -259,4 +334,20 @@ def api_status() -> JSONResponse:
         "raw": (row.raw if row else None),
     }
     return JSONResponse(payload)
+
+
+@app.get("/api/guardian/control")
+def api_guardian_control_get(_: None = Depends(_require_guardian_api_key)) -> JSONResponse:
+    enabled, source = effective_control_enabled()
+    return JSONResponse({"control_enabled": enabled, "source": source})
+
+
+@app.put("/api/guardian/control")
+def api_guardian_control_put(
+    body: GuardianControlBody,
+    _: None = Depends(_require_guardian_api_key),
+) -> JSONResponse:
+    write_control_override(body.control_enabled)
+    enabled, source = effective_control_enabled()
+    return JSONResponse({"control_enabled": enabled, "source": source})
 

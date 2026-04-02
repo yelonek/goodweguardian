@@ -25,6 +25,7 @@ from guardian_config import (
     LATE_WINDOW_S,
     P_BATTERY_W,
     P_INVERTER_W,
+    TELEMETRY_ENABLED,
     WATTS_PER_PERCENT,
     WATCHDOG_DWELL_S,
     WATCHDOG_IMPORT_STREAK_MIN,
@@ -36,8 +37,12 @@ from guardian_config import (
     SOC_FULL_DEFENSE_LATE_RELEASE_KWH,
     SOC_FULL_DEFENSE_MAX_SLOT_MIN,
     SOC_FULL_DEFENSE_THRESHOLD_PCT,
+    SOC_LOW_DEFENSE_CHARGE_PCT,
+    SOC_LOW_DEFENSE_RELEASE_REMAINING_KWH,
+    SOC_LOW_DEFENSE_THRESHOLD_PCT,
     WATCHDOG_MAX_SLOT_MIN,
 )
+from guardian_control import effective_control_enabled
 from guardian_logic import (
     BalanceInputs,
     WatchdogConfig,
@@ -62,12 +67,15 @@ from guardian_state import (
 from sensor_mapping import (
     BATTERY_POWER,
     BATTERY_SOC,
+    ENERGY_EXPORTED_DAY,
     ENERGY_EXPORTED_TOTAL,
+    ENERGY_IMPORTED_DAY,
     ENERGY_IMPORTED_TOTAL,
     GRID_POWER,
     HOUSE_CONSUMPTION_POWER,
     PV_POWER,
 )
+from telemetry_store import CycleTelemetryRecord, append_cycle_record, build_ts_and_calendar
 
 
 def _get_float(data: dict, key: str, default: float = 0.0) -> float:
@@ -78,6 +86,16 @@ def _get_float(data: dict, key: str, default: float = 0.0) -> float:
         return float(v)
     except (TypeError, ValueError):
         return default
+
+
+def _get_optional_float(data: dict, key: str) -> float | None:
+    v = data.get(key)
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
 
 
 def _slot_time_in_window(slot: object | None, now: datetime) -> bool:
@@ -256,12 +274,23 @@ async def run_one_cycle() -> None:
         soc_full_defense_charge_pct=int(SOC_FULL_DEFENSE_CHARGE_PCT),
         soc_full_defense_early_release_kwh=float(SOC_FULL_DEFENSE_EARLY_RELEASE_KWH),
         soc_full_defense_late_release_kwh=float(SOC_FULL_DEFENSE_LATE_RELEASE_KWH),
+        soc_low_threshold_pct=float(SOC_LOW_DEFENSE_THRESHOLD_PCT),
+        soc_low_defense_charge_pct=int(SOC_LOW_DEFENSE_CHARGE_PCT),
+        soc_low_defense_release_remaining_kwh=float(SOC_LOW_DEFENSE_RELEASE_REMAINING_KWH),
     )
 
     decision = decide_watchdog(inp, now_s=time(), state=wd_state, cfg=wd_cfg)
 
     power_kw = power_needed_kw(remaining_kwh, time_to_end_s)
     bal_kw = balancing_power_kw_signed(remaining_kwh, time_to_end_s)
+
+    control_ok, control_source = effective_control_enabled()
+    reason_for_log = (
+        f"{decision.reason} [control_off:{control_source}]"
+        if not control_ok
+        else decision.reason
+    )
+    cmd_active = control_ok and decision.write_slot
 
     log_dashboard(
         now=now,
@@ -279,11 +308,11 @@ async def run_one_cycle() -> None:
         other_eco_active=other_eco_active,
         ecoslot_pct=current_pct,
         intervene=decision.write_slot,
-        reason=decision.reason,
+        reason=reason_for_log,
         threshold_kw=BALANCE_POWER_THRESHOLD_KW,
-        commanded_enabled=(True if decision.write_slot else False),
-        commanded_pct=(decision.power_pct if decision.write_slot else 0),
-        commanded_duration_s=(decision.duration_s if decision.write_slot else 0.0),
+        commanded_enabled=cmd_active,
+        commanded_pct=(decision.power_pct if cmd_active else 0),
+        commanded_duration_s=(decision.duration_s if cmd_active else 0.0),
     )
 
     log_intervention(
@@ -298,6 +327,60 @@ async def run_one_cycle() -> None:
         duration_s=decision.duration_s if decision.write_slot else None,
         reason=decision.reason,
     )
+
+    if TELEMETRY_ENABLED:
+        ts_utc, loc_date, loc_h, loc_m, loc_wd, loc_we = build_ts_and_calendar(now)
+        e_day_imp = _get_optional_float(runtime, ENERGY_IMPORTED_DAY)
+        e_day_exp = _get_optional_float(runtime, ENERGY_EXPORTED_DAY)
+        try:
+            append_cycle_record(
+                CycleTelemetryRecord(
+                    ts_utc=ts_utc,
+                    local_date=loc_date,
+                    local_hour=loc_h,
+                    local_minute=loc_m,
+                    weekday=loc_wd,
+                    is_weekend=loc_we,
+                    grid_w=grid_w,
+                    pv_w=pv_w,
+                    battery_w=battery_w,
+                    consumption_w=consumption_w,
+                    soc_pct=soc_pct,
+                    E_imp_kwh=E_imp,
+                    E_exp_kwh=E_exp,
+                    e_day_imp_kwh=e_day_imp,
+                    e_day_exp_kwh=e_day_exp,
+                    remaining_kwh=remaining_kwh,
+                    time_to_end_s=time_to_end_s,
+                    delta_imp_kwh=delta_imp,
+                    delta_exp_kwh=delta_exp,
+                    slot_balancing_active=slot_active,
+                    other_eco_active=other_eco_active,
+                    ecoslot_pct=current_pct,
+                    watchdog_write_slot=decision.write_slot,
+                    watchdog_reason=decision.reason,
+                    guardian_control_enabled=control_ok,
+                    control_source=control_source,
+                    cmd_enabled=cmd_active,
+                    cmd_pct=decision.power_pct if cmd_active else 0,
+                    cmd_duration_s=float(decision.duration_s if cmd_active else 0.0),
+                )
+            )
+        except Exception:
+            logging.getLogger("guardian").warning(
+                "telemetry build/append failed", exc_info=True
+            )
+
+    if not control_ok:
+        save_watchdog_state(
+            {
+                "mode": str(wd_raw.get("mode") or "neutral"),
+                "mode_since": wd_raw.get("mode_since"),
+                "import_streak": wd_state.import_streak,
+                "last_remaining_kwh": wd_state.last_remaining_kwh,
+            }
+        )
+        return
 
     if not decision.write_slot:
         # Powrót do normy: jeśli slot balansujący aktywny, wyłącz go, żeby GoodWe działało samodzielnie.
@@ -334,7 +417,7 @@ async def run_one_cycle() -> None:
     # Bezpieczniej przy nieliniowościach: nie ustawiaj długich okien.
     # Pętla i tak wykonuje się co minutę, więc dłuższe interwencje będą przedłużane kolejnymi cyklami,
     # a krótkie okna ograniczają przestrzelenie gdy realna moc ≠ model.
-    if decision.reason == "soc_full_defense_hold":
+    if decision.reason in ("soc_full_defense_hold", "soc_low_defense_hold"):
         MAX_SLOT_MIN = max(1, int(SOC_FULL_DEFENSE_MAX_SLOT_MIN))
     else:
         MAX_SLOT_MIN = max(1, int(WATCHDOG_MAX_SLOT_MIN))
