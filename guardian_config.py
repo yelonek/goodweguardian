@@ -27,6 +27,13 @@ def _int_env(name: str, default: int | None = None) -> int:
     return int(float(raw.replace(",", ".")))
 
 
+def _bool_env(name: str, default: bool = True) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on", "y")
+
+
 # Wymagane
 INVERTER_IP = os.environ.get("INVERTER_IP") or ""
 ECO_SLOT_BALANCING = _int_env("ECO_SLOT_BALANCING", 4)
@@ -45,7 +52,7 @@ WATTS_PER_PERCENT = 70.0
 
 # Watchdog policy (domyślnie: pozwól GoodWe działać, interweniuj późno / awaryjnie)
 # Okno „domykania” na końcu godziny [s]
-LATE_WINDOW_S = _int_env("LATE_WINDOW_S", 600)
+LATE_WINDOW_S = _int_env("LATE_WINDOW_S", 1200)
 # Próg mocy wymaganej do domknięcia, powyżej którego zaczynamy interweniować w late window [kW]
 WATCHDOG_LATE_POWER_THRESHOLD_KW = _float_env("WATCHDOG_LATE_POWER_THRESHOLD_KW", 0.45)
 # Bias na lekki eksport (żeby unikać drogiego importu) [W]
@@ -63,8 +70,10 @@ WATCHDOG_UNRECOVERABLE_FRACTION = _float_env("WATCHDOG_UNRECOVERABLE_FRACTION", 
 # Progi są różne dla early/late window.
 SOC_FULL_DEFENSE_THRESHOLD_PCT = _float_env("SOC_FULL_DEFENSE_THRESHOLD_PCT", 99.5)
 SOC_FULL_DEFENSE_CHARGE_PCT = _int_env("SOC_FULL_DEFENSE_CHARGE_PCT", -1)
+# Early: 0 = puść obronę przy pierwszym imporcie netto w godzinie (remaining_kwh ≤ 0).
+# Ujemna wartość = toleruj mały import zanim puścisz (np. -0.3).
 SOC_FULL_DEFENSE_EARLY_RELEASE_KWH = _float_env(
-    "SOC_FULL_DEFENSE_EARLY_RELEASE_KWH", -0.3
+    "SOC_FULL_DEFENSE_EARLY_RELEASE_KWH", 0.0
 )
 SOC_FULL_DEFENSE_LATE_RELEASE_KWH = _float_env("SOC_FULL_DEFENSE_LATE_RELEASE_KWH", 0.1)
 
@@ -73,10 +82,35 @@ WATCHDOG_MAX_SLOT_MIN = _int_env("WATCHDOG_MAX_SLOT_MIN", 5)
 # Maksymalna długość pojedynczego okna dla SOC-full defense [min]
 SOC_FULL_DEFENSE_MAX_SLOT_MIN = _int_env("SOC_FULL_DEFENSE_MAX_SLOT_MIN", 15)
 
+# SOC niski: CHARGE 1% (blok rozładowania) dopóki remaining_kwh > celu godziny (domyślnie 0).
+# Nie czekamy na „głęboki import” (−0.3) — przy przejściu w stronę importu (≤ 0) puśćmy watchdog,
+# żeby nie oscillować: obrona wyłączona, potem znowu rozładowanie przy bilansie.
+SOC_LOW_DEFENSE_THRESHOLD_PCT = _float_env("SOC_LOW_DEFENSE_THRESHOLD_PCT", 22.0)
+SOC_LOW_DEFENSE_CHARGE_PCT = _int_env("SOC_LOW_DEFENSE_CHARGE_PCT", -1)
+SOC_LOW_DEFENSE_RELEASE_REMAINING_KWH = _float_env(
+    "SOC_LOW_DEFENSE_RELEASE_REMAINING_KWH", 0.0
+)
+
 # Ścieżki – katalog projektu
 PROJECT_ROOT = Path(__file__).resolve().parent
 STATE_DIR = PROJECT_ROOT / "state"
 LOG_DIR = PROJECT_ROOT / "logs"
+DATA_DIR = PROJECT_ROOT / "data"
+TELEMETRY_DIR = DATA_DIR / "telemetry"
+
+# Telemetria (JSONL)
+TELEMETRY_ENABLED = _bool_env("TELEMETRY_ENABLED", True)
+TELEMETRY_TZ = os.environ.get("TELEMETRY_TZ") or "Europe/Warsaw"
+
+# Sterowanie inwerterem: domyślna wartość z env; plik override (jeśli istnieje) ma pierwszeństwo w runtime
+GUARDIAN_CONTROL_ENABLED = _bool_env("GUARDIAN_CONTROL_ENABLED", True)
+GUARDIAN_CONTROL_OVERRIDE_PATH = Path(
+    os.environ.get("GUARDIAN_CONTROL_OVERRIDE_PATH")
+    or (STATE_DIR / "guardian_control_override.json")
+)
+
+# API dashboardu — pusty = endpointy /api/guardian/control wyłączone (503)
+GUARDIAN_API_KEY = (os.environ.get("GUARDIAN_API_KEY") or "").strip()
 
 
 def get_slot_id() -> str:
