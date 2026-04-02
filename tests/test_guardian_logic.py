@@ -267,18 +267,18 @@ class TestWatchdogPolicy:
         assert d.write_slot is False
         assert d.reason == "direction_guard_neutral"
 
-    def test_soc_full_defense_holds_charge_early_until_threshold(
+    def test_soc_full_defense_holds_charge_early_while_net_export(
         self, default_inputs: BalanceInputs
     ) -> None:
         default_inputs.soc_pct = 100.0
         default_inputs.time_to_end_s = 2400  # early
-        default_inputs.remaining_kwh = -0.10  # not below -0.3 yet
+        default_inputs.remaining_kwh = 0.05
         state = WatchdogState(mode="neutral", mode_since_s=None, import_streak=0)
         cfg = WatchdogConfig(
             late_window_s=600,
             soc_full_threshold_pct=99.5,
             soc_full_defense_charge_pct=-1,
-            soc_full_defense_early_release_kwh=-0.3,
+            soc_full_defense_early_release_kwh=0.0,
             soc_full_defense_late_release_kwh=0.1,
         )
         d = decide_watchdog(default_inputs, now_s=1000.0, state=state, cfg=cfg)
@@ -286,12 +286,30 @@ class TestWatchdogPolicy:
         assert d.power_pct == -1
         assert d.reason == "soc_full_defense_hold"
 
-    def test_soc_full_defense_releases_when_remaining_too_negative_early(
+    def test_soc_full_defense_releases_at_or_below_zero_early(
         self, default_inputs: BalanceInputs
     ) -> None:
         default_inputs.soc_pct = 100.0
         default_inputs.time_to_end_s = 2400  # early
-        default_inputs.remaining_kwh = -0.40  # below -0.3 -> release defense
+        default_inputs.remaining_kwh = -0.01
+        state = WatchdogState(mode="neutral", mode_since_s=None, import_streak=0)
+        cfg = WatchdogConfig(
+            late_window_s=600,
+            soc_full_threshold_pct=99.5,
+            soc_full_defense_charge_pct=-1,
+            soc_full_defense_early_release_kwh=0.0,
+            soc_full_defense_late_release_kwh=0.1,
+        )
+        d = decide_watchdog(default_inputs, now_s=1000.0, state=state, cfg=cfg)
+        assert d.reason != "soc_full_defense_hold"
+
+    def test_soc_full_defense_early_tolerates_import_if_release_negative(
+        self, default_inputs: BalanceInputs
+    ) -> None:
+        """SOC_FULL_DEFENSE_EARLY_RELEASE_KWH<0 = stary „budżet” importu zanim puścisz obronę."""
+        default_inputs.soc_pct = 100.0
+        default_inputs.time_to_end_s = 2400
+        default_inputs.remaining_kwh = -0.10
         state = WatchdogState(mode="neutral", mode_since_s=None, import_streak=0)
         cfg = WatchdogConfig(
             late_window_s=600,
@@ -301,4 +319,38 @@ class TestWatchdogPolicy:
             soc_full_defense_late_release_kwh=0.1,
         )
         d = decide_watchdog(default_inputs, now_s=1000.0, state=state, cfg=cfg)
-        assert d.reason != "soc_full_defense_hold"
+        assert d.reason == "soc_full_defense_hold"
+
+    def test_soc_low_defense_holds_while_remaining_above_hour_target(
+        self, default_inputs: BalanceInputs
+    ) -> None:
+        default_inputs.soc_pct = 18.0
+        default_inputs.time_to_end_s = 2400
+        default_inputs.remaining_kwh = 0.05  # lekka przewaga eksportu — trzymaj obronę
+        state = WatchdogState(mode="neutral", mode_since_s=None, import_streak=0)
+        cfg = WatchdogConfig(
+            late_window_s=600,
+            soc_low_threshold_pct=22.0,
+            soc_low_defense_charge_pct=-1,
+            soc_low_defense_release_remaining_kwh=0.0,
+        )
+        d = decide_watchdog(default_inputs, now_s=1000.0, state=state, cfg=cfg)
+        assert d.write_slot is True
+        assert d.power_pct == -1
+        assert d.reason == "soc_low_defense_hold"
+
+    def test_soc_low_defense_releases_when_remaining_at_or_below_hour_target(
+        self, default_inputs: BalanceInputs
+    ) -> None:
+        default_inputs.soc_pct = 18.0
+        default_inputs.time_to_end_s = 2400
+        default_inputs.remaining_kwh = -0.01
+        state = WatchdogState(mode="neutral", mode_since_s=None, import_streak=0)
+        cfg = WatchdogConfig(
+            late_window_s=600,
+            soc_low_threshold_pct=22.0,
+            soc_low_defense_charge_pct=-1,
+            soc_low_defense_release_remaining_kwh=0.0,
+        )
+        d = decide_watchdog(default_inputs, now_s=1000.0, state=state, cfg=cfg)
+        assert d.reason != "soc_low_defense_hold"

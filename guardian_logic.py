@@ -63,8 +63,12 @@ class WatchdogConfig:
     unrecoverable_fraction: float = 0.9
     soc_full_threshold_pct: float = 99.5
     soc_full_defense_charge_pct: int = -1
-    soc_full_defense_early_release_kwh: float = -0.3
+    soc_full_defense_early_release_kwh: float = 0.0
     soc_full_defense_late_release_kwh: float = 0.1
+    soc_low_threshold_pct: float = 22.0
+    soc_low_defense_charge_pct: int = -1
+    # Trzymaj obronę, dopóki remaining_kwh > tego (cel godziny; 0 = zbilansowany).
+    soc_low_defense_release_remaining_kwh: float = 0.0
 
 
 @dataclass
@@ -256,7 +260,7 @@ def decide_watchdog(
             if late
             else float(cfg.soc_full_defense_early_release_kwh)
         )
-        # Trzymaj defense, dopóki bilans jest "nie tak zły", tzn. remaining_kwh > release_kwh.
+        # Trzymaj defense, dopóki remaining_kwh > release_kwh (early: domyślnie >0 = tylko przy netto-eksporcie).
         if float(inp.remaining_kwh) > release_kwh:
             duration_s = min(inp.time_to_end_s, max(60.0, inp.time_to_end_s))
             return WatchdogDecision(
@@ -266,6 +270,20 @@ def decide_watchdog(
                 duration_s=duration_s,
                 mode="charge",
                 reason="soc_full_defense_hold",
+            )
+
+    # SOC niski: blokuj rozładowanie dopóki bilans godzinowy nie zejdzie do celu (remaining ≤ prog).
+    if float(inp.soc_pct) <= float(cfg.soc_low_threshold_pct):
+        release_kwh = float(cfg.soc_low_defense_release_remaining_kwh)
+        if float(inp.remaining_kwh) > release_kwh:
+            duration_s = min(inp.time_to_end_s, max(60.0, inp.time_to_end_s))
+            return WatchdogDecision(
+                write_slot=True,
+                enabled=True,
+                power_pct=int(cfg.soc_low_defense_charge_pct),
+                duration_s=duration_s,
+                mode="charge",
+                reason="soc_low_defense_hold",
             )
 
     # Awaryjny watchdog importu (drogi import): streak gdy import poniżej progu
