@@ -38,6 +38,9 @@ debug/
 state/
 logs/
 
+# Telemetry datasets
+data/
+
 # IDE
 .idea/
 .vscode/
