@@ -1,5 +1,18 @@
 ## Cel projektu (GoodWeGuardian)
 
+### Skąd brać ustawienia (jedna hierarchia)
+
+| Co chcesz zmienić | Gdzie | Uwaga |
+|-------------------|--------|--------|
+| **Włączyć / wyłączyć zapisy do inwertera** (`set_ecoslot`) | Albo **`.env`** → `GUARDIAN_CONTROL_ENABLED`, albo **plik** `state/guardian_control_override.json` z `{"control_enabled": true}` / `false` | **Jeśli plik override istnieje i ma `control_enabled` — zawsze on wygrywa** (czytany co cykl). Dashboard i API tylko **zapisują ten sam plik** — to nie jest trzeci przełącznik. Żeby znów obowiązywało tylko `.env`, **usuń** plik override (lub usuń z niego klucz i napraw JSON — prościej skasować plik). Zmiana `.env` wymaga **restartu** procesu. |
+| **Progi logiki** (SOC defense, late window, kW, histereza, …) | **Tylko `.env`** | Dashboard tego nie dotyka. **Restart** po zmianie. |
+| **Telemetria** | **`TELEMETRY_ENABLED` w `.env`** | **Restart**. |
+| **Klucz do API dashboardu** | **`GUARDIAN_API_KEY` w `.env`** | Bez klucza endpointy kontroli zwracają 503. |
+
+W logu / telemetrii: `source=override` = decyzja z pliku JSON; `source=env` = brak (lub nieużywalny) override, używane `GUARDIAN_CONTROL_ENABLED`.
+
+---
+
 Guardian to warstwa „supervisor / watchdog” nad inwerterem GoodWe:
 
 - **Domyślnie**: pozwala GoodWe działać samodzielnie (guardian **nie interweniuje**).
@@ -72,6 +85,16 @@ Guard kierunku (aby uniknąć „naprawy w złą stronę”):
     - `ecoslot_read%` = stan odczytany przed zapisem,
     - `cmd=...` = polecenie, które guardian wysyła teraz.
 
+
+## Telemetria i zdalne wyłączenie sterowania
+
+Skrót hierarchii włączenia zapisów: tabela **„Skąd brać ustawienia”** na górze dokumentu.
+
+- **Telemetria:** co cykl `hourly_balance_run` dopisuje linię JSON do `data/telemetry/telemetry_YYYY-MM-DD.jsonl` (data wg `TELEMETRY_TZ`, domyślnie `Europe/Warsaw`). Wyłączenie: `TELEMETRY_ENABLED=0` w `.env` (wymaga restartu procesu).
+- **Sterowanie inwerterem:** domyślnie `GUARDIAN_CONTROL_ENABLED=1` w `.env`. Jeśli istnieje plik **`state/guardian_control_override.json`** z `{"control_enabled": true|false}`, ma pierwszeństwo (bez restartu po zapisie pliku). Ścieżkę można nadpisać: `GUARDIAN_CONTROL_OVERRIDE_PATH`.
+- **Dashboard API:** przy ustawionym `GUARDIAN_API_KEY` w `.env` — `GET/PUT /api/guardian/control` z nagłówkiem `X-Guardian-Api-Key`. `PUT` **nadpisuje ten sam plik** co ręczna edycja `guardian_control_override.json`. Bez klucza API zwraca 503. Strona główna dashboardu ma prosty formularz (klucz w localStorage).
+- **Docker:** zamontuj **ten sam** katalog `state/` do kontenera z pętlą guardiana i do kontenera z uvicorn, żeby `PUT` z dashboardu był widoczny w runnerze.
+- **Powrót wyłącznie do .env:** usuń plik override. Dopóki plik istnieje, ma pierwszeństwo nad `.env` — ustawienie w dashboardzie „zgodne z .env” nadal trzyma override w pliku.
 
 ## Jak diagnozować zachowanie (praktycznie)
 
