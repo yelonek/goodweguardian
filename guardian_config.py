@@ -65,6 +65,10 @@ WATCHDOG_DWELL_S = _int_env("WATCHDOG_DWELL_S", 600)
 # Awaryjnie: jeśli bilans energii jest już „nie do odrobienia” w samym late window,
 # to interweniuj wcześniej (ułamek marginesu bezpieczeństwa).
 WATCHDOG_UNRECOVERABLE_FRACTION = _float_env("WATCHDOG_UNRECOVERABLE_FRACTION", 0.9)
+# Przy remaining<0 i 0% po clampie kierunku: minimalne rozładowanie [%] (GoodWe: 0% bywa bezużyteczne). 0 = wyłącz.
+WATCHDOG_MIN_DISCHARGE_ASSIST_PCT = _int_env("WATCHDOG_MIN_DISCHARGE_ASSIST_PCT", 1)
+# Charge w watchdogu tylko przy nadwyżce eksportu > tego progu [kWh] (0 = jak wcześniej poza blokadą przy 0).
+WATCHDOG_CHARGE_MIN_REMAINING_KWH = _float_env("WATCHDOG_CHARGE_MIN_REMAINING_KWH", 0.05)
 
 # SOC=100% “battery defense”: utrzymuj CHARGE 1% (blokuj discharge) dopóki bilans nie jest „wystarczająco zły”.
 # Progi są różne dla early/late window.
@@ -76,6 +80,8 @@ SOC_FULL_DEFENSE_EARLY_RELEASE_KWH = _float_env(
     "SOC_FULL_DEFENSE_EARLY_RELEASE_KWH", 0.0
 )
 SOC_FULL_DEFENSE_LATE_RELEASE_KWH = _float_env("SOC_FULL_DEFENSE_LATE_RELEASE_KWH", 0.1)
+# Pierwsze N minut nowej godziny: tarcza SOC jak po aktywności w ostatnich N minutach poprzedniej godziny.
+SOC_FULL_DEFENSE_CARRYOVER_MINUTES = _int_env("SOC_FULL_DEFENSE_CARRYOVER_MINUTES", 5)
 
 # Maksymalna długość pojedynczego okna zapisu ecoslota [min]
 WATCHDOG_MAX_SLOT_MIN = _int_env("WATCHDOG_MAX_SLOT_MIN", 5)

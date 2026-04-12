@@ -8,6 +8,7 @@ Konwencja znaku (ujednolicona z mocą sieci):
 Cel: bilans 0 na koniec godziny. Moc baterii: dodatnia = rozładowanie, ujemna = ładowanie.
 """
 
+import math
 from dataclasses import dataclass
 
 
@@ -61,6 +62,11 @@ class WatchdogConfig:
     import_streak_min: int = 3
     dwell_s: int = 600
     unrecoverable_fraction: float = 0.9
+    # remaining<0 i po regule kierunku target_pct==0: ustaw +N% rozładowania (0 = tylko neutral jak dawniej).
+    min_discharge_assist_pct: int = 1
+    # Charge (redukcja eksportu godzinowego) tylko gdy nadwyżka eksportu > tego progu [kWh] — unikaj sztucznego
+    # domykania do zera i wpędzania w import (0 = blokuj charge tylko przy remaining≤0).
+    charge_min_remaining_kwh: float = 0.05
     soc_full_threshold_pct: float = 99.5
     soc_full_defense_charge_pct: int = -1
     soc_full_defense_early_release_kwh: float = 0.0
@@ -69,6 +75,8 @@ class WatchdogConfig:
     soc_low_defense_charge_pct: int = -1
     # Trzymaj obronę, dopóki remaining_kwh > tego (cel godziny; 0 = zbilansowany).
     soc_low_defense_release_remaining_kwh: float = 0.0
+    # Pierwsze N minut nowej godziny: kontynuuj tarczę SOC, jeśli była aktywna w ostatnich N min poprzedniej.
+    soc_full_defense_carryover_minutes: int = 5
 
 
 @dataclass
@@ -79,6 +87,8 @@ class WatchdogState:
     mode_since_s: float | None = None  # unix seconds
     import_streak: int = 0
     last_remaining_kwh: float | None = None
+    # Ustawiane w runnerze: tarcza SOC była w ostatnich minutach poprzedniej godziny (reset bilansu na :00).
+    soc_full_defense_carryover: bool = False
 
 
 @dataclass
@@ -233,6 +243,7 @@ def decide_watchdog(
     now_s: float,
     state: WatchdogState,
     cfg: WatchdogConfig,
+    minute_of_hour: int | None = None,
 ) -> WatchdogDecision:
     """Watchdog: pozwól GoodWe działać; interweniuj tylko gdy trzeba, potem wróć do neutral."""
 
@@ -251,6 +262,14 @@ def decide_watchdog(
 
     late = inp.time_to_end_s <= float(cfg.late_window_s)
 
+    carryover_min = max(1, int(cfg.soc_full_defense_carryover_minutes))
+    carryover_window_s = float(carryover_min * 60)
+    soc_full_carryover = (
+        minute_of_hour is not None
+        and int(minute_of_hour) < carryover_min
+        and state.soc_full_defense_carryover
+    )
+
     # SOC=100% defense: utrzymuj CHARGE 1% (blokuj discharge) dopóki bilans nie przekroczy progu.
     # Intencja: przy pełnej baterii tryb CHARGE powinien uniemożliwiać rozładowanie,
     # a PV może i tak trafiać do sieci (brak miejsca w baterii).
@@ -260,8 +279,10 @@ def decide_watchdog(
             if late
             else float(cfg.soc_full_defense_early_release_kwh)
         )
+        r = float(inp.remaining_kwh)
+        early_abs = float(cfg.soc_full_defense_early_release_kwh)
         # Trzymaj defense, dopóki remaining_kwh > release_kwh (early: domyślnie >0 = tylko przy netto-eksporcie).
-        if float(inp.remaining_kwh) > release_kwh:
+        if r > release_kwh:
             duration_s = min(inp.time_to_end_s, max(60.0, inp.time_to_end_s))
             return WatchdogDecision(
                 write_slot=True,
@@ -270,6 +291,20 @@ def decide_watchdog(
                 duration_s=duration_s,
                 mode="charge",
                 reason="soc_full_defense_hold",
+            )
+        # Po :00 remaining ~0 — kontynuuj tarczę z końcówki poprzedniej godziny (pierwsze N minut).
+        if soc_full_carryover and (
+            r > early_abs
+            or (early_abs >= 0.0 and math.isclose(r, 0.0, abs_tol=1e-9))
+        ):
+            duration_s = min(inp.time_to_end_s, max(60.0, carryover_window_s))
+            return WatchdogDecision(
+                write_slot=True,
+                enabled=True,
+                power_pct=int(cfg.soc_full_defense_charge_pct),
+                duration_s=duration_s,
+                mode="charge",
+                reason="soc_full_defense_carryover",
             )
 
     # SOC niski: blokuj rozładowanie dopóki bilans godzinowy nie zejdzie do celu (remaining ≤ prog).
@@ -343,14 +378,25 @@ def decide_watchdog(
         -100, min(100, int(round(target_battery_w / inp.watts_per_percent)))
     )
 
-    # Reguła kierunku dla polityki watchdog:
-    # - remaining<0 (za dużo importu energii w godzinie): nie dopuszczaj CHARGE
-    # - remaining>0 (za dużo eksportu energii): nie dopuszczaj DISCHARGE
-    # To zapobiega sytuacjom, gdzie watchdog "naprawia" bilans w przeciwną stronę.
-    if inp.remaining_kwh < 0 and target_pct < 0:
+    # Reguła kierunku + asymetria kosztowa: wolimy lekką nadwyżkę eksportu niż import z sieci.
+    # - Nieładuj, dopóki remaining_kwh ≤ charge_min_remaining_kwh (ujemne, zero, mała nadwyżka).
+    # - Przy remaining>0 nie dopuszczaj DISCHARGE (już za dużo eksportu w kWh).
+    if target_pct < 0 and float(inp.remaining_kwh) <= float(cfg.charge_min_remaining_kwh):
         target_pct = 0
     elif inp.remaining_kwh > 0 and target_pct > 0:
         target_pct = 0
+
+    min_discharge_assist = max(0, min(100, int(cfg.min_discharge_assist_pct)))
+    used_export_assist = False
+    if (
+        target_pct == 0
+        and inp.remaining_kwh < 0
+        and min_discharge_assist > 0
+    ):
+        # Bilans wymaga eksportu; matematyka dała 0% (np. po zablokowaniu ładowania). Minimalne +%
+        # pozwala GoodWe utrzymać sensowny eco-slot i w praktyce „puścić” nadwyżkę PV do sieci.
+        target_pct = min_discharge_assist
+        used_export_assist = True
 
     # Anti flip-flop: jeśli jesteśmy świeżo po zmianie trybu, nie zmieniaj znaku (chyba że late lub awaryjnie)
     seconds_in_mode = (
@@ -401,6 +447,8 @@ def decide_watchdog(
         reason = "late_unrecoverable"
     elif emergency_import and late:
         reason = "late_emergency_import"
+    elif used_export_assist:
+        reason = "min_discharge_export_assist"
     else:
         reason = "ok"
     return WatchdogDecision(

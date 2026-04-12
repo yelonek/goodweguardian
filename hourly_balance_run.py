@@ -33,6 +33,7 @@ from guardian_config import (
     WATCHDOG_LATE_POWER_THRESHOLD_KW,
     WATCHDOG_UNRECOVERABLE_FRACTION,
     SOC_FULL_DEFENSE_CHARGE_PCT,
+    SOC_FULL_DEFENSE_CARRYOVER_MINUTES,
     SOC_FULL_DEFENSE_EARLY_RELEASE_KWH,
     SOC_FULL_DEFENSE_LATE_RELEASE_KWH,
     SOC_FULL_DEFENSE_MAX_SLOT_MIN,
@@ -41,6 +42,8 @@ from guardian_config import (
     SOC_LOW_DEFENSE_RELEASE_REMAINING_KWH,
     SOC_LOW_DEFENSE_THRESHOLD_PCT,
     WATCHDOG_MAX_SLOT_MIN,
+    WATCHDOG_MIN_DISCHARGE_ASSIST_PCT,
+    WATCHDOG_CHARGE_MIN_REMAINING_KWH,
 )
 from guardian_control import effective_control_enabled
 from guardian_logic import (
@@ -76,6 +79,16 @@ from sensor_mapping import (
     PV_POWER,
 )
 from telemetry_store import CycleTelemetryRecord, append_cycle_record, build_ts_and_calendar
+
+
+def _watchdog_state_dict(wd: WatchdogState) -> dict:
+    return {
+        "mode": wd.mode,
+        "mode_since": wd.mode_since_s,
+        "import_streak": wd.import_streak,
+        "last_remaining_kwh": wd.last_remaining_kwh,
+        "soc_full_defense_carryover": wd.soc_full_defense_carryover,
+    }
 
 
 def _get_float(data: dict, key: str, default: float = 0.0) -> float:
@@ -254,6 +267,7 @@ async def run_one_cycle() -> None:
         mode_since_s=wd_raw.get("mode_since"),
         import_streak=int(wd_raw.get("import_streak") or 0),
         last_remaining_kwh=wd_raw.get("last_remaining_kwh"),
+        soc_full_defense_carryover=bool(wd_raw.get("soc_full_defense_carryover")),
     )
     # Aktualizacja streak importu (drogi import)
     if grid_w < WATCHDOG_IMPORT_W_THRESHOLD:
@@ -277,9 +291,32 @@ async def run_one_cycle() -> None:
         soc_low_threshold_pct=float(SOC_LOW_DEFENSE_THRESHOLD_PCT),
         soc_low_defense_charge_pct=int(SOC_LOW_DEFENSE_CHARGE_PCT),
         soc_low_defense_release_remaining_kwh=float(SOC_LOW_DEFENSE_RELEASE_REMAINING_KWH),
+        min_discharge_assist_pct=int(WATCHDOG_MIN_DISCHARGE_ASSIST_PCT),
+        charge_min_remaining_kwh=float(WATCHDOG_CHARGE_MIN_REMAINING_KWH),
+        soc_full_defense_carryover_minutes=max(1, int(SOC_FULL_DEFENSE_CARRYOVER_MINUTES)),
     )
 
-    decision = decide_watchdog(inp, now_s=time(), state=wd_state, cfg=wd_cfg)
+    decision = decide_watchdog(
+        inp,
+        now_s=time(),
+        state=wd_state,
+        cfg=wd_cfg,
+        minute_of_hour=now.minute,
+    )
+
+    carryover_min = max(1, int(SOC_FULL_DEFENSE_CARRYOVER_MINUTES))
+    last_n_min_of_hour = time_to_end_s <= float(carryover_min * 60)
+    if decision.reason == "soc_full_defense_hold" and last_n_min_of_hour:
+        wd_state.soc_full_defense_carryover = True
+    elif now.minute >= carryover_min or soc_pct < float(SOC_FULL_DEFENSE_THRESHOLD_PCT):
+        wd_state.soc_full_defense_carryover = False
+    elif (
+        wd_state.soc_full_defense_carryover
+        and now.minute < carryover_min
+        and decision.reason not in ("soc_full_defense_hold", "soc_full_defense_carryover")
+        and decision.reason != "other_eco_slot_active"
+    ):
+        wd_state.soc_full_defense_carryover = False
 
     power_kw = power_needed_kw(remaining_kwh, time_to_end_s)
     bal_kw = balancing_power_kw_signed(remaining_kwh, time_to_end_s)
@@ -378,6 +415,7 @@ async def run_one_cycle() -> None:
                 "mode_since": wd_raw.get("mode_since"),
                 "import_streak": wd_state.import_streak,
                 "last_remaining_kwh": wd_state.last_remaining_kwh,
+                "soc_full_defense_carryover": wd_state.soc_full_defense_carryover,
             }
         )
         return
@@ -401,14 +439,7 @@ async def run_one_cycle() -> None:
                 log_ecoslot_failure(slot_id, e)
         wd_state.mode = "neutral"
         wd_state.mode_since_s = None
-        save_watchdog_state(
-            {
-                "mode": wd_state.mode,
-                "mode_since": wd_state.mode_since_s,
-                "import_streak": wd_state.import_streak,
-                "last_remaining_kwh": wd_state.last_remaining_kwh,
-            }
-        )
+        save_watchdog_state(_watchdog_state_dict(wd_state))
         return
 
     # Ustawienie slotu: od teraz do min(end bieżącej godziny, now + duration)
@@ -417,7 +448,11 @@ async def run_one_cycle() -> None:
     # Bezpieczniej przy nieliniowościach: nie ustawiaj długich okien.
     # Pętla i tak wykonuje się co minutę, więc dłuższe interwencje będą przedłużane kolejnymi cyklami,
     # a krótkie okna ograniczają przestrzelenie gdy realna moc ≠ model.
-    if decision.reason in ("soc_full_defense_hold", "soc_low_defense_hold"):
+    if decision.reason in (
+        "soc_full_defense_hold",
+        "soc_full_defense_carryover",
+        "soc_low_defense_hold",
+    ):
         MAX_SLOT_MIN = max(1, int(SOC_FULL_DEFENSE_MAX_SLOT_MIN))
     else:
         MAX_SLOT_MIN = max(1, int(WATCHDOG_MAX_SLOT_MIN))
@@ -445,14 +480,7 @@ async def run_one_cycle() -> None:
     wd_state.mode = decision.mode
     if decision.mode in ("charge", "discharge"):
         wd_state.mode_since_s = time()
-    save_watchdog_state(
-        {
-            "mode": wd_state.mode,
-            "mode_since": wd_state.mode_since_s,
-            "import_streak": wd_state.import_streak,
-            "last_remaining_kwh": wd_state.last_remaining_kwh,
-        }
-    )
+    save_watchdog_state(_watchdog_state_dict(wd_state))
 
 
 async def run_loop_forever() -> None:
