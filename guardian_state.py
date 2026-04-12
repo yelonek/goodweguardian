@@ -60,17 +60,36 @@ def load_watchdog_state() -> dict:
     """Wczytuje stan watchdog (bez wyjątków); zwraca dict z domyślnymi wartościami."""
     path = _watchdog_path()
     if not path.exists():
-        return {"mode": "neutral", "mode_since": None, "import_streak": 0, "last_remaining_kwh": None}
+        return {
+            "mode": "neutral",
+            "mode_since": None,
+            "import_streak": 0,
+            "last_remaining_kwh": None,
+            "soc_full_defense_carryover": False,
+        }
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
-        return {"mode": "neutral", "mode_since": None, "import_streak": 0, "last_remaining_kwh": None}
+        return {
+            "mode": "neutral",
+            "mode_since": None,
+            "import_streak": 0,
+            "last_remaining_kwh": None,
+            "soc_full_defense_carryover": False,
+        }
     if not isinstance(data, dict):
-        return {"mode": "neutral", "mode_since": None, "import_streak": 0, "last_remaining_kwh": None}
+        return {
+            "mode": "neutral",
+            "mode_since": None,
+            "import_streak": 0,
+            "last_remaining_kwh": None,
+            "soc_full_defense_carryover": False,
+        }
     data.setdefault("mode", "neutral")
     data.setdefault("mode_since", None)
     data.setdefault("import_streak", 0)
     data.setdefault("last_remaining_kwh", None)
+    data.setdefault("soc_full_defense_carryover", False)
     return data
 
 
