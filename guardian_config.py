@@ -69,6 +69,10 @@ WATCHDOG_UNRECOVERABLE_FRACTION = _float_env("WATCHDOG_UNRECOVERABLE_FRACTION", 
 WATCHDOG_MIN_DISCHARGE_ASSIST_PCT = _int_env("WATCHDOG_MIN_DISCHARGE_ASSIST_PCT", 1)
 # Charge w watchdogu tylko przy nadwyżce eksportu > tego progu [kWh] (0 = jak wcześniej poza blokadą przy 0).
 WATCHDOG_CHARGE_MIN_REMAINING_KWH = _float_env("WATCHDOG_CHARGE_MIN_REMAINING_KWH", 0.05)
+# Bufor eksportu: pierwsze N min godziny (0 = wył.), cel [kWh], minimalny +% rozładowania (jak min_discharge assist).
+EXPORT_BUFFER_BUILD_MINUTES = _int_env("EXPORT_BUFFER_BUILD_MINUTES", 15)
+EXPORT_BUFFER_TARGET_KWH = _float_env("EXPORT_BUFFER_TARGET_KWH", 0.1)
+EXPORT_BUFFER_DISCHARGE_PCT = _int_env("EXPORT_BUFFER_DISCHARGE_PCT", 1)
 
 # SOC=100% “battery defense”: utrzymuj CHARGE 1% (blokuj discharge) dopóki bilans nie jest „wystarczająco zły”.
 # Progi są różne dla early/late window.
