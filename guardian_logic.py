@@ -77,6 +77,10 @@ class WatchdogConfig:
     soc_low_defense_release_remaining_kwh: float = 0.0
     # Pierwsze N minut nowej godziny: kontynuuj tarczę SOC, jeśli była aktywna w ostatnich N min poprzedniej.
     soc_full_defense_carryover_minutes: int = 5
+    # Bufor eksportu (sieć): pierwsze N min (0 = wył.) przy PV>konsumpcja, dopóki remaining_kwh < target [kWh].
+    export_buffer_build_minutes: int = 15
+    export_buffer_target_kwh: float = 0.1
+    export_buffer_discharge_pct: int = 1
 
 
 @dataclass
@@ -334,6 +338,27 @@ def decide_watchdog(
 
     # Wcześnie: nie panikuj — tylko awaryjnie.
     if not late and not emergency_import and not emergency_unrecoverable:
+        # Bufor w sieci: tylko przy nadwyżce PV (unikaj „dołka” w nocy), lekki +% aż do docelowej nadwyżki kWh.
+        # Nie wchodź tu przy SOC ≥ próg obrony pełnej — soc_full_defense_* wyżej ma pierwszeństwo (bez +% rozładowania).
+        if (
+            int(cfg.export_buffer_build_minutes) > 0
+            and minute_of_hour is not None
+            and int(minute_of_hour) < int(cfg.export_buffer_build_minutes)
+            and float(inp.pv_w) > float(inp.consumption_w)
+            and float(inp.remaining_kwh) < float(cfg.export_buffer_target_kwh)
+            and float(inp.soc_pct) > float(cfg.soc_low_threshold_pct)
+            and float(inp.soc_pct) < float(cfg.soc_full_threshold_pct)
+        ):
+            pct = max(1, int(cfg.export_buffer_discharge_pct))
+            duration_s = min(inp.time_to_end_s, max(60.0, inp.time_to_end_s))
+            return WatchdogDecision(
+                write_slot=True,
+                enabled=True,
+                power_pct=pct,
+                duration_s=duration_s,
+                mode="discharge",
+                reason="export_buffer_build",
+            )
         return WatchdogDecision(
             write_slot=False,
             enabled=False,

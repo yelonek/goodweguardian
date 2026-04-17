@@ -44,6 +44,9 @@ from guardian_config import (
     WATCHDOG_MAX_SLOT_MIN,
     WATCHDOG_MIN_DISCHARGE_ASSIST_PCT,
     WATCHDOG_CHARGE_MIN_REMAINING_KWH,
+    EXPORT_BUFFER_BUILD_MINUTES,
+    EXPORT_BUFFER_DISCHARGE_PCT,
+    EXPORT_BUFFER_TARGET_KWH,
 )
 from guardian_control import effective_control_enabled
 from guardian_logic import (
@@ -294,6 +297,9 @@ async def run_one_cycle() -> None:
         min_discharge_assist_pct=int(WATCHDOG_MIN_DISCHARGE_ASSIST_PCT),
         charge_min_remaining_kwh=float(WATCHDOG_CHARGE_MIN_REMAINING_KWH),
         soc_full_defense_carryover_minutes=max(1, int(SOC_FULL_DEFENSE_CARRYOVER_MINUTES)),
+        export_buffer_build_minutes=max(0, int(EXPORT_BUFFER_BUILD_MINUTES)),
+        export_buffer_target_kwh=float(EXPORT_BUFFER_TARGET_KWH),
+        export_buffer_discharge_pct=int(EXPORT_BUFFER_DISCHARGE_PCT),
     )
 
     decision = decide_watchdog(

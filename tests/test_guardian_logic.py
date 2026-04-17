@@ -205,8 +205,141 @@ class TestWatchdogPolicy:
         default_inputs.remaining_kwh = -0.5
         default_inputs.time_to_end_s = 2400  # 40 min left
         state = WatchdogState(mode="neutral", mode_since_s=None, import_streak=0)
-        cfg = WatchdogConfig(late_window_s=600)
+        cfg = WatchdogConfig(late_window_s=600, export_buffer_build_minutes=0)
         d = decide_watchdog(default_inputs, now_s=1000.0, state=state, cfg=cfg)
+        assert d.write_slot is False
+        assert d.reason == "early_window_no_intervention"
+
+    def test_export_buffer_build_when_pv_surplus_early(
+        self, default_inputs: BalanceInputs
+    ) -> None:
+        default_inputs.remaining_kwh = 0.02
+        default_inputs.time_to_end_s = 2400
+        default_inputs.pv_w = 3000.0
+        default_inputs.consumption_w = 1500.0
+        state = WatchdogState(mode="neutral", mode_since_s=None, import_streak=0)
+        cfg = WatchdogConfig(
+            late_window_s=600,
+            export_buffer_build_minutes=15,
+            export_buffer_target_kwh=0.1,
+            export_buffer_discharge_pct=1,
+        )
+        d = decide_watchdog(
+            default_inputs,
+            now_s=1000.0,
+            state=state,
+            cfg=cfg,
+            minute_of_hour=3,
+        )
+        assert d.write_slot is True
+        assert d.power_pct == 1
+        assert d.mode == "discharge"
+        assert d.reason == "export_buffer_build"
+
+    def test_export_buffer_skips_when_pv_not_above_consumption(
+        self, default_inputs: BalanceInputs
+    ) -> None:
+        default_inputs.remaining_kwh = 0.02
+        default_inputs.time_to_end_s = 2400
+        default_inputs.pv_w = 1000.0
+        default_inputs.consumption_w = 2000.0
+        state = WatchdogState(mode="neutral", mode_since_s=None, import_streak=0)
+        cfg = WatchdogConfig(late_window_s=600, export_buffer_build_minutes=15)
+        d = decide_watchdog(
+            default_inputs,
+            now_s=1000.0,
+            state=state,
+            cfg=cfg,
+            minute_of_hour=3,
+        )
+        assert d.write_slot is False
+        assert d.reason == "early_window_no_intervention"
+
+    def test_export_buffer_skips_when_target_reached(
+        self, default_inputs: BalanceInputs
+    ) -> None:
+        default_inputs.remaining_kwh = 0.12
+        default_inputs.time_to_end_s = 2400
+        default_inputs.pv_w = 3000.0
+        default_inputs.consumption_w = 1000.0
+        state = WatchdogState(mode="neutral", mode_since_s=None, import_streak=0)
+        cfg = WatchdogConfig(late_window_s=600, export_buffer_build_minutes=15)
+        d = decide_watchdog(
+            default_inputs,
+            now_s=1000.0,
+            state=state,
+            cfg=cfg,
+            minute_of_hour=3,
+        )
+        assert d.write_slot is False
+        assert d.reason == "early_window_no_intervention"
+
+    def test_export_buffer_skips_after_build_minutes(
+        self, default_inputs: BalanceInputs
+    ) -> None:
+        default_inputs.remaining_kwh = 0.02
+        default_inputs.time_to_end_s = 2400
+        default_inputs.pv_w = 3000.0
+        default_inputs.consumption_w = 1000.0
+        state = WatchdogState(mode="neutral", mode_since_s=None, import_streak=0)
+        cfg = WatchdogConfig(late_window_s=600, export_buffer_build_minutes=15)
+        d = decide_watchdog(
+            default_inputs,
+            now_s=1000.0,
+            state=state,
+            cfg=cfg,
+            minute_of_hour=16,
+        )
+        assert d.write_slot is False
+        assert d.reason == "early_window_no_intervention"
+
+    def test_export_buffer_skips_low_soc(self, default_inputs: BalanceInputs) -> None:
+        """SoC ≤ próg: bez rozładowania pod bufor (obrona SOC wyłączona przez release >> remaining)."""
+        default_inputs.remaining_kwh = 0.02
+        default_inputs.time_to_end_s = 2400
+        default_inputs.pv_w = 3000.0
+        default_inputs.consumption_w = 1000.0
+        default_inputs.soc_pct = 20.0
+        state = WatchdogState(mode="neutral", mode_since_s=None, import_streak=0)
+        cfg = WatchdogConfig(
+            late_window_s=600,
+            export_buffer_build_minutes=15,
+            soc_low_threshold_pct=22.0,
+            soc_low_defense_release_remaining_kwh=999.0,
+        )
+        d = decide_watchdog(
+            default_inputs,
+            now_s=1000.0,
+            state=state,
+            cfg=cfg,
+            minute_of_hour=3,
+        )
+        assert d.write_slot is False
+        assert d.reason == "early_window_no_intervention"
+
+    def test_export_buffer_skips_when_soc_full_band(
+        self, default_inputs: BalanceInputs
+    ) -> None:
+        """Przy SOC w paśmie obrony pełnej bufor nie włącza +% (nawet gdy hold SOC już nie trzyma)."""
+        default_inputs.remaining_kwh = -0.01
+        default_inputs.time_to_end_s = 2400
+        default_inputs.pv_w = 3000.0
+        default_inputs.consumption_w = 1000.0
+        default_inputs.soc_pct = 99.6
+        state = WatchdogState(mode="neutral", mode_since_s=None, import_streak=0)
+        cfg = WatchdogConfig(
+            late_window_s=600,
+            export_buffer_build_minutes=15,
+            soc_full_threshold_pct=99.5,
+            soc_full_defense_early_release_kwh=0.0,
+        )
+        d = decide_watchdog(
+            default_inputs,
+            now_s=1000.0,
+            state=state,
+            cfg=cfg,
+            minute_of_hour=3,
+        )
         assert d.write_slot is False
         assert d.reason == "early_window_no_intervention"
 
