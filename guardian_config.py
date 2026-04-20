@@ -79,11 +79,16 @@ EXPORT_BUFFER_DISCHARGE_PCT = _int_env("EXPORT_BUFFER_DISCHARGE_PCT", 1)
 SOC_FULL_DEFENSE_THRESHOLD_PCT = _float_env("SOC_FULL_DEFENSE_THRESHOLD_PCT", 99.5)
 SOC_FULL_DEFENSE_CHARGE_PCT = _int_env("SOC_FULL_DEFENSE_CHARGE_PCT", -1)
 # Early: 0 = puść obronę przy pierwszym imporcie netto w godzinie (remaining_kwh ≤ 0).
-# Ujemna wartość = toleruj mały import zanim puścisz (np. -0.3).
+# Ujemna = budżet importu [kWh] zanim puścisz obronę (np. -0.3 → puść dopiero przy remaining ≤ -0.3).
 SOC_FULL_DEFENSE_EARLY_RELEASE_KWH = _float_env(
-    "SOC_FULL_DEFENSE_EARLY_RELEASE_KWH", 0.0
+    "SOC_FULL_DEFENSE_EARLY_RELEASE_KWH", -0.3
 )
-SOC_FULL_DEFENSE_LATE_RELEASE_KWH = _float_env("SOC_FULL_DEFENSE_LATE_RELEASE_KWH", 0.1)
+# Late: jak early; w środku „late window” bez ostatniej minuty może być inny (luźniejszy) próg.
+# Domyślnie taki sam jak early — inaczej w :59 late włącza się przy time_to_end≤60 i przy late>early
+# obrona znika przy r≈0 zanim zdążysz przedłużyć slot na nową godzinę.
+SOC_FULL_DEFENSE_LATE_RELEASE_KWH = _float_env(
+    "SOC_FULL_DEFENSE_LATE_RELEASE_KWH", -0.3
+)
 # Pierwsze N minut nowej godziny: tarcza SOC jak po aktywności w ostatnich N minutach poprzedniej godziny.
 SOC_FULL_DEFENSE_CARRYOVER_MINUTES = _int_env("SOC_FULL_DEFENSE_CARRYOVER_MINUTES", 5)
 

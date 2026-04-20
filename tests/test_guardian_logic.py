@@ -476,6 +476,37 @@ class TestWatchdogPolicy:
         d = decide_watchdog(default_inputs, now_s=1000.0, state=state, cfg=cfg)
         assert d.reason != "soc_full_defense_hold"
 
+    def test_soc_full_defense_hour_start_without_carryover_flag(
+        self, default_inputs: BalanceInputs
+    ) -> None:
+        """W :00 remaining=0 bez flagi — nadal carryover (reset bazy godzinowej ≠ puść rozładowanie)."""
+        default_inputs.soc_pct = 100.0
+        default_inputs.time_to_end_s = 3500
+        default_inputs.remaining_kwh = 0.0
+        state = WatchdogState(
+            mode="neutral",
+            mode_since_s=None,
+            import_streak=0,
+            soc_full_defense_carryover=False,
+        )
+        cfg = WatchdogConfig(
+            late_window_s=600,
+            soc_full_threshold_pct=99.5,
+            soc_full_defense_charge_pct=-1,
+            soc_full_defense_early_release_kwh=0.0,
+            soc_full_defense_late_release_kwh=0.1,
+            soc_full_defense_carryover_minutes=5,
+        )
+        d = decide_watchdog(
+            default_inputs,
+            now_s=1000.0,
+            state=state,
+            cfg=cfg,
+            minute_of_hour=0,
+        )
+        assert d.write_slot is True
+        assert d.reason == "soc_full_defense_carryover"
+
     def test_soc_full_defense_carryover_first_minutes_after_hour_reset(
         self, default_inputs: BalanceInputs
     ) -> None:
@@ -534,6 +565,25 @@ class TestWatchdogPolicy:
             minute_of_hour=2,
         )
         assert d.reason != "soc_full_defense_carryover"
+
+    def test_soc_full_defense_last_minute_of_hour_uses_early_release(
+        self, default_inputs: BalanceInputs
+    ) -> None:
+        """W ostatniej minucie (late) nie używaj luźniejszego late, żeby w :59 nadal był hold przy r≈0."""
+        default_inputs.soc_pct = 100.0
+        default_inputs.time_to_end_s = 45.0
+        default_inputs.remaining_kwh = 0.0
+        state = WatchdogState(mode="neutral", mode_since_s=None, import_streak=0)
+        cfg = WatchdogConfig(
+            late_window_s=600,
+            soc_full_threshold_pct=99.5,
+            soc_full_defense_charge_pct=-1,
+            soc_full_defense_early_release_kwh=-0.3,
+            soc_full_defense_late_release_kwh=0.1,
+        )
+        d = decide_watchdog(default_inputs, now_s=1000.0, state=state, cfg=cfg)
+        assert d.write_slot is True
+        assert d.reason == "soc_full_defense_hold"
 
     def test_soc_full_defense_early_tolerates_import_if_release_negative(
         self, default_inputs: BalanceInputs

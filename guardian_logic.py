@@ -8,7 +8,6 @@ Konwencja znaku (ujednolicona z mocą sieci):
 Cel: bilans 0 na koniec godziny. Moc baterii: dodatnia = rozładowanie, ujemna = ładowanie.
 """
 
-import math
 from dataclasses import dataclass
 
 
@@ -69,8 +68,8 @@ class WatchdogConfig:
     charge_min_remaining_kwh: float = 0.05
     soc_full_threshold_pct: float = 99.5
     soc_full_defense_charge_pct: int = -1
-    soc_full_defense_early_release_kwh: float = 0.0
-    soc_full_defense_late_release_kwh: float = 0.1
+    soc_full_defense_early_release_kwh: float = -0.3
+    soc_full_defense_late_release_kwh: float = -0.3
     soc_low_threshold_pct: float = 22.0
     soc_low_defense_charge_pct: int = -1
     # Trzymaj obronę, dopóki remaining_kwh > tego (cel godziny; 0 = zbilansowany).
@@ -268,23 +267,25 @@ def decide_watchdog(
 
     carryover_min = max(1, int(cfg.soc_full_defense_carryover_minutes))
     carryover_window_s = float(carryover_min * 60)
-    soc_full_carryover = (
+    in_soc_full_carryover_window = (
         minute_of_hour is not None
         and int(minute_of_hour) < carryover_min
-        and state.soc_full_defense_carryover
+        and not late
     )
 
     # SOC=100% defense: utrzymuj CHARGE 1% (blokuj discharge) dopóki bilans nie przekroczy progu.
     # Intencja: przy pełnej baterii tryb CHARGE powinien uniemożliwiać rozładowanie,
     # a PV może i tak trafiać do sieci (brak miejsca w baterii).
     if float(inp.soc_pct) >= float(cfg.soc_full_threshold_pct):
-        release_kwh = (
-            float(cfg.soc_full_defense_late_release_kwh)
-            if late
-            else float(cfg.soc_full_defense_early_release_kwh)
-        )
+        rel_e = float(cfg.soc_full_defense_early_release_kwh)
+        rel_l = float(cfg.soc_full_defense_late_release_kwh)
+        # W ostatniej minucie godziny zawsze early: inaczej przy late>early i r≈0 nie ma holdu w :59
+        # i falownik zdąży rozładować zanim cykl w :00 zdąży ponownie ustawić slot.
+        release_kwh = rel_l if late else rel_e
+        if late and float(inp.time_to_end_s) <= 60.0:
+            release_kwh = rel_e
         r = float(inp.remaining_kwh)
-        early_abs = float(cfg.soc_full_defense_early_release_kwh)
+        early_abs = rel_e
         # Trzymaj defense, dopóki remaining_kwh > release_kwh (early: domyślnie >0 = tylko przy netto-eksporcie).
         if r > release_kwh:
             duration_s = min(inp.time_to_end_s, max(60.0, inp.time_to_end_s))
@@ -296,10 +297,13 @@ def decide_watchdog(
                 mode="charge",
                 reason="soc_full_defense_hold",
             )
-        # Po :00 remaining ~0 — kontynuuj tarczę z końcówki poprzedniej godziny (pierwsze N minut).
-        if soc_full_carryover and (
-            r > early_abs
-            or (early_abs >= 0.0 and math.isclose(r, 0.0, abs_tol=1e-9))
+        # Po resecie godziny remaining ~0 — pierwsze N minut: trzymaj obronę dopóki nie ma importu (r < 0),
+        # bez wymogu flagi carryover (unikaj „dołka” w :00 gdy Δ godzinowe jeszcze nie urosło).
+        if (
+            in_soc_full_carryover_window
+            and early_abs >= 0.0
+            and r >= 0.0
+            and r <= release_kwh
         ):
             duration_s = min(inp.time_to_end_s, max(60.0, carryover_window_s))
             return WatchdogDecision(
