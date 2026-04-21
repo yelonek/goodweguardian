@@ -106,6 +106,32 @@ SOC_LOW_DEFENSE_RELEASE_REMAINING_KWH = _float_env(
     "SOC_LOW_DEFENSE_RELEASE_REMAINING_KWH", 0.0
 )
 
+# Nocna rezerwa SOC: w godzinach nocnych blokuj discharge gdy SOC ≤ progu — by zostawić
+# zapas na poranne drogie godziny (po 6:00, zanim wstanie słońce). 0 = wyłączone.
+SOC_NIGHT_RESERVE_PCT = _float_env("SOC_NIGHT_RESERVE_PCT", 0.0)
+SOC_NIGHT_RESERVE_CHARGE_PCT = _int_env("SOC_NIGHT_RESERVE_CHARGE_PCT", -1)
+
+
+def _hours_csv_env(name: str, default: str) -> frozenset[int]:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        raw = default
+    hours: set[int] = set()
+    for part in raw.split(","):
+        s = part.strip()
+        if not s:
+            continue
+        h = int(s)
+        if not 0 <= h <= 23:
+            raise ValueError(f"{name}: godzina poza zakresem 0..23: {h}")
+        hours.add(h)
+    return frozenset(hours)
+
+
+SOC_NIGHT_RESERVE_HOURS = _hours_csv_env(
+    "SOC_NIGHT_RESERVE_HOURS", "22,23,0,1,2,3,4,5"
+)
+
 # Ścieżki – katalog projektu
 PROJECT_ROOT = Path(__file__).resolve().parent
 STATE_DIR = PROJECT_ROOT / "state"

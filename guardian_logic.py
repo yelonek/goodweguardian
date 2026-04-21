@@ -74,6 +74,11 @@ class WatchdogConfig:
     soc_low_defense_charge_pct: int = -1
     # Trzymaj obronę, dopóki remaining_kwh > tego (cel godziny; 0 = zbilansowany).
     soc_low_defense_release_remaining_kwh: float = 0.0
+    # Nocna rezerwa SOC: w wybranych godzinach blokuj rozładowanie gdy SOC ≤ progu.
+    # 0.0 = wyłączone. Domyślne godziny to ciągły blok nocny 22–5 (przed poranną drogą taryfą).
+    soc_night_reserve_pct: float = 0.0
+    soc_night_reserve_charge_pct: int = -1
+    night_reserve_hours: frozenset[int] = frozenset({22, 23, 0, 1, 2, 3, 4, 5})
     # Pierwsze N minut nowej godziny: kontynuuj tarczę SOC, jeśli była aktywna w ostatnich N min poprzedniej.
     soc_full_defense_carryover_minutes: int = 5
     # Bufor eksportu (sieć): pierwsze N min (0 = wył.) przy PV>konsumpcja, dopóki remaining_kwh < target [kWh].
@@ -247,6 +252,7 @@ def decide_watchdog(
     state: WatchdogState,
     cfg: WatchdogConfig,
     minute_of_hour: int | None = None,
+    hour_of_day: int | None = None,
 ) -> WatchdogDecision:
     """Watchdog: pozwól GoodWe działać; interweniuj tylko gdy trzeba, potem wróć do neutral."""
 
@@ -259,6 +265,23 @@ def decide_watchdog(
             duration_s=0.0,
             mode="neutral",
             reason="other_eco_slot_active",
+        )
+
+    # Nocna rezerwa SOC: w godzinach nocnych trzymaj zapas na poranek (przed wschodem słońca).
+    if (
+        hour_of_day is not None
+        and int(hour_of_day) in cfg.night_reserve_hours
+        and float(cfg.soc_night_reserve_pct) > 0.0
+        and float(inp.soc_pct) <= float(cfg.soc_night_reserve_pct)
+    ):
+        duration_s = min(inp.time_to_end_s, max(60.0, inp.time_to_end_s))
+        return WatchdogDecision(
+            write_slot=True,
+            enabled=True,
+            power_pct=int(cfg.soc_night_reserve_charge_pct),
+            duration_s=duration_s,
+            mode="charge",
+            reason="night_soc_reserve_hold",
         )
 
     power_kw = power_needed_kw(inp.remaining_kwh, inp.time_to_end_s)

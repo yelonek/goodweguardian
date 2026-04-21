@@ -41,6 +41,9 @@ from guardian_config import (
     SOC_LOW_DEFENSE_CHARGE_PCT,
     SOC_LOW_DEFENSE_RELEASE_REMAINING_KWH,
     SOC_LOW_DEFENSE_THRESHOLD_PCT,
+    SOC_NIGHT_RESERVE_CHARGE_PCT,
+    SOC_NIGHT_RESERVE_HOURS,
+    SOC_NIGHT_RESERVE_PCT,
     WATCHDOG_MAX_SLOT_MIN,
     WATCHDOG_MIN_DISCHARGE_ASSIST_PCT,
     WATCHDOG_CHARGE_MIN_REMAINING_KWH,
@@ -294,6 +297,9 @@ async def run_one_cycle() -> None:
         soc_low_threshold_pct=float(SOC_LOW_DEFENSE_THRESHOLD_PCT),
         soc_low_defense_charge_pct=int(SOC_LOW_DEFENSE_CHARGE_PCT),
         soc_low_defense_release_remaining_kwh=float(SOC_LOW_DEFENSE_RELEASE_REMAINING_KWH),
+        soc_night_reserve_pct=float(SOC_NIGHT_RESERVE_PCT),
+        soc_night_reserve_charge_pct=int(SOC_NIGHT_RESERVE_CHARGE_PCT),
+        night_reserve_hours=frozenset(SOC_NIGHT_RESERVE_HOURS),
         min_discharge_assist_pct=int(WATCHDOG_MIN_DISCHARGE_ASSIST_PCT),
         charge_min_remaining_kwh=float(WATCHDOG_CHARGE_MIN_REMAINING_KWH),
         soc_full_defense_carryover_minutes=max(1, int(SOC_FULL_DEFENSE_CARRYOVER_MINUTES)),
@@ -308,6 +314,7 @@ async def run_one_cycle() -> None:
         state=wd_state,
         cfg=wd_cfg,
         minute_of_hour=now.minute,
+        hour_of_day=now.hour,
     )
 
     carryover_min = max(1, int(SOC_FULL_DEFENSE_CARRYOVER_MINUTES))

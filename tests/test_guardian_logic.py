@@ -636,3 +636,73 @@ class TestWatchdogPolicy:
         )
         d = decide_watchdog(default_inputs, now_s=1000.0, state=state, cfg=cfg)
         assert d.reason != "soc_low_defense_hold"
+
+    def test_night_soc_reserve_holds_in_night_hour(
+        self, default_inputs: BalanceInputs
+    ) -> None:
+        default_inputs.soc_pct = 40.0
+        default_inputs.time_to_end_s = 2400
+        default_inputs.remaining_kwh = -0.2
+        state = WatchdogState(mode="neutral", mode_since_s=None, import_streak=0)
+        cfg = WatchdogConfig(
+            late_window_s=600,
+            soc_night_reserve_pct=40.0,
+            soc_night_reserve_charge_pct=-1,
+            night_reserve_hours=frozenset({22, 23, 0, 1, 2, 3, 4, 5}),
+        )
+        d = decide_watchdog(
+            default_inputs,
+            now_s=1000.0,
+            state=state,
+            cfg=cfg,
+            hour_of_day=3,
+        )
+        assert d.write_slot is True
+        assert d.enabled is True
+        assert d.power_pct == -1
+        assert d.mode == "charge"
+        assert d.reason == "night_soc_reserve_hold"
+
+    def test_night_soc_reserve_inactive_outside_night_hours(
+        self, default_inputs: BalanceInputs
+    ) -> None:
+        default_inputs.soc_pct = 40.0
+        default_inputs.time_to_end_s = 2400
+        default_inputs.remaining_kwh = -0.2
+        state = WatchdogState(mode="neutral", mode_since_s=None, import_streak=0)
+        cfg = WatchdogConfig(
+            late_window_s=600,
+            soc_night_reserve_pct=40.0,
+            soc_night_reserve_charge_pct=-1,
+            night_reserve_hours=frozenset({22, 23, 0, 1, 2, 3, 4, 5}),
+        )
+        d = decide_watchdog(
+            default_inputs,
+            now_s=1000.0,
+            state=state,
+            cfg=cfg,
+            hour_of_day=10,
+        )
+        assert d.reason != "night_soc_reserve_hold"
+
+    def test_night_soc_reserve_inactive_when_soc_above_threshold(
+        self, default_inputs: BalanceInputs
+    ) -> None:
+        default_inputs.soc_pct = 55.0
+        default_inputs.time_to_end_s = 2400
+        default_inputs.remaining_kwh = -0.2
+        state = WatchdogState(mode="neutral", mode_since_s=None, import_streak=0)
+        cfg = WatchdogConfig(
+            late_window_s=600,
+            soc_night_reserve_pct=40.0,
+            soc_night_reserve_charge_pct=-1,
+            night_reserve_hours=frozenset({22, 23, 0, 1, 2, 3, 4, 5}),
+        )
+        d = decide_watchdog(
+            default_inputs,
+            now_s=1000.0,
+            state=state,
+            cfg=cfg,
+            hour_of_day=3,
+        )
+        assert d.reason != "night_soc_reserve_hold"
