@@ -371,6 +371,38 @@ class TestWatchdogPolicy:
         d = decide_watchdog(default_inputs, now_s=1000.0, state=state, cfg=cfg)
         assert d.write_slot is True
 
+    def test_emergency_import_ignored_while_hour_balance_positive(
+        self, default_inputs: BalanceInputs
+    ) -> None:
+        default_inputs.remaining_kwh = 0.12
+        default_inputs.time_to_end_s = 1800
+        default_inputs.grid_w = -800
+        default_inputs.pv_w = 9000
+        default_inputs.consumption_w = 6000
+        state = WatchdogState(mode="neutral", mode_since_s=None, import_streak=3)
+        cfg = WatchdogConfig(late_window_s=600, import_streak_min=3)
+        d = decide_watchdog(default_inputs, now_s=1000.0, state=state, cfg=cfg)
+        assert d.write_slot is False
+        assert d.reason == "early_window_no_intervention"
+
+    def test_emergency_import_never_commands_charge(
+        self, default_inputs: BalanceInputs
+    ) -> None:
+        default_inputs.remaining_kwh = -0.01
+        default_inputs.time_to_end_s = 2400
+        default_inputs.grid_w = -800
+        default_inputs.pv_w = 9000
+        default_inputs.consumption_w = 1000
+        state = WatchdogState(mode="neutral", mode_since_s=None, import_streak=3)
+        cfg = WatchdogConfig(
+            late_window_s=600,
+            import_streak_min=3,
+            min_discharge_assist_pct=0,
+        )
+        d = decide_watchdog(default_inputs, now_s=1000.0, state=state, cfg=cfg)
+        assert d.write_slot is False
+        assert d.reason == "direction_guard_neutral"
+
     def test_emergency_unrecoverable_triggers_even_early(
         self, default_inputs: BalanceInputs
     ) -> None:
@@ -420,7 +452,7 @@ class TestWatchdogPolicy:
         )
         d = decide_watchdog(default_inputs, now_s=1000.0, state=state, cfg=cfg)
         assert d.write_slot is False
-        assert d.reason == "direction_guard_neutral"
+        assert d.reason == "late_but_below_threshold"
 
     def test_direction_guard_neutral_when_export_assist_disabled(
         self, default_inputs: BalanceInputs

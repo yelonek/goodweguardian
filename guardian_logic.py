@@ -388,8 +388,12 @@ def decide_watchdog(
                 reason="soc_low_defense_hold",
             )
 
-    # Awaryjny watchdog importu (drogi import): streak gdy import poniżej progu
-    emergency_import = state.import_streak >= cfg.import_streak_min
+    # Awaryjny watchdog importu (drogi import): reaguj tylko gdy godzina jest już realnie w imporcie netto.
+    # Sam chwilowy import z sieci nie może wymuszać charge przy dodatnim bilansie godziny.
+    emergency_import = (
+        state.import_streak >= cfg.import_streak_min
+        and float(inp.remaining_kwh) < 0.0
+    )
 
     # Awaryjny watchdog „unrecoverable”: bilans energii już nie do odrobienia w samym late window
     # E_max_late ≈ P_battery * T_late
@@ -472,6 +476,10 @@ def decide_watchdog(
     if target_pct < 0 and float(inp.remaining_kwh) <= float(cfg.charge_min_remaining_kwh):
         target_pct = 0
     elif inp.remaining_kwh > 0 and target_pct > 0:
+        target_pct = 0
+
+    # Emergency import ma pomagać baterią (discharge), nigdy wymuszać ładowania.
+    if emergency_import and target_pct < 0:
         target_pct = 0
 
     min_discharge_assist = max(0, min(100, int(cfg.min_discharge_assist_pct)))
