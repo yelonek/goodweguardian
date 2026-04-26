@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+import json
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, Field
@@ -55,6 +56,48 @@ def append_cycle_record(record: CycleTelemetryRecord) -> None:
             f.flush()
     except OSError as e:
         log.warning("telemetry append failed: %s", e)
+
+
+def recent_consumption_average_w(now: datetime, window_minutes: int) -> float | None:
+    """Średnia consumption_w z ostatnich N minut telemetrii."""
+    if window_minutes <= 0:
+        return None
+
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=window_minutes)
+    local_dates = {
+        now.date().isoformat(),
+        (now - timedelta(days=1)).date().isoformat(),
+    }
+    total = 0.0
+    count = 0
+
+    for local_date in local_dates:
+        path = TELEMETRY_DIR / f"telemetry_{local_date}.jsonl"
+        if not path.exists():
+            continue
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        data = json.loads(line)
+                        ts = datetime.fromisoformat(str(data["ts_utc"]))
+                        if ts.tzinfo is None:
+                            ts = ts.replace(tzinfo=timezone.utc)
+                        if ts < cutoff:
+                            continue
+                        value = float(data["consumption_w"])
+                    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                        continue
+                    total += value
+                    count += 1
+        except OSError:
+            logging.getLogger("guardian").debug(
+                "telemetry average read failed: %s", path
+            )
+
+    if count == 0:
+        return None
+    return total / count
 
 
 def build_ts_and_calendar(now: datetime) -> tuple[str, str, int, int, int, bool]:

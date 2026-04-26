@@ -621,6 +621,101 @@ class TestWatchdogPolicy:
         assert d.power_pct == -1
         assert d.reason == "soc_low_defense_hold"
 
+    def test_soc_low_discharge_cap_uses_recent_average_regardless_of_balance(
+        self, default_inputs: BalanceInputs
+    ) -> None:
+        default_inputs.soc_pct = 18.0
+        default_inputs.time_to_end_s = 2400
+        default_inputs.remaining_kwh = -0.20
+        default_inputs.pv_w = 100.0
+        default_inputs.consumption_w = 1000.0
+        default_inputs.low_soc_discharge_target_w = 420.0
+        state = WatchdogState(mode="neutral", mode_since_s=None, import_streak=0)
+        cfg = WatchdogConfig(late_window_s=600, soc_low_threshold_pct=20.0)
+        d = decide_watchdog(default_inputs, now_s=1000.0, state=state, cfg=cfg)
+        assert d.write_slot is True
+        assert d.power_pct == 6
+        assert d.mode == "discharge"
+        assert d.reason == "soc_low_discharge_cap"
+
+    def test_soc_low_discharge_cap_allows_charging_when_pv_surplus(
+        self, default_inputs: BalanceInputs
+    ) -> None:
+        default_inputs.soc_pct = 15.0
+        default_inputs.time_to_end_s = 2400
+        default_inputs.remaining_kwh = 3.0
+        default_inputs.pv_w = 6000.0
+        default_inputs.consumption_w = 500.0
+        default_inputs.low_soc_discharge_target_w = 500.0
+        state = WatchdogState(mode="neutral", mode_since_s=None, import_streak=0)
+        cfg = WatchdogConfig(late_window_s=600, soc_low_threshold_pct=20.0)
+        d = decide_watchdog(default_inputs, now_s=1000.0, state=state, cfg=cfg)
+        assert d.write_slot is False
+        assert d.mode == "neutral"
+        assert d.reason == "soc_low_pv_surplus_no_discharge"
+
+    def test_soc_low_discharge_cap_is_limited_by_load_deficit(
+        self, default_inputs: BalanceInputs
+    ) -> None:
+        default_inputs.soc_pct = 18.0
+        default_inputs.time_to_end_s = 2400
+        default_inputs.remaining_kwh = -0.20
+        default_inputs.pv_w = 700.0
+        default_inputs.consumption_w = 1000.0
+        default_inputs.low_soc_discharge_target_w = 700.0
+        state = WatchdogState(mode="neutral", mode_since_s=None, import_streak=0)
+        cfg = WatchdogConfig(late_window_s=600, soc_low_threshold_pct=20.0)
+        d = decide_watchdog(default_inputs, now_s=1000.0, state=state, cfg=cfg)
+        assert d.write_slot is True
+        assert d.power_pct == 4
+        assert d.reason == "soc_low_discharge_cap"
+
+    def test_soc_low_discharge_cap_can_override_other_eco_slot(
+        self, default_inputs: BalanceInputs
+    ) -> None:
+        default_inputs.soc_pct = 18.0
+        default_inputs.time_to_end_s = 2400
+        default_inputs.remaining_kwh = 0.10
+        default_inputs.pv_w = 100.0
+        default_inputs.consumption_w = 1000.0
+        default_inputs.low_soc_discharge_target_w = 350.0
+        default_inputs.other_eco_slot_active = True
+        state = WatchdogState(mode="neutral", mode_since_s=None, import_streak=0)
+        cfg = WatchdogConfig(late_window_s=600, soc_low_threshold_pct=20.0)
+        d = decide_watchdog(default_inputs, now_s=1000.0, state=state, cfg=cfg)
+        assert d.write_slot is True
+        assert d.power_pct == 5
+        assert d.reason == "soc_low_discharge_cap"
+
+    def test_night_soc_reserve_has_priority_over_low_soc_discharge_cap(
+        self, default_inputs: BalanceInputs
+    ) -> None:
+        default_inputs.soc_pct = 18.0
+        default_inputs.time_to_end_s = 2400
+        default_inputs.remaining_kwh = -0.20
+        default_inputs.pv_w = 100.0
+        default_inputs.consumption_w = 1000.0
+        default_inputs.low_soc_discharge_target_w = 420.0
+        state = WatchdogState(mode="neutral", mode_since_s=None, import_streak=0)
+        cfg = WatchdogConfig(
+            late_window_s=600,
+            soc_low_threshold_pct=20.0,
+            soc_night_reserve_pct=20.0,
+            soc_night_reserve_charge_pct=-1,
+            night_reserve_hours=frozenset({22, 23, 0, 1, 2, 3, 4, 5}),
+        )
+        d = decide_watchdog(
+            default_inputs,
+            now_s=1000.0,
+            state=state,
+            cfg=cfg,
+            hour_of_day=3,
+        )
+        assert d.write_slot is True
+        assert d.power_pct == -1
+        assert d.mode == "charge"
+        assert d.reason == "night_soc_reserve_hold"
+
     def test_soc_low_defense_releases_when_remaining_at_or_below_hour_target(
         self, default_inputs: BalanceInputs
     ) -> None:

@@ -41,6 +41,9 @@ from guardian_config import (
     SOC_LOW_DEFENSE_CHARGE_PCT,
     SOC_LOW_DEFENSE_RELEASE_REMAINING_KWH,
     SOC_LOW_DEFENSE_THRESHOLD_PCT,
+    SOC_LOW_DISCHARGE_AVG_MINUTES,
+    SOC_LOW_DISCHARGE_FALLBACK_W,
+    SOC_LOW_DISCHARGE_MAX_W,
     SOC_NIGHT_RESERVE_CHARGE_PCT,
     SOC_NIGHT_RESERVE_HOURS,
     SOC_NIGHT_RESERVE_PCT,
@@ -84,7 +87,12 @@ from sensor_mapping import (
     HOUSE_CONSUMPTION_POWER,
     PV_POWER,
 )
-from telemetry_store import CycleTelemetryRecord, append_cycle_record, build_ts_and_calendar
+from telemetry_store import (
+    CycleTelemetryRecord,
+    append_cycle_record,
+    build_ts_and_calendar,
+    recent_consumption_average_w,
+)
 
 
 def _watchdog_state_dict(wd: WatchdogState) -> dict:
@@ -246,6 +254,15 @@ async def run_one_cycle() -> None:
     slot_active = _slot_active(current_slot, now)
     current_pct = _current_ecoslot_pct(current_slot)
     other_eco_active = await _any_other_eco_slot_active(inverter, slot_id, now)
+    low_soc_discharge_target_w = None
+    if soc_pct <= float(SOC_LOW_DEFENSE_THRESHOLD_PCT):
+        avg_window_min = int(SOC_LOW_DISCHARGE_AVG_MINUTES)
+        recent_avg_w = recent_consumption_average_w(now, avg_window_min)
+        if recent_avg_w is None and float(SOC_LOW_DISCHARGE_FALLBACK_W) > 0.0:
+            recent_avg_w = float(SOC_LOW_DISCHARGE_FALLBACK_W)
+        if recent_avg_w is not None and recent_avg_w > 0.0:
+            max_w = float(SOC_LOW_DISCHARGE_MAX_W)
+            low_soc_discharge_target_w = min(recent_avg_w, max_w) if max_w > 0.0 else recent_avg_w
 
     inp = BalanceInputs(
         remaining_kwh=remaining_kwh,
@@ -264,6 +281,7 @@ async def run_one_cycle() -> None:
         watts_per_percent=WATTS_PER_PERCENT,
         balancing_slot_time_active=slot_active,
         other_eco_slot_active=other_eco_active,
+        low_soc_discharge_target_w=low_soc_discharge_target_w,
     )
 
     # Watchdog state (anti flip-flop + streak importu)
@@ -465,6 +483,7 @@ async def run_one_cycle() -> None:
         "soc_full_defense_hold",
         "soc_full_defense_carryover",
         "soc_low_defense_hold",
+        "soc_low_discharge_cap",
     ):
         MAX_SLOT_MIN = max(1, int(SOC_FULL_DEFENSE_MAX_SLOT_MIN))
     else:

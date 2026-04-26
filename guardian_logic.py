@@ -37,6 +37,8 @@ class BalanceInputs:
     balancing_slot_time_active: bool = True
     # Inny eco_mode_1..4 (nie balansujący) ma teraz on_off i okno czasu — nie nadpisujemy slotu balansu.
     other_eco_slot_active: bool = False
+    # Przy niskim SOC: łagodny limit rozładowania liczony z historii zużycia domu [W].
+    low_soc_discharge_target_w: float | None = None
 
 
 @dataclass
@@ -72,7 +74,7 @@ class WatchdogConfig:
     soc_full_defense_late_release_kwh: float = -0.3
     soc_low_threshold_pct: float = 22.0
     soc_low_defense_charge_pct: int = -1
-    # Trzymaj obronę, dopóki remaining_kwh > tego (cel godziny; 0 = zbilansowany).
+    # Fallback legacy: trzymaj obronę CHARGE, dopóki remaining_kwh > tego (cel godziny; 0 = zbilansowany).
     soc_low_defense_release_remaining_kwh: float = 0.0
     # Nocna rezerwa SOC: w wybranych godzinach blokuj rozładowanie gdy SOC ≤ progu.
     # 0.0 = wyłączone. Domyślne godziny to ciągły blok nocny 22–5 (przed poranną drogą taryfą).
@@ -256,8 +258,14 @@ def decide_watchdog(
 ) -> WatchdogDecision:
     """Watchdog: pozwól GoodWe działać; interweniuj tylko gdy trzeba, potem wróć do neutral."""
 
-    # Nigdy nie nadpisuj, gdy inny eco-slot aktywny.
-    if inp.other_eco_slot_active:
+    low_soc_discharge_cap_active = (
+        float(inp.soc_pct) <= float(cfg.soc_low_threshold_pct)
+        and inp.low_soc_discharge_target_w is not None
+        and float(inp.low_soc_discharge_target_w) > 0.0
+    )
+
+    # Standardowo nie nadpisuj innego eco-slotu. Wyjątek: low-SOC cap chroni LFP przed skokami obciążenia.
+    if inp.other_eco_slot_active and not low_soc_discharge_cap_active:
         return WatchdogDecision(
             write_slot=False,
             enabled=False,
@@ -338,8 +346,36 @@ def decide_watchdog(
                 reason="soc_full_defense_carryover",
             )
 
-    # SOC niski: blokuj rozładowanie dopóki bilans godzinowy nie zejdzie do celu (remaining ≤ prog).
+    # SOC niski: ogranicz rozładowanie do spokojnej mocy bazowej, niezależnie od bilansu godzinowego.
+    # Skoki obciążenia (np. czajnik) mają pójść z sieci, a nie wymuszać duży prąd z LFP przy niskim SOC.
     if float(inp.soc_pct) <= float(cfg.soc_low_threshold_pct):
+        low_soc_target_w = inp.low_soc_discharge_target_w
+        if low_soc_discharge_cap_active:
+            load_deficit_w = float(inp.consumption_w) - float(inp.pv_w)
+            if load_deficit_w <= 0.0:
+                return WatchdogDecision(
+                    write_slot=False,
+                    enabled=False,
+                    power_pct=0,
+                    duration_s=0.0,
+                    mode="neutral",
+                    reason="soc_low_pv_surplus_no_discharge",
+                )
+            target_w = min(float(low_soc_target_w), load_deficit_w, float(inp.p_battery_w))
+            target_pct = max(
+                1,
+                min(100, int(round(target_w / float(inp.watts_per_percent)))),
+            )
+            duration_s = min(inp.time_to_end_s, max(60.0, inp.time_to_end_s))
+            return WatchdogDecision(
+                write_slot=True,
+                enabled=True,
+                power_pct=target_pct,
+                duration_s=duration_s,
+                mode="discharge",
+                reason="soc_low_discharge_cap",
+            )
+        # Legacy fallback: jeśli nie ma historii zużycia, zachowaj dawną obronę CHARGE.
         release_kwh = float(cfg.soc_low_defense_release_remaining_kwh)
         if float(inp.remaining_kwh) > release_kwh:
             duration_s = min(inp.time_to_end_s, max(60.0, inp.time_to_end_s))
