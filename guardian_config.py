@@ -159,6 +159,11 @@ GUARDIAN_CONTROL_OVERRIDE_PATH = Path(
 # API dashboardu — pusty = endpointy /api/guardian/control wyłączone (503)
 GUARDIAN_API_KEY = (os.environ.get("GUARDIAN_API_KEY") or "").strip()
 
+# Proxy endpoints (lokalna sieć): RCE i PV forecast (Solcast proxy).
+RCE_PROXY_BASE_URL = (os.environ.get("RCE_PROXY_BASE_URL") or "").strip().rstrip("/")
+SOLCAST_PROXY_BASE_URL = (os.environ.get("SOLCAST_PROXY_BASE_URL") or "").strip().rstrip("/")
+PROXY_HTTP_TIMEOUT_S = _float_env("PROXY_HTTP_TIMEOUT_S", 10.0)
+
 
 def get_slot_id() -> str:
     """Zwraca eco_mode_1..4 dla slotu balansującego."""
