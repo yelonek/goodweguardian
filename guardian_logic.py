@@ -353,6 +353,19 @@ def decide_watchdog(
         if low_soc_discharge_cap_active:
             load_deficit_w = float(inp.consumption_w) - float(inp.pv_w)
             if load_deficit_w <= 0.0:
+                if float(inp.remaining_kwh) < 0.0:
+                    # Priorytet bilansu godziny: przy netto imporcie nie pozwalaj przejść w neutral,
+                    # bo GoodWe może wtedy ładować baterię z nadwyżki PV zamiast oddawać do sieci.
+                    target_pct = max(1, int(cfg.min_discharge_assist_pct))
+                    duration_s = min(inp.time_to_end_s, max(60.0, inp.time_to_end_s))
+                    return WatchdogDecision(
+                        write_slot=True,
+                        enabled=True,
+                        power_pct=target_pct,
+                        duration_s=duration_s,
+                        mode="discharge",
+                        reason="soc_low_pv_surplus_balance_priority",
+                    )
                 return WatchdogDecision(
                     write_slot=False,
                     enabled=False,

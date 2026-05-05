@@ -686,6 +686,25 @@ class TestWatchdogPolicy:
         assert d.mode == "neutral"
         assert d.reason == "soc_low_pv_surplus_no_discharge"
 
+    def test_soc_low_pv_surplus_prioritizes_negative_hour_balance(
+        self, default_inputs: BalanceInputs
+    ) -> None:
+        default_inputs.soc_pct = 15.0
+        default_inputs.time_to_end_s = 2400
+        default_inputs.remaining_kwh = -0.20
+        default_inputs.pv_w = 6000.0
+        default_inputs.consumption_w = 500.0
+        default_inputs.low_soc_discharge_target_w = 500.0
+        state = WatchdogState(mode="neutral", mode_since_s=None, import_streak=0)
+        cfg = WatchdogConfig(
+            late_window_s=600, soc_low_threshold_pct=20.0, min_discharge_assist_pct=1
+        )
+        d = decide_watchdog(default_inputs, now_s=1000.0, state=state, cfg=cfg)
+        assert d.write_slot is True
+        assert d.power_pct == 1
+        assert d.mode == "discharge"
+        assert d.reason == "soc_low_pv_surplus_balance_priority"
+
     def test_soc_low_discharge_cap_is_limited_by_load_deficit(
         self, default_inputs: BalanceInputs
     ) -> None:
