@@ -19,6 +19,8 @@ import guardian_config as guardian_cfg
 from energy_pricing import pricing_day_breakdown
 from guardian_config import LOG_DIR, TELEMETRY_DIR
 from guardian_control import effective_control_enabled, write_control_override
+from baseline_info import baseline_spec
+from load_forecast import forecast_load_hours, run_load_forecast_backtest
 from pv_forecast import fetch_hourly_pv_forecast
 
 app = FastAPI(title="GoodWeGuardian Dashboard", version="0.1.0")
@@ -445,6 +447,22 @@ def index() -> str:
     <tbody id="pvRows"></tbody>
   </table>
 
+  <h2>Load forecast (next 24h)</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>date</th>
+        <th>hour</th>
+        <th>p25 [kWh]</th>
+        <th>p50 [kWh]</th>
+        <th>p75 [kWh]</th>
+        <th>samples</th>
+        <th>source</th>
+      </tr>
+    </thead>
+    <tbody id="loadRows"></tbody>
+  </table>
+
   <h2>History (newest first)</h2>
   <table>
     <thead>
@@ -505,17 +523,19 @@ document.getElementById("enableControl").addEventListener("click", () => putCont
 document.getElementById("disableControl").addEventListener("click", () => putControl(false));
 
 async function refresh() {
-  const [statusRes, histRes, pricingRes, pvRes, kpiRes] = await Promise.all([
+  const [statusRes, histRes, pricingRes, pvRes, loadRes, kpiRes] = await Promise.all([
     fetch("/api/status"),
     fetch("/api/history?limit=200"),
     fetch("/api/pricing/day"),
     fetch("/api/pv-forecast?hours=24"),
+    fetch("/api/load-forecast?hours=24"),
     fetch("/api/kpi/today"),
   ]);
   const status = await statusRes.json();
   const hist = await histRes.json();
   const pricing = await pricingRes.json();
   const pv = await pvRes.json();
+  const load = await loadRes.json();
   const kpi = await kpiRes.json();
 
   document.getElementById("logPath").textContent = status.log_path || "—";
@@ -575,6 +595,17 @@ async function refresh() {
     </tr>`).join("");
   document.getElementById("pvRows").innerHTML = pvRows;
 
+  const loadRows = (load.hours || []).slice(0, 24).map(h => `<tr>
+      <td>${fmt(h.date)}</td>
+      <td>${String(h.hour).padStart(2, "0")}:00</td>
+      <td>${Number(h.load_kwh_p25 || 0).toFixed(3)}</td>
+      <td>${Number(h.load_kwh_p50 || 0).toFixed(3)}</td>
+      <td>${Number(h.load_kwh_p75 || 0).toFixed(3)}</td>
+      <td>${fmt(h.samples)}</td>
+      <td>${fmt(h.source)}</td>
+    </tr>`).join("");
+  document.getElementById("loadRows").innerHTML = loadRows;
+
   const rows = (hist.rows || []).map(r => {
     const f = r.fields || {};
     const cmd = (f.cmd_enabled === null) ? "—" : `${f.cmd_enabled ? "On" : "Off"} ${fmt(f.cmd_pct)}% ${fmt(f.cmd_duration_s)}s`;
@@ -612,6 +643,11 @@ def api_history(limit: int = Query(default=200, ge=1, le=5000)) -> JSONResponse:
     return JSONResponse(payload)
 
 
+@app.get("/api/baseline")
+def api_baseline() -> JSONResponse:
+    return JSONResponse(baseline_spec())
+
+
 @app.get("/api/status")
 def api_status() -> JSONResponse:
     rows = read_history(limit=1)
@@ -646,6 +682,33 @@ def api_pv_forecast(hours: int = Query(default=48, ge=1, le=96)) -> JSONResponse
             status_code=503,
             detail=f"Solcast proxy error: {e}",
         ) from e
+    return JSONResponse(payload)
+
+
+@app.get("/api/load-forecast")
+def api_load_forecast(
+    hours: int = Query(default=24, ge=1, le=168),
+    lookback_days: int = Query(default=28, ge=7, le=120),
+) -> JSONResponse:
+    payload = forecast_load_hours(hours=hours, lookback_days=lookback_days)
+    return JSONResponse(payload)
+
+
+@app.get("/api/load-forecast/backtest")
+def api_load_forecast_backtest(
+    lookback_days: int = Query(default=28, ge=7, le=120),
+    max_days: int | None = Query(
+        default=None,
+        ge=1,
+        le=366,
+        description="Ostatnie N dni; None = wszystkie dni w cache",
+    ),
+) -> JSONResponse:
+    payload = run_load_forecast_backtest(
+        lookback_days=lookback_days,
+        max_days=max_days,
+        progress=False,
+    )
     return JSONResponse(payload)
 
 
