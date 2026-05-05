@@ -484,7 +484,6 @@ class TestWatchdogPolicy:
             soc_full_threshold_pct=99.5,
             soc_full_defense_charge_pct=-1,
             soc_full_defense_early_release_kwh=0.0,
-            soc_full_defense_late_release_kwh=0.1,
         )
         d = decide_watchdog(default_inputs, now_s=1000.0, state=state, cfg=cfg)
         assert d.write_slot is True
@@ -503,7 +502,6 @@ class TestWatchdogPolicy:
             soc_full_threshold_pct=99.5,
             soc_full_defense_charge_pct=-1,
             soc_full_defense_early_release_kwh=0.0,
-            soc_full_defense_late_release_kwh=0.1,
         )
         d = decide_watchdog(default_inputs, now_s=1000.0, state=state, cfg=cfg)
         assert d.reason != "soc_full_defense_hold"
@@ -526,7 +524,6 @@ class TestWatchdogPolicy:
             soc_full_threshold_pct=99.5,
             soc_full_defense_charge_pct=-1,
             soc_full_defense_early_release_kwh=0.0,
-            soc_full_defense_late_release_kwh=0.1,
             soc_full_defense_carryover_minutes=5,
         )
         d = decide_watchdog(
@@ -557,7 +554,6 @@ class TestWatchdogPolicy:
             soc_full_threshold_pct=99.5,
             soc_full_defense_charge_pct=-1,
             soc_full_defense_early_release_kwh=0.0,
-            soc_full_defense_late_release_kwh=0.1,
             soc_full_defense_carryover_minutes=5,
         )
         d = decide_watchdog(
@@ -587,7 +583,6 @@ class TestWatchdogPolicy:
             soc_full_threshold_pct=99.5,
             soc_full_defense_charge_pct=-1,
             soc_full_defense_early_release_kwh=0.0,
-            soc_full_defense_late_release_kwh=0.1,
         )
         d = decide_watchdog(
             default_inputs,
@@ -611,7 +606,6 @@ class TestWatchdogPolicy:
             soc_full_threshold_pct=99.5,
             soc_full_defense_charge_pct=-1,
             soc_full_defense_early_release_kwh=-0.3,
-            soc_full_defense_late_release_kwh=0.1,
         )
         d = decide_watchdog(default_inputs, now_s=1000.0, state=state, cfg=cfg)
         assert d.write_slot is True
@@ -630,10 +624,26 @@ class TestWatchdogPolicy:
             soc_full_threshold_pct=99.5,
             soc_full_defense_charge_pct=-1,
             soc_full_defense_early_release_kwh=-0.3,
-            soc_full_defense_late_release_kwh=0.1,
         )
         d = decide_watchdog(default_inputs, now_s=1000.0, state=state, cfg=cfg)
         assert d.reason == "soc_full_defense_hold"
+
+    def test_soc_full_defense_late_releases_to_balance_zero(
+        self, default_inputs: BalanceInputs
+    ) -> None:
+        """W late window SOC full-defense ma puścić hold już przy netto imporcie (r<0)."""
+        default_inputs.soc_pct = 100.0
+        default_inputs.time_to_end_s = 300.0  # late
+        default_inputs.remaining_kwh = -0.10
+        state = WatchdogState(mode="neutral", mode_since_s=None, import_streak=0)
+        cfg = WatchdogConfig(
+            late_window_s=600,
+            soc_full_threshold_pct=99.5,
+            soc_full_defense_charge_pct=-1,
+            soc_full_defense_early_release_kwh=-0.3,
+        )
+        d = decide_watchdog(default_inputs, now_s=1000.0, state=state, cfg=cfg)
+        assert d.reason != "soc_full_defense_hold"
 
     def test_soc_low_defense_holds_while_remaining_above_hour_target(
         self, default_inputs: BalanceInputs

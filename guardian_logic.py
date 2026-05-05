@@ -71,7 +71,6 @@ class WatchdogConfig:
     soc_full_threshold_pct: float = 99.5
     soc_full_defense_charge_pct: int = -1
     soc_full_defense_early_release_kwh: float = -0.3
-    soc_full_defense_late_release_kwh: float = -0.3
     soc_low_threshold_pct: float = 22.0
     soc_low_defense_charge_pct: int = -1
     # Fallback legacy: trzymaj obronę CHARGE, dopóki remaining_kwh > tego (cel godziny; 0 = zbilansowany).
@@ -309,10 +308,9 @@ def decide_watchdog(
     # a PV może i tak trafiać do sieci (brak miejsca w baterii).
     if float(inp.soc_pct) >= float(cfg.soc_full_threshold_pct):
         rel_e = float(cfg.soc_full_defense_early_release_kwh)
-        rel_l = float(cfg.soc_full_defense_late_release_kwh)
-        # W ostatniej minucie godziny zawsze early: inaczej przy late>early i r≈0 nie ma holdu w :59
-        # i falownik zdąży rozładować zanim cykl w :00 zdąży ponownie ustawić slot.
-        release_kwh = rel_l if late else rel_e
+        # Late window ma priorytet domknięcia bilansu godziny:
+        # puść defense już przy r<=0 (net import), niezależnie od tolerancji "early".
+        release_kwh = 0.0 if late else rel_e
         if late and float(inp.time_to_end_s) <= 60.0:
             release_kwh = rel_e
         r = float(inp.remaining_kwh)
