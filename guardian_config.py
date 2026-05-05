@@ -74,14 +74,14 @@ EXPORT_BUFFER_BUILD_MINUTES = _int_env("EXPORT_BUFFER_BUILD_MINUTES", 15)
 EXPORT_BUFFER_TARGET_KWH = _float_env("EXPORT_BUFFER_TARGET_KWH", 0.1)
 EXPORT_BUFFER_DISCHARGE_PCT = _int_env("EXPORT_BUFFER_DISCHARGE_PCT", 1)
 
-# SOC=100% “battery defense”: utrzymuj CHARGE 1% (blokuj discharge) dopóki bilans nie jest „wystarczająco zły”.
-# Early window może tolerować mały import (ujemny próg), late window zawsze domyka bilans do 0.
+# SOC=100% “battery defense”: utrzymuj CHARGE 1% (blokuj discharge), dopóki bilans mocy nie jest „wystarczająco zły”.
+# Wyjście z obrony pełnej sterowane jest progiem mocy bilansu (moc_bilans [kW]), nie energią godzinową.
 SOC_FULL_DEFENSE_THRESHOLD_PCT = _float_env("SOC_FULL_DEFENSE_THRESHOLD_PCT", 99.5)
 SOC_FULL_DEFENSE_CHARGE_PCT = _int_env("SOC_FULL_DEFENSE_CHARGE_PCT", -1)
-# Early: 0 = puść obronę przy pierwszym imporcie netto w godzinie (remaining_kwh ≤ 0).
-# Ujemna = budżet importu [kWh] zanim puścisz obronę (np. -0.3 → puść dopiero przy remaining ≤ -0.3).
-SOC_FULL_DEFENSE_EARLY_RELEASE_KWH = _float_env(
-    "SOC_FULL_DEFENSE_EARLY_RELEASE_KWH", -0.3
+# Próg mocy bilansu [kW], powyżej którego wyłączamy obronę pełną przy netto imporcie.
+# Np. 0.5 = puść SOC defense, gdy potrzeba ≥0.5kW wyrównania (moc_bilans ~ -0.5kW).
+SOC_FULL_DEFENSE_RELEASE_POWER_KW = _float_env(
+    "SOC_FULL_DEFENSE_RELEASE_POWER_KW", 0.5
 )
 # Pierwsze N minut nowej godziny: tarcza SOC jak po aktywności w ostatnich N minutach poprzedniej godziny.
 SOC_FULL_DEFENSE_CARRYOVER_MINUTES = _int_env("SOC_FULL_DEFENSE_CARRYOVER_MINUTES", 5)

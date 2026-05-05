@@ -70,7 +70,8 @@ class WatchdogConfig:
     charge_min_remaining_kwh: float = 0.05
     soc_full_threshold_pct: float = 99.5
     soc_full_defense_charge_pct: int = -1
-    soc_full_defense_early_release_kwh: float = -0.3
+    # Próg mocy bilansu [kW] przy netto imporcie, powyżej którego wychodzimy z obrony pełnej SOC.
+    soc_full_defense_release_power_kw: float = 0.5
     soc_low_threshold_pct: float = 22.0
     soc_low_defense_charge_pct: int = -1
     # Fallback legacy: trzymaj obronę CHARGE, dopóki remaining_kwh > tego (cel godziny; 0 = zbilansowany).
@@ -303,37 +304,16 @@ def decide_watchdog(
         and not late
     )
 
-    # SOC=100% defense: utrzymuj CHARGE 1% (blokuj discharge) dopóki bilans nie przekroczy progu.
-    # Intencja: przy pełnej baterii tryb CHARGE powinien uniemożliwiać rozładowanie,
-    # a PV może i tak trafiać do sieci (brak miejsca w baterii).
+    # SOC=100% defense: utrzymuj CHARGE 1% (blokuj discharge), dopóki bilans mocy
+    # nie przekroczy progu. W late window:
+    # - gdy remaining_kwh > 0 (nadwyżka eksportu energii) nadal trzymaj defense,
+    # - gdy remaining_kwh <= 0 priorytet ma domknięcie energii (wyjątek: ostatnia minuta, patrz niżej).
     if float(inp.soc_pct) >= float(cfg.soc_full_threshold_pct):
-        rel_e = float(cfg.soc_full_defense_early_release_kwh)
-        # Late window ma priorytet domknięcia bilansu godziny:
-        # puść defense już przy r<=0 (net import), niezależnie od tolerancji "early".
-        release_kwh = 0.0 if late else rel_e
-        if late and float(inp.time_to_end_s) <= 60.0:
-            release_kwh = rel_e
         r = float(inp.remaining_kwh)
-        early_abs = rel_e
-        # Trzymaj defense, dopóki remaining_kwh > release_kwh (early: domyślnie >0 = tylko przy netto-eksporcie).
-        if r > release_kwh:
-            duration_s = min(inp.time_to_end_s, max(60.0, inp.time_to_end_s))
-            return WatchdogDecision(
-                write_slot=True,
-                enabled=True,
-                power_pct=int(cfg.soc_full_defense_charge_pct),
-                duration_s=duration_s,
-                mode="charge",
-                reason="soc_full_defense_hold",
-            )
-        # Po resecie godziny remaining ~0 — pierwsze N minut: trzymaj obronę dopóki nie ma importu (r < 0),
-        # bez wymogu flagi carryover (unikaj „dołka” w :00 gdy Δ godzinowe jeszcze nie urosło).
-        if (
-            in_soc_full_carryover_window
-            and early_abs >= 0.0
-            and r >= 0.0
-            and r <= release_kwh
-        ):
+        release_p = float(cfg.soc_full_defense_release_power_kw)
+        # Po resecie godziny remaining~0 — pierwsze N minut: tarcza może być kontynuacją z poprzedniej godziny
+        # albo „implicitzną” obroną pełną dla r≈0, dopóki nie pojawi się realny import netto.
+        if in_soc_full_carryover_window and r >= 0.0:
             duration_s = min(inp.time_to_end_s, max(60.0, carryover_window_s))
             return WatchdogDecision(
                 write_slot=True,
@@ -342,6 +322,24 @@ def decide_watchdog(
                 duration_s=duration_s,
                 mode="charge",
                 reason="soc_full_defense_carryover",
+            )
+        # Standardowy hold:
+        # - zawsze w early window,
+        # - w late window tylko gdy nadwyżka energii jest dodatnia (r>0),
+        # - oraz w ostatniej minucie godziny (ochrona przed "dołkiem" na przejściu :59/:00).
+        # - zawsze przy netto eksporcie / zbilansowaniu (r>=0),
+        # - przy niewielkim imporcie, dopóki wymagane |moc_bilans| < próg.
+        if ((not late) or (late and r > 0.0) or float(inp.time_to_end_s) <= 60.0) and (
+            r >= 0.0 or (r < 0.0 and power_kw < release_p)
+        ):
+            duration_s = min(inp.time_to_end_s, max(60.0, inp.time_to_end_s))
+            return WatchdogDecision(
+                write_slot=True,
+                enabled=True,
+                power_pct=int(cfg.soc_full_defense_charge_pct),
+                duration_s=duration_s,
+                mode="charge",
+                reason="soc_full_defense_hold",
             )
 
     # SOC niski: ogranicz rozładowanie do spokojnej mocy bazowej, niezależnie od bilansu godzinowego.
