@@ -1,0 +1,34 @@
+services:
+  guardian:
+    build: .
+    image: goodweguardian:latest
+    container_name: guardian
+    restart: unless-stopped
+    env_file: .env
+    # debugpy nasłuchuje na 5678; --wait-for-client=NO by kontener wstał bez podpięcia
+    command: >
+      python -m debugpy --listen 0.0.0.0:5678
+      hourly_balance_run.py
+    ports:
+      - "5678:5678"
+    volumes:
+      - ./logs:/app/logs
+      - ./state:/app/state
+      - ./data:/app/data
+
+  dashboard:
+    image: goodweguardian:latest
+    container_name: guardian-dashboard
+    restart: unless-stopped
+    depends_on: [guardian]
+    env_file: .env
+    command: >
+      python -m debugpy --listen 0.0.0.0:5679
+      -m uvicorn guardian_dashboard:app --host 0.0.0.0 --port 8501
+    ports:
+      - "8501:8501"
+      - "5679:5679"
+    volumes:
+      - ./logs:/app/logs
+      - ./state:/app/state
+      - ./data:/app/data
