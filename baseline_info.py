@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 BASELINE_VERSION = "2026-05-05"
+
+_REFERENCE_METRICS = (
+    Path(__file__).resolve().parent / "reference" / "load_forecast_backtest_baseline.json"
+)
 
 
 def baseline_spec() -> dict:
     """
-    Snapshot opisowy — bez zapisu metryk z ostatniego backtestu (te liczy endpoint/CLI).
+    Specyfikacja + opcjonalnie zcommitowane metryki referencyjne z pliku JSON.
     """
-    return {
+    spec: dict = {
         "baseline_version": BASELINE_VERSION,
         "load_forecast": {
             "id": "load_hist_median_v1",
@@ -20,13 +27,14 @@ def baseline_spec() -> dict:
                 "przy małej liczbie próbek — wszystkie godziny z lookback; przy braku — zero."
             ),
             "actual_kwh_per_hour": (
-                "Średnia arithmeticzna consumption_w [W] we wszystkich rekordach telemetrii "
+                "Średnia arytmetyczna consumption_w [W] we wszystkich rekordach telemetrii "
                 "w danej lokalnej godzinie, podzielona przez 1000 → przybliżone kWh/h."
             ),
             "api_forecast": "GET /api/load-forecast",
             "api_backtest": "GET /api/load-forecast/backtest",
             "cli_backtest": "uv run python load_forecast.py --lookback 28 [--max-days N]",
             "default_lookback_days": 28,
+            "reference_metrics_repo_path": "reference/load_forecast_backtest_baseline.json",
         },
         "pv_forecast": {
             "id": "pv_solcast_proxy_hourly_v1",
@@ -55,9 +63,18 @@ def baseline_spec() -> dict:
             ),
             "api": "GET /api/kpi/today",
         },
-        "how_to_record_regression_baseline": (
-            "Zapisz JSON z GET /api/load-forecast/backtest?lookback_days=28&max_days=30 "
-            "oraz datę commitu jako punkt odniesienia; kolejne zmiany modelu porównuj "
-            "pod tymi samymi parametrami."
+        "how_to_update_reference_metrics": (
+            "1) Uruchom: uv run python load_forecast.py --lookback 28 --max-days 30 "
+            "2) Skopiuj pole 'results' i metadane do reference/load_forecast_backtest_baseline.json "
+            "(git_commit_* z git rev-parse HEAD). 3) Commit. Porównuj kolejne modele tymi samymi parametrami."
         ),
     }
+    if _REFERENCE_METRICS.is_file():
+        try:
+            spec["load_forecast"]["reference_metrics_committed"] = json.loads(
+                _REFERENCE_METRICS.read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError):
+            spec["load_forecast"]["reference_metrics_committed"] = None
+            spec["load_forecast"]["reference_metrics_error"] = "nie można odczytać JSON"
+    return spec

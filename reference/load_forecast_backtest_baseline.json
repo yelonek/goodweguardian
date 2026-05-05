@@ -1,0 +1,30 @@
+{
+  "baseline_version": "2026-05-05",
+  "model_id": "load_hist_median_v1",
+  "description_pl": "Referencyjny snapshot backtestu (leave-one-day-out). Aktualizuj ten plik po zmianie modelu prognozy load lub gdy świadomie resetujesz punkt odniesienia — wtedy dopisz wpis w opisie commita.",
+  "git_commit_full": "b507139b01b0bdb182c17f106c1520cbfbdc1a88",
+  "git_commit_short": "b507139",
+  "command": "uv run python load_forecast.py --lookback 28 --max-days 30",
+  "recorded_at_utc": "2026-05-05T20:30:00Z",
+  "telemetry_note_pl": "Metryki z lokalnej kopii telemetrii w data/telemetry (niecommitowanej). Na innym hoście liczby po powtórzeniu komendy mogą się różnić.",
+  "results": {
+    "lookback_days": 28,
+    "max_days_applied": 30,
+    "telemetry_days_in_cache": 39,
+    "days_evaluated": 30,
+    "points": 582,
+    "skipped_hours_no_telemetry": 138,
+    "mae_kwh": 0.5950527753489622,
+    "mape_pct": 43.799369989509515,
+    "mape_note": "MAPE tylko gdzie actual >= 0.05 kWh (unikaj dzielenia przez ~0).",
+    "coverage_p25_p75": 0.39347079037800686,
+    "weekday": {
+      "mae_kwh": 0.5795728126285422,
+      "points": 434
+    },
+    "weekend": {
+      "mae_kwh": 0.6404467200831649,
+      "points": 148
+    }
+  }
+}
