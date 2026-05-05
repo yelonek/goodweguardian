@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -8,6 +9,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
@@ -21,6 +23,7 @@ from pv_forecast import fetch_hourly_pv_forecast
 
 app = FastAPI(title="GoodWeGuardian Dashboard", version="0.1.0")
 
+logger = logging.getLogger(__name__)
 
 LOG_PATH = Path(os.environ.get("GUARDIAN_LOG_PATH") or (LOG_DIR / "guardian.log"))
 
@@ -635,7 +638,14 @@ def api_pv_forecast(hours: int = Query(default=48, ge=1, le=96)) -> JSONResponse
     try:
         payload = fetch_hourly_pv_forecast(hours=hours)
     except RuntimeError as e:
+        logger.warning("pv-forecast 503: %s", e)
         raise HTTPException(status_code=503, detail=str(e)) from e
+    except httpx.HTTPError as e:
+        logger.warning("pv-forecast 503 (proxy): %s", e)
+        raise HTTPException(
+            status_code=503,
+            detail=f"Solcast proxy error: {e}",
+        ) from e
     return JSONResponse(payload)
 
 
