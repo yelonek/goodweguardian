@@ -150,6 +150,12 @@ GUARDIAN_CONTROL_OVERRIDE_PATH = Path(
     or (STATE_DIR / "guardian_control_override.json")
 )
 
+# Runtime watchdog SOC (plik JSON); brak klucza = wartość z env jak przy starcie procesu.
+GUARDIAN_WATCHDOG_OVERRIDE_PATH = Path(
+    os.environ.get("GUARDIAN_WATCHDOG_OVERRIDE_PATH")
+    or (STATE_DIR / "guardian_watchdog_override.json")
+)
+
 # API dashboardu — pusty = endpointy /api/guardian/control wyłączone (503)
 GUARDIAN_API_KEY = (os.environ.get("GUARDIAN_API_KEY") or "").strip()
 
