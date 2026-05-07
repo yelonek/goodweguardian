@@ -12,13 +12,18 @@ from typing import Any
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 import guardian_config as guardian_cfg
 
 from energy_pricing import pricing_day_breakdown
 from guardian_config import LOG_DIR, TELEMETRY_DIR
 from guardian_control import effective_control_enabled, write_control_override
+from guardian_watchdog_override import (
+    apply_watchdog_override_updates,
+    clear_watchdog_override,
+    watchdog_soc_api_payload,
+)
 from baseline_info import baseline_spec
 from load_forecast import forecast_load_hours, run_load_forecast_backtest
 from pv_forecast import fetch_hourly_pv_forecast
@@ -32,6 +37,31 @@ LOG_PATH = Path(os.environ.get("GUARDIAN_LOG_PATH") or (LOG_DIR / "guardian.log"
 
 class GuardianControlBody(BaseModel):
     control_enabled: bool
+
+
+class WatchdogSocUpdateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    soc_night_reserve_pct: float | None = Field(default=None, ge=0, le=100)
+    soc_night_reserve_charge_pct: int | None = Field(default=None, ge=-1, le=100)
+    soc_night_reserve_hours: list[int] | None = None
+    soc_low_defense_threshold_pct: float | None = Field(default=None, ge=0, le=100)
+    soc_full_defense_threshold_pct: float | None = Field(default=None, ge=0, le=100)
+
+    @field_validator("soc_night_reserve_hours")
+    @classmethod
+    def _hours(cls, v: list[int] | None) -> list[int] | None:
+        if v is None:
+            return None
+        if len(v) == 0:
+            raise ValueError("soc_night_reserve_hours: use null to clear, not []")
+        out: set[int] = set()
+        for h in v:
+            hi = int(h)
+            if not 0 <= hi <= 23:
+                raise ValueError("soc_night_reserve_hours: hour out of 0..23")
+            out.add(hi)
+        return sorted(out)
 
 
 def _require_guardian_api_key(
@@ -413,6 +443,29 @@ def index() -> str:
     </div>
   </div>
 
+  <h2>Watchdog / SOC config</h2>
+  <div class="muted" style="margin-bottom:8px;">
+    Effective values after merging <code>.env</code> (at process start) with optional
+    <code>state/guardian_watchdog_override.json</code>. The hourly runner reloads that file every cycle — no restart.
+    Dashboard and runner must share the same <code>state/</code> directory (same as control override).
+  </div>
+  <div class="grid" id="watchdogSummaryCards"></div>
+  <div class="card" style="max-width: 520px; margin-top: 10px;">
+    <div class="k" id="wdPathLine">…</div>
+    <div style="display:grid; gap:8px; max-width: 440px; margin-top:8px;">
+      <label class="row">soc_night_reserve_pct <input id="wd_soc_night_reserve_pct" type="number" step="0.1" min="0" max="100" style="max-width: 8rem;" /></label>
+      <label class="row">soc_night_reserve_charge_pct <input id="wd_soc_night_reserve_charge_pct" type="number" step="1" min="-1" max="100" style="max-width: 8rem;" /></label>
+      <label class="row">soc_night_reserve_hours (CSV) <input id="wd_soc_night_reserve_hours" type="text" placeholder="22,23,0,1,2,3,4,5" style="width: 100%;" /></label>
+      <label class="row">soc_low_defense_threshold_pct <input id="wd_soc_low_defense_threshold_pct" type="number" step="0.1" min="0" max="100" style="max-width: 8rem;" /></label>
+      <label class="row">soc_full_defense_threshold_pct <input id="wd_soc_full_defense_threshold_pct" type="number" step="0.1" min="0" max="100" style="max-width: 8rem;" /></label>
+    </div>
+    <div class="row" style="margin-top:12px;">
+      <button type="button" id="saveWatchdog">Save overrides</button>
+      <button type="button" id="resetWatchdog">Clear overrides</button>
+    </div>
+    <div class="muted" id="wdSaveStatus" style="margin-top:8px;"></div>
+  </div>
+
   <h2>Current state</h2>
   <div class="grid" id="cards"></div>
 
@@ -491,6 +544,99 @@ function card(key, val) {
 
 function getKey() { return (localStorage.getItem("guardianApiKey") || "").trim(); }
 
+function hourArraysEqual(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+  const sa = [...a].map(Number).sort((x, y) => x - y);
+  const sb = [...b].map(Number).sort((x, y) => x - y);
+  return sa.every((v, i) => v === sb[i]);
+}
+
+function flEq(a, b) {
+  return Math.abs(Number(a) - Number(b)) < 1e-6;
+}
+
+async function saveWatchdog() {
+  const key = getKey();
+  const st = document.getElementById("wdSaveStatus");
+  if (!key) { st.textContent = "Set API key first"; return; }
+  const wds = window._lastWds;
+  const eb = wds && wds.env_base;
+  if (!eb) { st.textContent = "No config loaded yet"; return; }
+  const body = {};
+  const snr = parseFloat(document.getElementById("wd_soc_night_reserve_pct").value);
+  const src = parseInt(document.getElementById("wd_soc_night_reserve_charge_pct").value, 10);
+  const slow = parseFloat(document.getElementById("wd_soc_low_defense_threshold_pct").value);
+  const sfull = parseFloat(document.getElementById("wd_soc_full_defense_threshold_pct").value);
+  if ([snr, slow, sfull].some((x) => Number.isNaN(x)) || Number.isNaN(src)) {
+    st.textContent = "Invalid number in form";
+    return;
+  }
+  body.soc_night_reserve_pct = flEq(snr, eb.soc_night_reserve_pct) ? null : snr;
+  body.soc_night_reserve_charge_pct = (src === eb.soc_night_reserve_charge_pct) ? null : src;
+  body.soc_low_defense_threshold_pct = flEq(slow, eb.soc_low_defense_threshold_pct) ? null : slow;
+  body.soc_full_defense_threshold_pct = flEq(sfull, eb.soc_full_defense_threshold_pct) ? null : sfull;
+  const rawH = document.getElementById("wd_soc_night_reserve_hours").value;
+  const hrs = rawH.split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => !Number.isNaN(n));
+  const ebh = eb.soc_night_reserve_hours || [];
+  body.soc_night_reserve_hours = hourArraysEqual(hrs, ebh) ? null : hrs;
+  try {
+    const r = await fetch("/api/guardian/watchdog-soc", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-Guardian-Api-Key": key },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { st.textContent = j.detail || r.statusText || "error"; return; }
+    st.textContent = "Saved.";
+    window._lastWds = j;
+    renderWatchdogSoc(j);
+  } catch (e) {
+    st.textContent = String(e);
+  }
+}
+
+async function resetWatchdog() {
+  const key = getKey();
+  const st = document.getElementById("wdSaveStatus");
+  if (!key) { st.textContent = "Set API key first"; return; }
+  try {
+    const r = await fetch("/api/guardian/watchdog-soc", {
+      method: "DELETE",
+      headers: { "X-Guardian-Api-Key": key },
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { st.textContent = j.detail || r.statusText || "error"; return; }
+    st.textContent = "Overrides cleared.";
+    window._lastWds = j;
+    renderWatchdogSoc(j);
+  } catch (e) {
+    st.textContent = String(e);
+  }
+}
+
+function renderWatchdogSoc(wds) {
+  if (!wds || !wds.effective) return;
+  const eff = wds.effective;
+  const src = wds.sources || {};
+  const line = document.getElementById("wdPathLine");
+  if (line) {
+    line.textContent = `File ${wds.override_path || "—"} — ${wds.override_exists ? "override present" : "no override (env only)"}`;
+  }
+  const wcards = [
+    ["soc_night_reserve_pct", `${fmt(eff.soc_night_reserve_pct)} <span class="muted">(${fmt(src.soc_night_reserve_pct)})</span>`],
+    ["soc_night_reserve_charge_pct", `${fmt(eff.soc_night_reserve_charge_pct)} <span class="muted">(${fmt(src.soc_night_reserve_charge_pct)})</span>`],
+    ["soc_night_reserve_hours", `${(eff.soc_night_reserve_hours || []).join(",")} <span class="muted">(${fmt(src.soc_night_reserve_hours)})</span>`],
+    ["soc_low_defense_threshold_pct", `${fmt(eff.soc_low_defense_threshold_pct)} <span class="muted">(${fmt(src.soc_low_defense_threshold_pct)})</span>`],
+    ["soc_full_defense_threshold_pct", `${fmt(eff.soc_full_defense_threshold_pct)} <span class="muted">(${fmt(src.soc_full_defense_threshold_pct)})</span>`],
+  ].map(([k, v]) => `<div class="card"><div class="k">${k}</div><div class="v" style="font-size:16px;">${v}</div></div>`).join("");
+  document.getElementById("watchdogSummaryCards").innerHTML = wcards;
+  document.getElementById("wd_soc_night_reserve_pct").value = eff.soc_night_reserve_pct;
+  document.getElementById("wd_soc_night_reserve_charge_pct").value = eff.soc_night_reserve_charge_pct;
+  document.getElementById("wd_soc_night_reserve_hours").value = (eff.soc_night_reserve_hours || []).join(",");
+  document.getElementById("wd_soc_low_defense_threshold_pct").value = eff.soc_low_defense_threshold_pct;
+  document.getElementById("wd_soc_full_defense_threshold_pct").value = eff.soc_full_defense_threshold_pct;
+}
+
 async function refreshControl() {
   const key = getKey();
   const el = document.getElementById("controlStatus");
@@ -522,6 +668,8 @@ document.getElementById("saveKey").addEventListener("click", () => {
 document.getElementById("refreshControl").addEventListener("click", () => refreshControl().catch(console.error));
 document.getElementById("enableControl").addEventListener("click", () => putControl(true));
 document.getElementById("disableControl").addEventListener("click", () => putControl(false));
+document.getElementById("saveWatchdog").addEventListener("click", () => saveWatchdog().catch(console.error));
+document.getElementById("resetWatchdog").addEventListener("click", () => resetWatchdog().catch(console.error));
 
 async function refresh() {
   const [statusRes, histRes, pricingRes, pvRes, loadRes, kpiRes] = await Promise.all([
@@ -541,6 +689,9 @@ async function refresh() {
 
   document.getElementById("logPath").textContent = status.log_path || "—";
   document.getElementById("updatedAt").textContent = new Date().toLocaleTimeString();
+
+  window._lastWds = status.watchdog_soc || {};
+  renderWatchdogSoc(window._lastWds);
 
   const f = status.fields || {};
   const cards = [
@@ -662,8 +813,29 @@ def api_status() -> JSONResponse:
         "log_path": str(LOG_PATH),
         "fields": (row.fields if row else {}),
         "raw": (row.raw if row else None),
+        "watchdog_soc": watchdog_soc_api_payload(),
     }
     return JSONResponse(payload)
+
+
+@app.get("/api/guardian/watchdog-soc")
+def api_watchdog_soc_get() -> JSONResponse:
+    return JSONResponse(watchdog_soc_api_payload())
+
+
+@app.put("/api/guardian/watchdog-soc")
+def api_watchdog_soc_put(
+    body: WatchdogSocUpdateBody,
+    _: None = Depends(_require_guardian_api_key),
+) -> JSONResponse:
+    apply_watchdog_override_updates(body.model_dump(exclude_unset=True))
+    return JSONResponse(watchdog_soc_api_payload())
+
+
+@app.delete("/api/guardian/watchdog-soc")
+def api_watchdog_soc_delete(_: None = Depends(_require_guardian_api_key)) -> JSONResponse:
+    clear_watchdog_override()
+    return JSONResponse(watchdog_soc_api_payload())
 
 
 @app.get("/api/pricing/day")
