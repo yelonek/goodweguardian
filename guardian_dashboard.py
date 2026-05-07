@@ -448,6 +448,7 @@ def index() -> str:
   </table>
 
   <h2>Load forecast (next 24h)</h2>
+  <div class="muted" id="loadNowcast" style="margin-top:4px;"></div>
   <table>
     <thead>
       <tr>
@@ -594,6 +595,11 @@ async function refresh() {
       <td>${Number(h.pv_kw_p90 || 0).toFixed(3)}</td>
     </tr>`).join("");
   document.getElementById("pvRows").innerHTML = pvRows;
+
+  const nc = load.nowcast || {};
+  document.getElementById("loadNowcast").textContent = nc.applied
+    ? `nowcast: bias ${Number(nc.bias_w || 0).toFixed(0)} W (ostatnie ${nc.window_min ?? "—"} min vs baseline p50 × 1000); decay ${nc.decay_hours ?? "—"} h, max Δ ${Number(nc.max_delta_kwh ?? 0).toFixed(2)} kWh/h`
+    : `load nowcast: ${nc.reason ? "off — " + nc.reason : "—"}`;
 
   const loadRows = (load.hours || []).slice(0, 24).map(h => `<tr>
       <td>${fmt(h.date)}</td>

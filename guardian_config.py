@@ -158,6 +158,12 @@ RCE_PROXY_BASE_URL = (os.environ.get("RCE_PROXY_BASE_URL") or "").strip().rstrip
 SOLCAST_PROXY_BASE_URL = (os.environ.get("SOLCAST_PROXY_BASE_URL") or "").strip().rstrip("/")
 PROXY_HTTP_TIMEOUT_S = _float_env("PROXY_HTTP_TIMEOUT_S", 10.0)
 
+# Load forecast: korekta krótkoterminowa (średnia moc z ostatnich min vs baseline p50 bieżącej godz.)
+LOAD_NOWCAST_ENABLED = _bool_env("LOAD_NOWCAST_ENABLED", True)
+LOAD_NOWCAST_WINDOW_MIN = _int_env("LOAD_NOWCAST_WINDOW_MIN", 45)
+LOAD_NOWCAST_DECAY_HOURS = _int_env("LOAD_NOWCAST_DECAY_HOURS", 4)
+LOAD_NOWCAST_MAX_DELTA_KWH = _float_env("LOAD_NOWCAST_MAX_DELTA_KWH", 1.0)
+
 
 def get_slot_id() -> str:
     """Zwraca eco_mode_1..4 dla slotu balansującego."""

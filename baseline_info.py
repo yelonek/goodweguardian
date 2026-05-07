@@ -24,7 +24,9 @@ def baseline_spec() -> dict:
                 "Prognoza zużycia: percentyle (p25/p50/p75) z próbek tej samej godziny "
                 "z ostatnich N dni; dzień docelowy nie wchodzi do próbek. "
                 "Preferencja próbek z tego samego typu dnia (weekday vs weekend); "
-                "przy małej liczbie próbek — wszystkie godziny z lookback; przy braku — zero."
+                "przy małej liczbie próbek — wszystkie godziny z lookback; przy braku — zero. "
+                "Nowcast (opcjonalnie): bias mocy z ostatnich LOAD_NOWCAST_WINDOW_MIN min "
+                "względem baseline p50 bieżącej godziny; korekta zanika po LOAD_NOWCAST_DECAY_HOURS."
             ),
             "actual_kwh_per_hour": (
                 "Średnia arytmetyczna consumption_w [W] we wszystkich rekordach telemetrii "

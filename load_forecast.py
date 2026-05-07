@@ -9,7 +9,14 @@ from pathlib import Path
 from statistics import median
 from typing import Any
 
-from guardian_config import TELEMETRY_DIR
+from guardian_config import (
+    LOAD_NOWCAST_DECAY_HOURS,
+    LOAD_NOWCAST_ENABLED,
+    LOAD_NOWCAST_MAX_DELTA_KWH,
+    LOAD_NOWCAST_WINDOW_MIN,
+    TELEMETRY_DIR,
+)
+from telemetry_store import recent_consumption_average_w
 
 
 def _percentile(sorted_vals: list[float], q: float) -> float:
@@ -263,6 +270,67 @@ def run_load_forecast_backtest(
     }
 
 
+def _apply_nowcast_to_rows(
+    rows: list[dict],
+    *,
+    now: datetime,
+    lookback_days: int,
+) -> tuple[list[dict], dict[str, Any]]:
+    """
+    Korekta: bias_w = srednia moc z ostatnich WINDOW min - (p50 biezacej godziny * 1000 W).
+    Dodaje delta_kWh do p25/p50/p75 dla kolejnych slotow z waga 1 - step/decay (clamp).
+    """
+    meta: dict[str, Any] = {"applied": False}
+    if not LOAD_NOWCAST_ENABLED:
+        meta["reason"] = "disabled"
+        return rows, meta
+
+    cache = build_daily_hourly_kwh_cache()
+    today = now.date()
+    ch = now.hour
+    pred = predict_load_one_hour(today, ch, lookback_days, cache)
+    if int(pred.get("samples", 0)) < 3:
+        meta["reason"] = "weak_baseline"
+        return rows, meta
+
+    p50 = float(pred["load_kwh_p50"])
+    baseline_w = p50 * 1000.0
+    recent = recent_consumption_average_w(now, int(LOAD_NOWCAST_WINDOW_MIN))
+    if recent is None:
+        meta["reason"] = "no_recent_telemetry"
+        return rows, meta
+
+    bias_w = float(recent) - baseline_w
+    decay = max(1, int(LOAD_NOWCAST_DECAY_HOURS))
+    max_d = float(LOAD_NOWCAST_MAX_DELTA_KWH)
+
+    new_rows: list[dict] = []
+    for step, row in enumerate(rows):
+        weight = max(0.0, 1.0 - float(step) / float(decay))
+        delta_kwh = (bias_w / 1000.0) * weight
+        if delta_kwh > max_d:
+            delta_kwh = max_d
+        elif delta_kwh < -max_d:
+            delta_kwh = -max_d
+        nr = dict(row)
+        for key in ("load_kwh_p25", "load_kwh_p50", "load_kwh_p75"):
+            if key in nr and nr[key] is not None:
+                nr[key] = max(0.0, float(nr[key]) + delta_kwh)
+        new_rows.append(nr)
+
+    meta = {
+        "applied": True,
+        "window_min": int(LOAD_NOWCAST_WINDOW_MIN),
+        "decay_hours": decay,
+        "max_delta_kwh": max_d,
+        "recent_avg_w": float(recent),
+        "baseline_p50_kwh": p50,
+        "baseline_w": baseline_w,
+        "bias_w": bias_w,
+    }
+    return new_rows, meta
+
+
 def forecast_load_hours(
     *,
     start_dt: datetime | None = None,
@@ -315,11 +383,14 @@ def forecast_load_hours(
                 "source": source,
             }
         )
-    return {
+    rows, nowcast_meta = _apply_nowcast_to_rows(rows, now=now, lookback_days=lookback_days)
+    out: dict[str, Any] = {
         "generated_at": now.isoformat(),
         "lookback_days": lookback_days,
         "hours": rows,
+        "nowcast": nowcast_meta,
     }
+    return out
 
 
 def main() -> None:
