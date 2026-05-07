@@ -15,6 +15,7 @@ from time import time
 import goodwe
 
 from ecoslot_config import ECO_SETTING_IDS, set_ecoslot
+from guardian_watchdog_override import effective_watchdog_soc
 from guardian_config import (
     BALANCE_POWER_THRESHOLD_KW,
     GRID_EXPORT_BIAS_W,
@@ -36,16 +37,11 @@ from guardian_config import (
     SOC_FULL_DEFENSE_CARRYOVER_MINUTES,
     SOC_FULL_DEFENSE_RELEASE_POWER_KW,
     SOC_FULL_DEFENSE_MAX_SLOT_MIN,
-    SOC_FULL_DEFENSE_THRESHOLD_PCT,
     SOC_LOW_DEFENSE_CHARGE_PCT,
     SOC_LOW_DEFENSE_RELEASE_REMAINING_KWH,
-    SOC_LOW_DEFENSE_THRESHOLD_PCT,
     SOC_LOW_DISCHARGE_AVG_MINUTES,
     SOC_LOW_DISCHARGE_FALLBACK_W,
     SOC_LOW_DISCHARGE_MAX_W,
-    SOC_NIGHT_RESERVE_CHARGE_PCT,
-    SOC_NIGHT_RESERVE_HOURS,
-    SOC_NIGHT_RESERVE_PCT,
     WATCHDOG_MAX_SLOT_MIN,
     WATCHDOG_MIN_DISCHARGE_ASSIST_PCT,
     WATCHDOG_CHARGE_MIN_REMAINING_KWH,
@@ -253,8 +249,9 @@ async def run_one_cycle() -> None:
     slot_active = _slot_active(current_slot, now)
     current_pct = _current_ecoslot_pct(current_slot)
     other_eco_active = await _any_other_eco_slot_active(inverter, slot_id, now)
+    ws = effective_watchdog_soc()
     low_soc_discharge_target_w = None
-    if soc_pct <= float(SOC_LOW_DEFENSE_THRESHOLD_PCT):
+    if soc_pct <= ws.soc_low_defense_threshold_pct:
         avg_window_min = int(SOC_LOW_DISCHARGE_AVG_MINUTES)
         recent_avg_w = recent_consumption_average_w(now, avg_window_min)
         if recent_avg_w is None and float(SOC_LOW_DISCHARGE_FALLBACK_W) > 0.0:
@@ -307,15 +304,15 @@ async def run_one_cycle() -> None:
         import_streak_min=int(WATCHDOG_IMPORT_STREAK_MIN),
         dwell_s=int(WATCHDOG_DWELL_S),
         unrecoverable_fraction=float(WATCHDOG_UNRECOVERABLE_FRACTION),
-        soc_full_threshold_pct=float(SOC_FULL_DEFENSE_THRESHOLD_PCT),
+        soc_full_threshold_pct=float(ws.soc_full_defense_threshold_pct),
         soc_full_defense_charge_pct=int(SOC_FULL_DEFENSE_CHARGE_PCT),
         soc_full_defense_release_power_kw=float(SOC_FULL_DEFENSE_RELEASE_POWER_KW),
-        soc_low_threshold_pct=float(SOC_LOW_DEFENSE_THRESHOLD_PCT),
+        soc_low_threshold_pct=float(ws.soc_low_defense_threshold_pct),
         soc_low_defense_charge_pct=int(SOC_LOW_DEFENSE_CHARGE_PCT),
         soc_low_defense_release_remaining_kwh=float(SOC_LOW_DEFENSE_RELEASE_REMAINING_KWH),
-        soc_night_reserve_pct=float(SOC_NIGHT_RESERVE_PCT),
-        soc_night_reserve_charge_pct=int(SOC_NIGHT_RESERVE_CHARGE_PCT),
-        night_reserve_hours=frozenset(SOC_NIGHT_RESERVE_HOURS),
+        soc_night_reserve_pct=float(ws.soc_night_reserve_pct),
+        soc_night_reserve_charge_pct=int(ws.soc_night_reserve_charge_pct),
+        night_reserve_hours=ws.night_reserve_hours,
         min_discharge_assist_pct=int(WATCHDOG_MIN_DISCHARGE_ASSIST_PCT),
         charge_min_remaining_kwh=float(WATCHDOG_CHARGE_MIN_REMAINING_KWH),
         soc_full_defense_carryover_minutes=max(1, int(SOC_FULL_DEFENSE_CARRYOVER_MINUTES)),
@@ -337,7 +334,7 @@ async def run_one_cycle() -> None:
     last_n_min_of_hour = time_to_end_s <= float(carryover_min * 60)
     if decision.reason == "soc_full_defense_hold" and last_n_min_of_hour:
         wd_state.soc_full_defense_carryover = True
-    elif now.minute >= carryover_min or soc_pct < float(SOC_FULL_DEFENSE_THRESHOLD_PCT):
+    elif now.minute >= carryover_min or soc_pct < ws.soc_full_defense_threshold_pct:
         wd_state.soc_full_defense_carryover = False
     elif (
         wd_state.soc_full_defense_carryover
