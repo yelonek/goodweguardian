@@ -1,4 +1,4 @@
-"""Łączy godzinowe RCE z taryfą G12 → szacunkowy koszt importu PLN/kWh."""
+"""RCE godzinowe + taryfa G12: import (dystrybucja+energia wg strefy), eksport wg RCE osobno."""
 
 from __future__ import annotations
 
@@ -114,20 +114,16 @@ def effective_import_pln_per_kwh(
     force_refresh_rce: bool = False,
 ) -> float:
     """
-    Koszt szacunkowy za 1 kWh importu z sieci w danej godzinie lokalnej (strefa TELEMETRY_TZ).
+    Koszt 1 kWh importu netto w danej godzinie lokalnej: dystrybucja + stała energia (strefa G12).
 
-    RCE jest pobierane / czytane z cache dla dnia ``local_date``.
+    ``local_date`` / ``client`` / ``force_refresh_rce`` są ignorowane (sygnatura zostaje dla zgodności).
+    RCE nie wchodzi w cenę importu — przy eksporcie netto stosuje się ``rce_pln_kwh`` z breakdownu.
     """
+    _ = (local_date, client, force_refresh_rce)
     if not 0 <= local_hour <= 23:
         raise ValueError(f"local_hour musi być 0..23, jest {local_hour}")
     t = tariff if tariff is not None else g12_tariff_from_env()
-    hourly_rce, _ = get_hourly_rce_pln_per_kwh(
-        local_date,
-        client=client,
-        force_refresh_rce=force_refresh_rce,
-    )
-    rce_kwh = hourly_rce[local_hour]
-    return t.effective_import_pln_per_kwh(local_hour, rce_kwh)
+    return t.import_pln_per_kwh(local_hour)
 
 
 def hourly_effective_import_pln_per_kwh_for_day(
@@ -137,14 +133,10 @@ def hourly_effective_import_pln_per_kwh_for_day(
     client: httpx.Client | None = None,
     force_refresh_rce: bool = False,
 ) -> list[float]:
-    """24 wartości PLN/kWh dla dnia ``local_date`` (indeks = godzina)."""
+    """24 wartości PLN/kWh importu (tylko taryfa G12) dla dnia — indeks = godzina."""
+    _ = (local_date, client, force_refresh_rce)
     t = tariff if tariff is not None else g12_tariff_from_env()
-    hourly_rce, _ = get_hourly_rce_pln_per_kwh(
-        local_date,
-        client=client,
-        force_refresh_rce=force_refresh_rce,
-    )
-    return [t.effective_import_pln_per_kwh(h, hourly_rce[h]) for h in range(24)]
+    return [t.import_pln_per_kwh(h) for h in range(24)]
 
 
 def pricing_day_breakdown(
@@ -155,7 +147,7 @@ def pricing_day_breakdown(
     force_refresh_rce: bool = False,
 ) -> dict[str, Any]:
     """
-    Rozkład cen dla dnia: RCE + efektywny import G12.
+    Rozkład dla dnia: RCE (eksport) + import PLN/kWh (dystrybucja + energia stała wg strefy G12).
     """
     t = tariff if tariff is not None else g12_tariff_from_env()
     hourly_rce, source = get_hourly_rce_pln_per_kwh(
@@ -166,13 +158,14 @@ def pricing_day_breakdown(
     hours: list[dict[str, Any]] = []
     for h in range(24):
         zone = t.zone_for_hour(h)
-        eff = t.effective_import_pln_per_kwh(h, hourly_rce[h])
+        imp = t.import_pln_per_kwh(h)
         hours.append(
             {
                 "hour": h,
                 "zone": zone,
                 "rce_pln_kwh": hourly_rce[h],
-                "effective_import_pln_kwh": eff,
+                "import_pln_per_kwh": imp,
+                "effective_import_pln_kwh": imp,
             }
         )
     return {
@@ -193,7 +186,7 @@ if __name__ == "__main__":
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     parser = argparse.ArgumentParser(
-        description="24× effective import PLN/kWh (RCE + G12; strefy nocne na stało, dystrybucja z .env)"
+        description="24× import PLN/kWh (dystrybucja+energia G12 wg strefy); RCE nie wchodzi w import"
     )
     parser.add_argument(
         "--date",

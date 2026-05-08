@@ -10,23 +10,45 @@ def test_zone_for_hour() -> None:
         night_hours=frozenset({0, 1, 22, 23}),
         distribution_day_pln_per_kwh=0.5,
         distribution_night_pln_per_kwh=0.2,
-        energy_from_rce=True,
     )
     assert cfg.zone_for_hour(22) == "night"
     assert cfg.zone_for_hour(12) == "day"
 
 
-def test_effective_with_rce() -> None:
+def test_import_tariff_fixed_energy_by_zone() -> None:
     cfg = G12TariffConfig(
         night_hours=frozenset({23}),
         distribution_day_pln_per_kwh=0.4,
         distribution_night_pln_per_kwh=0.1,
-        energy_from_rce=True,
+        energy_day_pln_per_kwh=0.5,
+        energy_night_pln_per_kwh=0.5,
     )
-    # godz. 10 dzień: 0.4 + 0.5 = 0.9
-    assert cfg.effective_import_pln_per_kwh(10, 0.5) == pytest.approx(0.9)
-    # godz. 23 noc: 0.1 + 0.5 = 0.6
-    assert cfg.effective_import_pln_per_kwh(23, 0.5) == pytest.approx(0.6)
+    assert cfg.import_pln_per_kwh(10) == pytest.approx(0.9)
+    assert cfg.import_pln_per_kwh(23) == pytest.approx(0.6)
+
+
+def test_import_tariff_different_energy_day_night() -> None:
+    cfg = G12TariffConfig(
+        night_hours=frozenset({23}),
+        distribution_day_pln_per_kwh=0.4,
+        distribution_night_pln_per_kwh=0.1,
+        energy_day_pln_per_kwh=0.6,
+        energy_night_pln_per_kwh=0.3,
+    )
+    assert cfg.import_pln_per_kwh(10) == pytest.approx(1.0)
+    assert cfg.import_pln_per_kwh(23) == pytest.approx(0.4)
+
+
+def test_effective_import_alias_ignores_rce() -> None:
+    cfg = G12TariffConfig(
+        night_hours=frozenset({23}),
+        distribution_day_pln_per_kwh=0.4,
+        distribution_night_pln_per_kwh=0.1,
+        energy_day_pln_per_kwh=0.6,
+        energy_night_pln_per_kwh=0.3,
+    )
+    assert cfg.effective_import_pln_per_kwh(10, 999.0) == pytest.approx(1.0)
+    assert cfg.effective_import_pln_per_kwh(23, 999.0) == pytest.approx(0.4)
 
 
 def test_enaea_g12_night_hours_shape() -> None:
@@ -47,16 +69,3 @@ def test_g12_tariff_from_env_ignores_obsolete_night_env(
     monkeypatch.setenv("TARIFF_G12_NIGHT_HOURS", "10,11,12")
     cfg = g12_tariff_from_env()
     assert cfg.night_hours == ENEA_G12_NIGHT_HOURS
-
-
-def test_effective_fixed_energy() -> None:
-    cfg = G12TariffConfig(
-        night_hours=frozenset({23}),
-        distribution_day_pln_per_kwh=0.4,
-        distribution_night_pln_per_kwh=0.1,
-        energy_from_rce=False,
-        energy_day_pln_per_kwh=0.6,
-        energy_night_pln_per_kwh=0.3,
-    )
-    assert cfg.effective_import_pln_per_kwh(10, 999.0) == pytest.approx(1.0)
-    assert cfg.effective_import_pln_per_kwh(23, 999.0) == pytest.approx(0.4)

@@ -36,19 +36,15 @@ class G12TariffConfig(BaseModel):
         ge=0.0,
         description="Jak wyżej — strefa nocna",
     )
-    energy_from_rce: bool = Field(
-        True,
-        description="True: do ceny doliczyć RCE (PLN/kWh) z godziny; False: użyć stałych energii poniżej",
-    )
     energy_day_pln_per_kwh: float = Field(
         0.0,
         ge=0.0,
-        description="Stała cena energii za kWh w strefie dziennej (gdy energy_from_rce=False)",
+        description="Stała cena energii (sprzedawca) za kWh w strefie dziennej — płacona przy imporcie netto w tej godzinie",
     )
     energy_night_pln_per_kwh: float = Field(
         0.0,
         ge=0.0,
-        description="Stała cena energii za kWh w strefie nocnej (gdy energy_from_rce=False)",
+        description="Jak wyżej — strefa nocna",
     )
 
     @model_validator(mode="after")
@@ -69,31 +65,38 @@ class G12TariffConfig(BaseModel):
             else self.distribution_day_pln_per_kwh
         )
 
-    def energy_pln_per_kwh(self, zone: Zone, rce_pln_per_kwh: float) -> float:
-        if self.energy_from_rce:
-            return rce_pln_per_kwh
+    def fixed_energy_pln_per_kwh(self, zone: Zone) -> float:
+        """Energia ze stałej taryfy G12 (dzień/noc), bez RCE — strona importu."""
         return (
             self.energy_night_pln_per_kwh
             if zone == "night"
             else self.energy_day_pln_per_kwh
         )
 
+    def import_pln_per_kwh(self, local_hour: int) -> float:
+        """
+        Szacunkowy koszt 1 kWh importu netto w tej godzinie: dystrybucja (strefa) + energia (strefa).
+        Przy eksporcie netto stosuje się RCE (osobno), nie ta wartość.
+        """
+        z = self.zone_for_hour(local_hour)
+        return self.distribution_pln_per_kwh(z) + self.fixed_energy_pln_per_kwh(z)
+
     def effective_import_pln_per_kwh(
         self, local_hour: int, rce_pln_per_kwh: float
     ) -> float:
-        z = self.zone_for_hour(local_hour)
-        return self.distribution_pln_per_kwh(z) + self.energy_pln_per_kwh(z, rce_pln_per_kwh)
+        """Zgodność wsteczna: ignoruje RCE; to samo co ``import_pln_per_kwh``."""
+        _ = rce_pln_per_kwh
+        return self.import_pln_per_kwh(local_hour)
 
 
 def g12_tariff_from_env() -> G12TariffConfig:
     """
     Zmienne środowiskowe:
-      TARIFF_DISTRIBUTION_DAY_PLN_KWH
-      TARIFF_DISTRIBUTION_NIGHT_PLN_KWH
-      TARIFF_ENERGY_FROM_RCE — true/false (domyślnie true)
-      TARIFF_ENERGY_DAY_PLN_KWH / TARIFF_ENERGY_NIGHT_PLN_KWH — gdy energia nie z RCE
+      TARIFF_DISTRIBUTION_DAY_PLN_KWH / TARIFF_DISTRIBUTION_NIGHT_PLN_KWH
+      TARIFF_ENERGY_DAY_PLN_KWH / TARIFF_ENERGY_NIGHT_PLN_KWH
 
-    Godziny strefy nocnej G12 są stałe: ``ENEA_G12_NIGHT_HOURS`` (Enea).
+    Strefa dzień/noc wg godzin G12: ``ENEA_G12_NIGHT_HOURS`` (Enea: 22–6 i 13–15 zimą).
+    Import netto w godzinie: dystrybucja + energia wg strefy. Eksport netto: rozliczenie RCE (poza tym modelem).
     """
 
     def _f(name: str, default: float) -> float:
@@ -102,16 +105,9 @@ def g12_tariff_from_env() -> G12TariffConfig:
             return default
         return float(v.replace(",", "."))
 
-    def _b(name: str, default: bool) -> bool:
-        v = os.environ.get(name)
-        if v is None or v.strip() == "":
-            return default
-        return v.strip().lower() in ("1", "true", "yes", "on", "y")
-
     return G12TariffConfig(
         distribution_day_pln_per_kwh=_f("TARIFF_DISTRIBUTION_DAY_PLN_KWH", 0.0),
         distribution_night_pln_per_kwh=_f("TARIFF_DISTRIBUTION_NIGHT_PLN_KWH", 0.0),
-        energy_from_rce=_b("TARIFF_ENERGY_FROM_RCE", True),
         energy_day_pln_per_kwh=_f("TARIFF_ENERGY_DAY_PLN_KWH", 0.0),
         energy_night_pln_per_kwh=_f("TARIFF_ENERGY_NIGHT_PLN_KWH", 0.0),
     )

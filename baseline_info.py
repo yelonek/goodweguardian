@@ -47,10 +47,11 @@ def baseline_spec() -> dict:
             "api": "GET /api/pv-forecast",
         },
         "pricing": {
-            "id": "rce_g12_effective_import_v1",
+            "id": "rce_g12_net_billing_hourly_v1",
             "summary_pl": (
-                "RCE godzinowe PLN/kWh (proxy /api/rce lub fallback PSE); "
-                "effective import = dystrybucja G12 wg strefy + energia (RCE lub stałe z .env)."
+                "RCE godzinowe PLN/kWh (proxy /api/rce lub PSE) — rozliczenie nadwyżki eksportu. "
+                "Import netto w godzinie: TARIFF_DISTRIBUTION_DAY/NIGHT + TARIFF_ENERGY_DAY/NIGHT "
+                "wg strefy G12 (np. Enea: noc 22–6 i 13–15)."
             ),
             "api": "GET /api/pricing/day",
         },
