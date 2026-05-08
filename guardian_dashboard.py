@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -339,7 +340,7 @@ def _kpi_for_day(local_date: date) -> dict[str, Any]:
     for hour in range(24):
         p = price_by_hour.get(hour, {})
         rce = float(p.get("rce_pln_kwh", 0.0))
-        eff = float(p.get("effective_import_pln_kwh", 0.0))
+        eff = float(p.get("import_pln_per_kwh", p.get("effective_import_pln_kwh", 0.0)))
         hn = hourly_net.get(hour, {})
         net_kwh = hn.get("net_kwh")
         complete = bool(hn.get("complete"))
@@ -365,6 +366,7 @@ def _kpi_for_day(local_date: date) -> dict[str, Any]:
                 "interval_complete": complete,
                 "rce_pln_kwh": rce,
                 "effective_import_pln_kwh": eff,
+                "import_pln_per_kwh": eff,
                 "deposit_add_pln": deposit_h,
                 "electricity_bill_add_pln": bill_h,
             }
@@ -385,7 +387,7 @@ def _kpi_for_day(local_date: date) -> dict[str, Any]:
         "method": {
             "energy_balance": "Między pełnymi godzinami: pierwszy pomiar w H i pierwszy w H+1 na licznikach E_imp/E_exp.",
             "deposit": "Gdy net_kWh > 0: nadwyżka × RCE godzinowe → wpływ do depozytu.",
-            "bill": "Gdy net_kWh < 0: nadwyżka importu × cena efektywna z taryfy (G12+RCE) → rachunek.",
+            "bill": "Gdy net_kWh < 0: nadwyżka importu × (dystrybucja + energia stała wg strefy G12 w tej godzinie).",
         },
         "warnings": boundary_warnings,
         "totals": totals,
@@ -415,6 +417,16 @@ def index() -> str:
     th, td { border-bottom: 1px solid rgba(127,127,127,0.25); padding: 6px 8px; text-align: left; vertical-align: top; }
     th { position: sticky; top: 0; background: rgba(0,0,0,0.05); backdrop-filter: blur(6px); }
     .muted { opacity: 0.7; }
+    table.forecast td, table.forecast th { text-align: right; font-variant-numeric: tabular-nums; }
+    table.forecast td:first-child, table.forecast th:first-child,
+    table.forecast td:nth-child(2), table.forecast th:nth-child(2) { text-align: left; }
+    table.forecast .grp-price { background: rgba(255, 200, 80, 0.10); }
+    table.forecast .grp-load { background: rgba(120, 180, 255, 0.10); }
+    table.forecast .grp-pv { background: rgba(120, 220, 140, 0.10); }
+    table.forecast tr.day-break td { border-top: 2px solid rgba(127,127,127,0.55); }
+    table.forecast tr.now td { background: rgba(255, 215, 0, 0.18); font-weight: 700; }
+    table.forecast tr.past td { opacity: 0.55; }
+    .nodata { opacity: 0.35; }
     @media (max-width: 1200px) { .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } .grid4 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
     @media (max-width: 760px) { .grid, .grid4 { grid-template-columns: repeat(1, minmax(0, 1fr)); } }
   </style>
@@ -473,48 +485,30 @@ def index() -> str:
   <div class="grid4" id="kpiCards"></div>
   <div class="muted" id="kpiWarnings" style="margin-top:8px;"></div>
 
-  <h2>RCE pricing (today)</h2>
-  <table>
-    <thead>
-      <tr>
-        <th>hour</th>
-        <th>zone</th>
-        <th>RCE [PLN/kWh]</th>
-        <th>effective import [PLN/kWh]</th>
-      </tr>
-    </thead>
-    <tbody id="pricingRows"></tbody>
-  </table>
-
-  <h2>PV forecast (next 24h)</h2>
-  <table>
-    <thead>
-      <tr>
-        <th>date</th>
-        <th>hour</th>
-        <th>pv_kw</th>
-        <th>pv_kw_p10</th>
-        <th>pv_kw_p90</th>
-      </tr>
-    </thead>
-    <tbody id="pvRows"></tbody>
-  </table>
-
-  <h2>Load forecast (next 24h)</h2>
+  <h2>Forecast (today + tomorrow)</h2>
+  <div class="muted" id="forecastMeta" style="margin-top:4px;"></div>
   <div class="muted" id="loadNowcast" style="margin-top:4px;"></div>
-  <table>
+  <table class="forecast">
     <thead>
       <tr>
-        <th>date</th>
-        <th>hour</th>
-        <th>p25 [kWh]</th>
-        <th>p50 [kWh]</th>
-        <th>p75 [kWh]</th>
-        <th>samples</th>
-        <th>source</th>
+        <th rowspan="2">date</th>
+        <th rowspan="2">hour</th>
+        <th colspan="2" class="grp-price">price [PLN/kWh]</th>
+        <th colspan="3" class="grp-load">load [kWh]</th>
+        <th colspan="3" class="grp-pv">PV [kW]</th>
+      </tr>
+      <tr>
+        <th class="grp-price" title="Import netto w tej godzinie: TARIFF_DISTRIBUTION + TARIFF_ENERGY (dzień lub noc G12: 22–6, 13–15 = noc)">buy</th>
+        <th class="grp-price" title="Eksport netto w tej godzinie: RCE PLN/kWh">sell</th>
+        <th class="grp-load">p25</th>
+        <th class="grp-load">p50</th>
+        <th class="grp-load">p75</th>
+        <th class="grp-pv">p10</th>
+        <th class="grp-pv">mean</th>
+        <th class="grp-pv">p90</th>
       </tr>
     </thead>
-    <tbody id="loadRows"></tbody>
+    <tbody id="forecastRows"></tbody>
   </table>
 
   <h2>History (newest first)</h2>
@@ -672,19 +666,15 @@ document.getElementById("saveWatchdog").addEventListener("click", () => saveWatc
 document.getElementById("resetWatchdog").addEventListener("click", () => resetWatchdog().catch(console.error));
 
 async function refresh() {
-  const [statusRes, histRes, pricingRes, pvRes, loadRes, kpiRes] = await Promise.all([
+  const [statusRes, histRes, forecastRes, kpiRes] = await Promise.all([
     fetch("/api/status"),
     fetch("/api/history?limit=200"),
-    fetch("/api/pricing/day"),
-    fetch("/api/pv-forecast?hours=24"),
-    fetch("/api/load-forecast?hours=24"),
+    fetch("/api/forecast/combined"),
     fetch("/api/kpi/today"),
   ]);
   const status = await statusRes.json();
   const hist = await histRes.json();
-  const pricing = await pricingRes.json();
-  const pv = await pvRes.json();
-  const load = await loadRes.json();
+  const forecast = await forecastRes.json();
   const kpi = await kpiRes.json();
 
   document.getElementById("logPath").textContent = status.log_path || "—";
@@ -730,38 +720,47 @@ async function refresh() {
     ? `KPI warnings (${warns.length}): ${warns.slice(0, 5).join(" · ")}${warns.length > 5 ? " …" : ""}`
     : "";
 
-  const pricingRows = (pricing.hours || []).map(h => `<tr>
-      <td>${String(h.hour).padStart(2, "0")}:00</td>
-      <td>${fmt(h.zone)}</td>
-      <td>${Number(h.rce_pln_kwh || 0).toFixed(4)}</td>
-      <td>${Number(h.effective_import_pln_kwh || 0).toFixed(4)}</td>
-    </tr>`).join("");
-  document.getElementById("pricingRows").innerHTML = pricingRows;
+  const fcell = (v, digits) => (v === null || v === undefined)
+    ? `<td class="nodata">—</td>`
+    : `<td>${Number(v).toFixed(digits)}</td>`;
 
-  const pvRows = (pv.hours || []).slice(0, 24).map(h => `<tr>
-      <td>${fmt(h.date)}</td>
-      <td>${String(h.hour).padStart(2, "0")}:00</td>
-      <td>${Number(h.pv_kw || 0).toFixed(3)}</td>
-      <td>${Number(h.pv_kw_p10 || 0).toFixed(3)}</td>
-      <td>${Number(h.pv_kw_p90 || 0).toFixed(3)}</td>
-    </tr>`).join("");
-  document.getElementById("pvRows").innerHTML = pvRows;
+  const fcRows = forecast.rows || [];
+  const nowDate = (forecast.now || "").slice(0, 10);
+  const nowHour = Number((forecast.now || "T00").slice(11, 13));
+  let prevDate = null;
+  const fcHtml = fcRows.map(r => {
+    const cls = [];
+    if (prevDate && r.date !== prevDate) cls.push("day-break");
+    if (r.date === nowDate && r.hour === nowHour) cls.push("now");
+    if (r.date < nowDate || (r.date === nowDate && r.hour < nowHour)) cls.push("past");
+    prevDate = r.date;
+    const trClass = cls.length ? ` class="${cls.join(" ")}"` : "";
+    return `<tr${trClass}>
+      <td>${r.date.slice(5)}</td>
+      <td>${String(r.hour).padStart(2, "0")}:00</td>
+      ${fcell(r.buy_pln_kwh, 4)}
+      ${fcell(r.sell_pln_kwh, 4)}
+      ${fcell(r.load_kwh_p25, 3)}
+      ${fcell(r.load_kwh_p50, 3)}
+      ${fcell(r.load_kwh_p75, 3)}
+      ${fcell(r.pv_kw_p10, 3)}
+      ${fcell(r.pv_kw, 3)}
+      ${fcell(r.pv_kw_p90, 3)}
+    </tr>`;
+  }).join("");
+  document.getElementById("forecastRows").innerHTML = fcHtml;
 
-  const nc = load.nowcast || {};
+  const meta = [];
+  meta.push(`today RCE: ${fmt(forecast.pricing_today_source)}`);
+  meta.push(forecast.pricing_tomorrow_available
+    ? `tomorrow RCE: ${fmt(forecast.pricing_tomorrow_source)}`
+    : `tomorrow RCE: not yet published`);
+  document.getElementById("forecastMeta").textContent = meta.join(" · ");
+
+  const nc = forecast.load_nowcast || {};
   document.getElementById("loadNowcast").textContent = nc.applied
-    ? `nowcast: bias ${Number(nc.bias_w || 0).toFixed(0)} W (ostatnie ${nc.window_min ?? "—"} min vs baseline p50 × 1000); decay ${nc.decay_hours ?? "—"} h, max Δ ${Number(nc.max_delta_kwh ?? 0).toFixed(2)} kWh/h`
+    ? `load nowcast: bias ${Number(nc.bias_w || 0).toFixed(0)} W (ostatnie ${nc.window_min ?? "—"} min vs baseline p50 × 1000); decay ${nc.decay_hours ?? "—"} h, max Δ ${Number(nc.max_delta_kwh ?? 0).toFixed(2)} kWh/h`
     : `load nowcast: ${nc.reason ? "off — " + nc.reason : "—"}`;
-
-  const loadRows = (load.hours || []).slice(0, 24).map(h => `<tr>
-      <td>${fmt(h.date)}</td>
-      <td>${String(h.hour).padStart(2, "0")}:00</td>
-      <td>${Number(h.load_kwh_p25 || 0).toFixed(3)}</td>
-      <td>${Number(h.load_kwh_p50 || 0).toFixed(3)}</td>
-      <td>${Number(h.load_kwh_p75 || 0).toFixed(3)}</td>
-      <td>${fmt(h.samples)}</td>
-      <td>${fmt(h.source)}</td>
-    </tr>`).join("");
-  document.getElementById("loadRows").innerHTML = loadRows;
 
   const rows = (hist.rows || []).map(r => {
     const f = r.fields || {};
@@ -894,6 +893,115 @@ def api_load_forecast_backtest(
 def api_kpi_today() -> JSONResponse:
     payload = _kpi_for_day(date.today())
     return JSONResponse(payload)
+
+
+# Memoize tomorrow's pricing fetch to avoid hammering PSE/proxy every dashboard
+# refresh while RCE for tomorrow is not yet published. Cache both success and
+# failure for a short TTL; on success the underlying RCE module also persists
+# its own on-disk cache, so subsequent process starts are cheap too.
+_TOMORROW_PRICING_TTL_S = 300.0
+_tomorrow_pricing_cache: tuple[date, float, dict[str, Any] | None] | None = None
+
+
+def _pricing_for_day_quiet(local_date: date) -> dict[str, Any] | None:
+    """Like pricing_day_breakdown but returns None on any error (and caches that)."""
+    global _tomorrow_pricing_cache
+    now = time.monotonic()
+    cached = _tomorrow_pricing_cache
+    if cached is not None:
+        cached_date, cached_at, cached_val = cached
+        if cached_date == local_date and (now - cached_at) < _TOMORROW_PRICING_TTL_S:
+            return cached_val
+    try:
+        val: dict[str, Any] | None = pricing_day_breakdown(local_date)
+    except Exception as e:
+        logger.info("pricing for %s not available yet: %s", local_date.isoformat(), e)
+        val = None
+    _tomorrow_pricing_cache = (local_date, now, val)
+    return val
+
+
+def _combined_forecast_payload() -> dict[str, Any]:
+    """48 hours starting today 00:00 with RCE/G12, load forecast and PV forecast merged."""
+    today = date.today()
+    tomorrow = today + timedelta(days=1)
+
+    try:
+        pricing_today: dict[str, Any] | None = pricing_day_breakdown(today)
+    except Exception as e:
+        logger.warning("pricing for today not available: %s", e)
+        pricing_today = None
+    pricing_tomorrow = _pricing_for_day_quiet(tomorrow)
+
+    def price_lookup(pricing: dict[str, Any] | None) -> dict[int, dict[str, Any]]:
+        if not pricing:
+            return {}
+        return {int(h["hour"]): h for h in pricing.get("hours", [])}
+
+    price_today = price_lookup(pricing_today)
+    price_tomorrow = price_lookup(pricing_tomorrow)
+
+    try:
+        pv_payload = fetch_hourly_pv_forecast(hours=96)
+    except (RuntimeError, httpx.HTTPError) as e:
+        logger.warning("pv forecast unavailable: %s", e)
+        pv_payload = {"hours": []}
+    pv_by_dh = {(str(h.get("date")), int(h.get("hour"))): h for h in pv_payload.get("hours", [])}
+
+    now = datetime.now()
+    load_payload = forecast_load_hours(start_dt=now, hours=48)
+    load_by_dh = {
+        (str(h.get("date")), int(h.get("hour"))): h for h in load_payload.get("hours", [])
+    }
+
+    rows: list[dict[str, Any]] = []
+    start_dt = datetime.combine(today, datetime.min.time())
+    for offset in range(48):
+        slot = start_dt + timedelta(hours=offset)
+        d = slot.date()
+        h = slot.hour
+        d_iso = d.isoformat()
+
+        if d == today:
+            p = price_today.get(h)
+        elif d == tomorrow:
+            p = price_tomorrow.get(h)
+        else:
+            p = None
+
+        pv_row = pv_by_dh.get((d_iso, h))
+        load_row = load_by_dh.get((d_iso, h))
+
+        rows.append(
+            {
+                "date": d_iso,
+                "hour": h,
+                "buy_pln_kwh": p.get("import_pln_per_kwh") if p else None,
+                "sell_pln_kwh": p.get("rce_pln_kwh") if p else None,
+                "load_kwh_p25": load_row.get("load_kwh_p25") if load_row else None,
+                "load_kwh_p50": load_row.get("load_kwh_p50") if load_row else None,
+                "load_kwh_p75": load_row.get("load_kwh_p75") if load_row else None,
+                "pv_kw": pv_row.get("pv_kw") if pv_row else None,
+                "pv_kw_p10": pv_row.get("pv_kw_p10") if pv_row else None,
+                "pv_kw_p90": pv_row.get("pv_kw_p90") if pv_row else None,
+            }
+        )
+
+    return {
+        "now": now.isoformat(timespec="seconds"),
+        "today": today.isoformat(),
+        "tomorrow": tomorrow.isoformat(),
+        "pricing_today_source": (pricing_today or {}).get("source"),
+        "pricing_tomorrow_source": (pricing_tomorrow or {}).get("source"),
+        "pricing_tomorrow_available": pricing_tomorrow is not None,
+        "load_nowcast": load_payload.get("nowcast", {}),
+        "rows": rows,
+    }
+
+
+@app.get("/api/forecast/combined")
+def api_forecast_combined() -> JSONResponse:
+    return JSONResponse(_combined_forecast_payload())
 
 
 @app.get("/api/guardian/control")
