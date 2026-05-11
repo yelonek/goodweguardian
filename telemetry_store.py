@@ -27,6 +27,7 @@ class CycleTelemetryRecord(BaseModel):
     soc_pct: float
     E_imp_kwh: float
     E_exp_kwh: float
+    E_pv_kwh: float | None = None
     e_day_imp_kwh: float | None = None
     e_day_exp_kwh: float | None = None
     remaining_kwh: float

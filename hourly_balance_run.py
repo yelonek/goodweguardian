@@ -80,6 +80,7 @@ from sensor_mapping import (
     ENERGY_IMPORTED_TOTAL,
     GRID_POWER,
     HOUSE_CONSUMPTION_POWER,
+    PV_ENERGY_TOTAL,
     PV_POWER,
 )
 from telemetry_store import (
@@ -395,6 +396,7 @@ async def run_one_cycle() -> None:
         ts_utc, loc_date, loc_h, loc_m, loc_wd, loc_we = build_ts_and_calendar(now)
         e_day_imp = _get_optional_float(runtime, ENERGY_IMPORTED_DAY)
         e_day_exp = _get_optional_float(runtime, ENERGY_EXPORTED_DAY)
+        E_pv = _get_optional_float(runtime, PV_ENERGY_TOTAL)
         try:
             append_cycle_record(
                 CycleTelemetryRecord(
@@ -411,6 +413,7 @@ async def run_one_cycle() -> None:
                     soc_pct=soc_pct,
                     E_imp_kwh=E_imp,
                     E_exp_kwh=E_exp,
+                    E_pv_kwh=E_pv,
                     e_day_imp_kwh=e_day_imp,
                     e_day_exp_kwh=e_day_exp,
                     remaining_kwh=remaining_kwh,

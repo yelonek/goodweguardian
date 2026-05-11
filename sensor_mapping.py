@@ -24,6 +24,9 @@ BATTERY_SOC = "battery_soc"
 ENERGY_IMPORTED_TOTAL = "meter_e_total_imp"   # zakupiona z sieci
 ENERGY_EXPORTED_TOTAL = "meter_e_total_exp"  # oddana do sieci
 
+# Energia PV skumulowana [kWh] — z inwertera (monotoniczny licznik produkcji PV)
+PV_ENERGY_TOTAL = "e_total"
+
 # Opcjonalnie: dzienne z inwertera (miernik może nie mieć dziennych)
 ENERGY_IMPORTED_DAY = "e_day_imp"
 ENERGY_EXPORTED_DAY = "e_day_exp"
