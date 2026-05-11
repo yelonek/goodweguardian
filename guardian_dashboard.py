@@ -26,8 +26,13 @@ from guardian_watchdog_override import (
     watchdog_soc_api_payload,
 )
 from baseline_info import baseline_spec
-from load_forecast import forecast_load_hours, run_load_forecast_backtest
-from pv_forecast import fetch_hourly_pv_forecast
+from load_forecast import (
+    build_daily_hourly_kwh_cache,
+    forecast_load_hours,
+    predict_load_one_hour,
+    run_load_forecast_backtest,
+)
+from pv_forecast import fetch_hourly_pv_forecast, fetch_hourly_pv_forecast_with_history
 
 app = FastAPI(title="GoodWeGuardian Dashboard", version="0.1.0")
 
@@ -157,7 +162,9 @@ def _parse_dashboard_line(line: str) -> DashboardRow | None:
     fields["intervene"] = grab(r"interwen=(True|False)", lambda v: v == "True")
 
     # reason is between "| interwen=... | " and optional "| cmd="
-    mm_reason = re.search(r"\|\s+interwen=(?:True|False)\s+\|\s+([^|]+?)(?:\s+\|\s+cmd=|$)", line)
+    mm_reason = re.search(
+        r"\|\s+interwen=(?:True|False)\s+\|\s+([^|]+?)(?:\s+\|\s+cmd=|$)", line
+    )
     fields["reason"] = mm_reason.group(1).strip() if mm_reason else None
 
     mm_cmd = re.search(r"\|\s+cmd=(On|Off)\s+([+-]?\d+)%\s+(\d+)s", line)
@@ -264,7 +271,9 @@ def _first_reading_in_hour(
     return None
 
 
-def _hourly_counter_net_kwh(*, day: date) -> tuple[dict[int, dict[str, Any]], list[str]]:
+def _hourly_counter_net_kwh(
+    *, day: date
+) -> tuple[dict[int, dict[str, Any]], list[str]]:
     """
     Dla każdej godziny H: bilans energii między granicami pełnych godzin [H, H+1),
     na licznikach E_imp_kwh / E_exp_kwh:
@@ -298,7 +307,9 @@ def _hourly_counter_net_kwh(*, day: date) -> tuple[dict[int, dict[str, Any]], li
             if start is None:
                 warnings.append(f"Brak pierwszego pomiaru w godzinie {h:02d}")
             if end is None:
-                warnings.append(f"Brak pierwszego pomiaru po godzinie {h:02d} (koniec interwału)")
+                warnings.append(
+                    f"Brak pierwszego pomiaru po godzinie {h:02d} (koniec interwału)"
+                )
             continue
         try:
             imp0 = float(start["E_imp_kwh"])
@@ -427,6 +438,9 @@ def index() -> str:
     table.forecast tr.now td { background: rgba(255, 215, 0, 0.18); font-weight: 700; }
     table.forecast tr.past td { opacity: 0.55; }
     .nodata { opacity: 0.35; }
+    table.forecast td.delta-pos { color: #0d8050; }
+    table.forecast td.delta-neg { color: #b32d2d; }
+    table.forecast td.delta-ok { opacity: 0.85; }
     @media (max-width: 1200px) { .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } .grid4 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
     @media (max-width: 760px) { .grid, .grid4 { grid-template-columns: repeat(1, minmax(0, 1fr)); } }
   </style>
@@ -487,6 +501,7 @@ def index() -> str:
 
   <h2>Forecast (today + tomorrow)</h2>
   <div class="muted" id="forecastMeta" style="margin-top:4px;"></div>
+  <div class="muted" id="forecastCompareNote" style="font-size:11px; max-width:960px; margin-top:6px; line-height:1.35;"></div>
   <div class="muted" id="loadNowcast" style="margin-top:4px;"></div>
   <table class="forecast">
     <thead>
@@ -494,8 +509,8 @@ def index() -> str:
         <th rowspan="2">date</th>
         <th rowspan="2">hour</th>
         <th colspan="2" class="grp-price">price [PLN/kWh]</th>
-        <th colspan="3" class="grp-load">load [kWh]</th>
-        <th colspan="3" class="grp-pv">PV [kW]</th>
+        <th colspan="5" class="grp-load">load [kWh]</th>
+        <th colspan="5" class="grp-pv">PV [kW]</th>
       </tr>
       <tr>
         <th class="grp-price" title="Import netto w tej godzinie: TARIFF_DISTRIBUTION + TARIFF_ENERGY (dzień lub noc G12: 22–6, 13–15 = noc)">buy</th>
@@ -503,9 +518,13 @@ def index() -> str:
         <th class="grp-load">p25</th>
         <th class="grp-load">p50</th>
         <th class="grp-load">p75</th>
+        <th class="grp-load" title="Średnia consumption_w/1000 z telemetrii — tylko po zakończeniu godziny">act</th>
+        <th class="grp-load" title="act − p50 (w tej kolumnie p50)">Δ</th>
         <th class="grp-pv">p10</th>
         <th class="grp-pv">mean</th>
         <th class="grp-pv">p90</th>
+        <th class="grp-pv" title="Średnia pv_w/1000 z telemetrii — tylko po zakończeniu godziny">act</th>
+        <th class="grp-pv" title="act − mean, gdy jest prognoza mean">Δ</th>
       </tr>
     </thead>
     <tbody id="forecastRows"></tbody>
@@ -724,6 +743,16 @@ async function refresh() {
     ? `<td class="nodata">—</td>`
     : `<td>${Number(v).toFixed(digits)}</td>`;
 
+  const fcellDelta = (v, digits, eps) => {
+    if (v === null || v === undefined) return `<td class="nodata">—</td>`;
+    const n = Number(v);
+    let cls = "delta-ok";
+    if (n > eps) cls = "delta-pos";
+    else if (n < -eps) cls = "delta-neg";
+    const s = (n >= 0 ? "+" : "") + n.toFixed(digits);
+    return `<td class="${cls}">${s}</td>`;
+  };
+
   const fcRows = forecast.rows || [];
   const nowDate = (forecast.now || "").slice(0, 10);
   const nowHour = Number((forecast.now || "T00").slice(11, 13));
@@ -743,9 +772,13 @@ async function refresh() {
       ${fcell(r.load_kwh_p25, 3)}
       ${fcell(r.load_kwh_p50, 3)}
       ${fcell(r.load_kwh_p75, 3)}
+      ${fcell(r.load_kwh_actual, 3)}
+      ${fcellDelta(r.load_kwh_delta_p50, 3, 0.03)}
       ${fcell(r.pv_kw_p10, 3)}
       ${fcell(r.pv_kw, 3)}
       ${fcell(r.pv_kw_p90, 3)}
+      ${fcell(r.pv_kw_actual, 3)}
+      ${fcellDelta(r.pv_kw_delta_mean, 3, 0.05)}
     </tr>`;
   }).join("");
   document.getElementById("forecastRows").innerHTML = fcHtml;
@@ -756,6 +789,8 @@ async function refresh() {
     ? `tomorrow RCE: ${fmt(forecast.pricing_tomorrow_source)}`
     : `tomorrow RCE: not yet published`);
   document.getElementById("forecastMeta").textContent = meta.join(" · ");
+  const cn = document.getElementById("forecastCompareNote");
+  if (cn) cn.textContent = forecast.comparison_note || "";
 
   const nc = forecast.load_nowcast || {};
   document.getElementById("loadNowcast").textContent = nc.applied
@@ -832,7 +867,9 @@ def api_watchdog_soc_put(
 
 
 @app.delete("/api/guardian/watchdog-soc")
-def api_watchdog_soc_delete(_: None = Depends(_require_guardian_api_key)) -> JSONResponse:
+def api_watchdog_soc_delete(
+    _: None = Depends(_require_guardian_api_key),
+) -> JSONResponse:
     clear_watchdog_override()
     return JSONResponse(watchdog_soc_api_payload())
 
@@ -903,6 +940,47 @@ _TOMORROW_PRICING_TTL_S = 300.0
 _tomorrow_pricing_cache: tuple[date, float, dict[str, Any] | None] | None = None
 
 
+def _telemetry_hourly_load_pv_actuals(
+    local_date: date,
+) -> tuple[dict[int, float], dict[int, float]]:
+    """
+    Średnia consumption_w / 1000 → przybliżone kWh w godzinie (jak baseline load).
+    Średnia pv_w / 1000 → kW.
+    """
+    path = TELEMETRY_DIR / f"telemetry_{local_date.isoformat()}.jsonl"
+    buckets_c: dict[int, list[float]] = {h: [] for h in range(24)}
+    buckets_p: dict[int, list[float]] = {h: [] for h in range(24)}
+    if not path.exists():
+        return {}, {}
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                    hour = int(row["local_hour"])
+                    cw = float(row["consumption_w"])
+                    pw = float(row.get("pv_w", 0.0))
+                except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if 0 <= hour <= 23:
+                    buckets_c[hour].append(cw)
+                    buckets_p[hour].append(pw)
+    except OSError:
+        return {}, {}
+
+    load_kwh: dict[int, float] = {}
+    pv_kw: dict[int, float] = {}
+    for h in range(24):
+        if buckets_c[h]:
+            load_kwh[h] = (sum(buckets_c[h]) / len(buckets_c[h])) / 1000.0
+        if buckets_p[h]:
+            pv_kw[h] = (sum(buckets_p[h]) / len(buckets_p[h])) / 1000.0
+    return load_kwh, pv_kw
+
+
 def _pricing_for_day_quiet(local_date: date) -> dict[str, Any] | None:
     """Like pricing_day_breakdown but returns None on any error (and caches that)."""
     global _tomorrow_pricing_cache
@@ -925,6 +1003,7 @@ def _combined_forecast_payload() -> dict[str, Any]:
     """48 hours starting today 00:00 with RCE/G12, load forecast and PV forecast merged."""
     today = date.today()
     tomorrow = today + timedelta(days=1)
+    lookback_days = 28
 
     try:
         pricing_today: dict[str, Any] | None = pricing_day_breakdown(today)
@@ -942,16 +1021,27 @@ def _combined_forecast_payload() -> dict[str, Any]:
     price_tomorrow = price_lookup(pricing_tomorrow)
 
     try:
-        pv_payload = fetch_hourly_pv_forecast(hours=96)
+        pv_payload = fetch_hourly_pv_forecast_with_history(hours_back=48, hours_forward=48)
     except (RuntimeError, httpx.HTTPError) as e:
-        logger.warning("pv forecast unavailable: %s", e)
+        logger.warning("pv forecast (history+forecasts) unavailable: %s", e)
         pv_payload = {"hours": []}
-    pv_by_dh = {(str(h.get("date")), int(h.get("hour"))): h for h in pv_payload.get("hours", [])}
+    pv_by_dh = {
+        (str(h.get("date")), int(h.get("hour"))): h for h in pv_payload.get("hours", [])
+    }
 
     now = datetime.now()
-    load_payload = forecast_load_hours(start_dt=now, hours=48)
+    load_payload = forecast_load_hours(start_dt=now, hours=48, lookback_days=lookback_days)
     load_by_dh = {
-        (str(h.get("date")), int(h.get("hour"))): h for h in load_payload.get("hours", [])
+        (str(h.get("date")), int(h.get("hour"))): h
+        for h in load_payload.get("hours", [])
+    }
+
+    cache = build_daily_hourly_kwh_cache()
+    actuals_today = _telemetry_hourly_load_pv_actuals(today)
+    actuals_tomorrow = _telemetry_hourly_load_pv_actuals(tomorrow)
+    actuals_by_date: dict[str, tuple[dict[int, float], dict[int, float]]] = {
+        today.isoformat(): actuals_today,
+        tomorrow.isoformat(): actuals_tomorrow,
     }
 
     rows: list[dict[str, Any]] = []
@@ -961,6 +1051,8 @@ def _combined_forecast_payload() -> dict[str, Any]:
         d = slot.date()
         h = slot.hour
         d_iso = d.isoformat()
+        slot_end = slot + timedelta(hours=1)
+        hour_complete = slot_end <= now
 
         if d == today:
             p = price_today.get(h)
@@ -971,19 +1063,51 @@ def _combined_forecast_payload() -> dict[str, Any]:
 
         pv_row = pv_by_dh.get((d_iso, h))
         load_row = load_by_dh.get((d_iso, h))
+        base = predict_load_one_hour(d, h, lookback_days, cache)
+        if load_row is not None:
+            load_p25 = float(load_row["load_kwh_p25"])
+            load_p50 = float(load_row["load_kwh_p50"])
+            load_p75 = float(load_row["load_kwh_p75"])
+        else:
+            load_p25 = float(base["load_kwh_p25"])
+            load_p50 = float(base["load_kwh_p50"])
+            load_p75 = float(base["load_kwh_p75"])
+
+        act_load_map, act_pv_map = actuals_by_date.get(d_iso, ({}, {}))
+        load_actual = act_load_map.get(h) if hour_complete else None
+        pv_actual = act_pv_map.get(h) if hour_complete else None
+
+        pv_mean = float(pv_row["pv_kw"]) if pv_row and pv_row.get("pv_kw") is not None else None
+        load_delta_p50 = (
+            float(load_actual) - load_p50
+            if hour_complete and load_actual is not None
+            else None
+        )
+        pv_delta_mean = (
+            float(pv_actual) - pv_mean
+            if hour_complete
+            and pv_actual is not None
+            and pv_mean is not None
+            else None
+        )
 
         rows.append(
             {
                 "date": d_iso,
                 "hour": h,
+                "hour_complete": hour_complete,
                 "buy_pln_kwh": p.get("import_pln_per_kwh") if p else None,
                 "sell_pln_kwh": p.get("rce_pln_kwh") if p else None,
-                "load_kwh_p25": load_row.get("load_kwh_p25") if load_row else None,
-                "load_kwh_p50": load_row.get("load_kwh_p50") if load_row else None,
-                "load_kwh_p75": load_row.get("load_kwh_p75") if load_row else None,
-                "pv_kw": pv_row.get("pv_kw") if pv_row else None,
-                "pv_kw_p10": pv_row.get("pv_kw_p10") if pv_row else None,
-                "pv_kw_p90": pv_row.get("pv_kw_p90") if pv_row else None,
+                "load_kwh_p25": load_p25,
+                "load_kwh_p50": load_p50,
+                "load_kwh_p75": load_p75,
+                "load_kwh_actual": load_actual,
+                "load_kwh_delta_p50": load_delta_p50,
+                "pv_kw": pv_mean,
+                "pv_kw_p10": float(pv_row["pv_kw_p10"]) if pv_row and pv_row.get("pv_kw_p10") is not None else None,
+                "pv_kw_p90": float(pv_row["pv_kw_p90"]) if pv_row and pv_row.get("pv_kw_p90") is not None else None,
+                "pv_kw_actual": pv_actual,
+                "pv_kw_delta_mean": pv_delta_mean,
             }
         )
 
@@ -995,6 +1119,12 @@ def _combined_forecast_payload() -> dict[str, Any]:
         "pricing_tomorrow_source": (pricing_tomorrow or {}).get("source"),
         "pricing_tomorrow_available": pricing_tomorrow is not None,
         "load_nowcast": load_payload.get("nowcast", {}),
+        "comparison_note": (
+            "Zakończone godziny: act = średnia z telemetrii w tej godzinie (load ≈ consumption_w/1000 kWh/h, "
+            "PV ≈ pv_w/1000 kW). Prognoza obciążenia: baseline z historii; dla slotów od „teraz” w przód "
+            "— wartości z API z korektą nowcast (jeśli włączona). Δ load = act − p50 (ten sam p50 co w tabeli). "
+            "Δ PV = act − mean tylko gdy jest prognoza mean w tym wierszu."
+        ),
         "rows": rows,
     }
 
@@ -1005,7 +1135,9 @@ def api_forecast_combined() -> JSONResponse:
 
 
 @app.get("/api/guardian/control")
-def api_guardian_control_get(_: None = Depends(_require_guardian_api_key)) -> JSONResponse:
+def api_guardian_control_get(
+    _: None = Depends(_require_guardian_api_key),
+) -> JSONResponse:
     enabled, source = effective_control_enabled()
     return JSONResponse({"control_enabled": enabled, "source": source})
 
@@ -1018,4 +1150,3 @@ def api_guardian_control_put(
     write_control_override(body.control_enabled)
     enabled, source = effective_control_enabled()
     return JSONResponse({"control_enabled": enabled, "source": source})
-
