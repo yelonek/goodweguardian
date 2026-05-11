@@ -516,7 +516,7 @@ def index() -> str:
         <th rowspan="2">hour</th>
         <th colspan="2" class="grp-price">price [PLN/kWh]</th>
         <th colspan="5" class="grp-load">load [kWh]</th>
-        <th colspan="5" class="grp-pv">PV [kW]</th>
+        <th colspan="5" class="grp-pv">PV [kWh]</th>
       </tr>
       <tr>
         <th class="grp-price" title="Import netto w tej godzinie: TARIFF_DISTRIBUTION + TARIFF_ENERGY (dzień lub noc G12: 22–6, 13–15 = noc)">buy</th>
@@ -529,7 +529,7 @@ def index() -> str:
         <th class="grp-pv">p10</th>
         <th class="grp-pv">mean</th>
         <th class="grp-pv">p90</th>
-        <th class="grp-pv" title="Średnia pv_w/1000 z telemetrii — tylko po zakończeniu godziny">act</th>
+        <th class="grp-pv" title="Przyrost licznika e_total inwertera w tej godzinie (kWh) — tylko po zakończeniu godziny">act</th>
         <th class="grp-pv" title="act − mean, gdy jest prognoza mean">Δ</th>
       </tr>
     </thead>
@@ -780,11 +780,11 @@ async function refresh() {
       ${fcell(r.load_kwh_p75, 3)}
       ${fcell(r.load_kwh_actual, 3)}
       ${fcellDelta(r.load_kwh_delta_p50, 3, 0.03)}
-      ${fcell(r.pv_kw_p10, 3)}
-      ${fcell(r.pv_kw, 3)}
-      ${fcell(r.pv_kw_p90, 3)}
-      ${fcell(r.pv_kw_actual, 3)}
-      ${fcellDelta(r.pv_kw_delta_mean, 3, 0.05)}
+      ${fcell(r.pv_kwh_p10, 3)}
+      ${fcell(r.pv_kwh, 3)}
+      ${fcell(r.pv_kwh_p90, 3)}
+      ${fcell(r.pv_kwh_actual, 3)}
+      ${fcellDelta(r.pv_kwh_delta_mean, 3, 0.05)}
     </tr>`;
   }).join("");
   document.getElementById("forecastRows").innerHTML = fcHtml;
@@ -946,16 +946,55 @@ _TOMORROW_PRICING_TTL_S = 300.0
 _tomorrow_pricing_cache: tuple[date, float, dict[str, Any] | None] | None = None
 
 
+def _first_pv_kwh_per_hour(local_date: date) -> dict[int, float]:
+    """
+    Najwcześniejsza próbka E_pv_kwh (licznik e_total z inwertera) per godzina lokalna.
+    Zwraca {hour: kwh}. Godziny bez próbki lub bez pola E_pv_kwh — pominięte.
+    """
+    path = TELEMETRY_DIR / f"telemetry_{local_date.isoformat()}.jsonl"
+    if not path.exists():
+        return {}
+    best: dict[int, tuple[int, float]] = {}
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                    hour = int(row["local_hour"])
+                    minute = int(row["local_minute"])
+                except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if not (0 <= hour <= 23):
+                    continue
+                val = row.get("E_pv_kwh")
+                if val is None:
+                    continue
+                try:
+                    v = float(val)
+                except (TypeError, ValueError):
+                    continue
+                prev = best.get(hour)
+                if prev is None or minute < prev[0]:
+                    best[hour] = (minute, v)
+    except OSError:
+        return {}
+    return {h: v for h, (_m, v) in best.items()}
+
+
 def _telemetry_hourly_load_pv_actuals(
     local_date: date,
 ) -> tuple[dict[int, float], dict[int, float]]:
     """
-    Średnia consumption_w / 1000 → przybliżone kWh w godzinie (jak baseline load).
-    Średnia pv_w / 1000 → kW.
+    Load: średnia consumption_w / 1000 → przybliżone kWh w godzinie (jak baseline load).
+    PV:   Δ E_pv_kwh między pierwszą próbką godziny H a pierwszą próbką H+1
+          (z licznika ``e_total`` w inwerterze). Dla H=23 używa pierwszej próbki
+          z pliku telemetrii następnego dnia.
     """
     path = TELEMETRY_DIR / f"telemetry_{local_date.isoformat()}.jsonl"
     buckets_c: dict[int, list[float]] = {h: [] for h in range(24)}
-    buckets_p: dict[int, list[float]] = {h: [] for h in range(24)}
     if not path.exists():
         return {}, {}
     try:
@@ -968,23 +1007,37 @@ def _telemetry_hourly_load_pv_actuals(
                     row = json.loads(line)
                     hour = int(row["local_hour"])
                     cw = float(row["consumption_w"])
-                    pw = float(row.get("pv_w", 0.0))
                 except (KeyError, TypeError, ValueError, json.JSONDecodeError):
                     continue
                 if 0 <= hour <= 23:
                     buckets_c[hour].append(cw)
-                    buckets_p[hour].append(pw)
     except OSError:
         return {}, {}
 
     load_kwh: dict[int, float] = {}
-    pv_kw: dict[int, float] = {}
     for h in range(24):
         if buckets_c[h]:
             load_kwh[h] = (sum(buckets_c[h]) / len(buckets_c[h])) / 1000.0
-        if buckets_p[h]:
-            pv_kw[h] = (sum(buckets_p[h]) / len(buckets_p[h])) / 1000.0
-    return load_kwh, pv_kw
+
+    first_pv_today = _first_pv_kwh_per_hour(local_date)
+    first_pv_tomorrow = _first_pv_kwh_per_hour(local_date + timedelta(days=1))
+
+    pv_kwh: dict[int, float] = {}
+    for h in range(24):
+        start = first_pv_today.get(h)
+        if start is None:
+            continue
+        if h < 23:
+            end = first_pv_today.get(h + 1)
+        else:
+            end = first_pv_tomorrow.get(0)
+        if end is None:
+            continue
+        delta = end - start
+        if delta < 0:
+            continue
+        pv_kwh[h] = delta
+    return load_kwh, pv_kwh
 
 
 def _pricing_for_day_quiet(local_date: date) -> dict[str, Any] | None:
@@ -1109,11 +1162,11 @@ def _combined_forecast_payload() -> dict[str, Any]:
                 "load_kwh_p75": load_p75,
                 "load_kwh_actual": load_actual,
                 "load_kwh_delta_p50": load_delta_p50,
-                "pv_kw": pv_mean,
-                "pv_kw_p10": float(pv_row["pv_kw_p10"]) if pv_row and pv_row.get("pv_kw_p10") is not None else None,
-                "pv_kw_p90": float(pv_row["pv_kw_p90"]) if pv_row and pv_row.get("pv_kw_p90") is not None else None,
-                "pv_kw_actual": pv_actual,
-                "pv_kw_delta_mean": pv_delta_mean,
+                "pv_kwh": pv_mean,
+                "pv_kwh_p10": float(pv_row["pv_kw_p10"]) if pv_row and pv_row.get("pv_kw_p10") is not None else None,
+                "pv_kwh_p90": float(pv_row["pv_kw_p90"]) if pv_row and pv_row.get("pv_kw_p90") is not None else None,
+                "pv_kwh_actual": pv_actual,
+                "pv_kwh_delta_mean": pv_delta_mean,
             }
         )
 
@@ -1126,10 +1179,12 @@ def _combined_forecast_payload() -> dict[str, Any]:
         "pricing_tomorrow_available": pricing_tomorrow is not None,
         "load_nowcast": load_payload.get("nowcast", {}),
         "comparison_note": (
-            "Zakończone godziny: act = średnia z telemetrii w tej godzinie (load ≈ consumption_w/1000 kWh/h, "
-            "PV ≈ pv_w/1000 kW). Prognoza obciążenia: baseline z historii; dla slotów od „teraz” w przód "
-            "— wartości z API z korektą nowcast (jeśli włączona). Δ load = act − p50 (ten sam p50 co w tabeli). "
-            "Δ PV = act − mean tylko gdy jest prognoza mean w tym wierszu."
+            "Zakończone godziny: act load ≈ średnia consumption_w/1000 z telemetrii (kWh/h); "
+            "act PV = przyrost licznika e_total inwertera w tej godzinie (dokładne kWh, "
+            "first(H+1) − first(H)). Prognoza PV: średnia moc kW × 1h = kWh (sloty 30 min "
+            "z Solcast zagregowane do godziny). Prognoza obciążenia: baseline z historii; "
+            "dla slotów od „teraz” w przód — wartości z API z korektą nowcast (jeśli włączona). "
+            "Δ load = act − p50; Δ PV = act − mean tylko gdy jest prognoza mean w tym wierszu."
         ),
         "rows": rows,
     }
