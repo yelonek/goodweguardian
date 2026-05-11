@@ -443,6 +443,8 @@ def index() -> str:
     table.forecast td.delta-ok { opacity: 0.85; }
     @media (max-width: 1200px) { .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } .grid4 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
     @media (max-width: 760px) { .grid, .grid4 { grid-template-columns: repeat(1, minmax(0, 1fr)); } }
+    details.advanced-panel { margin: 14px 0 18px; }
+    details.advanced-panel > summary { cursor: pointer; font-weight: 700; font-size: 1.1em; user-select: none; }
   </style>
 </head>
 <body>
@@ -451,46 +453,50 @@ def index() -> str:
     <div class="tag">updated: <span id="updatedAt">—</span></div>
   </div>
 
-  <h2>Guardian control</h2>
-  <div class="card" style="max-width: 520px;">
-    <div class="k">API key (stored in browser localStorage)</div>
-    <input id="apiKey" type="password" placeholder="GUARDIAN_API_KEY" style="width: 100%; margin: 8px 0; padding: 6px;" />
-    <div class="row">
-      <button type="button" id="saveKey">Save key</button>
-      <button type="button" id="refreshControl">Refresh status</button>
-      <button type="button" id="enableControl">Enable writes</button>
-      <button type="button" id="disableControl">Disable writes</button>
+  <details class="advanced-panel">
+    <summary>Guardian control</summary>
+    <div class="card" style="max-width: 520px; margin-top: 10px;">
+      <div class="k">API key (stored in browser localStorage)</div>
+      <input id="apiKey" type="password" placeholder="GUARDIAN_API_KEY" style="width: 100%; margin: 8px 0; padding: 6px;" />
+      <div class="row">
+        <button type="button" id="saveKey">Save key</button>
+        <button type="button" id="refreshControl">Refresh status</button>
+        <button type="button" id="enableControl">Enable writes</button>
+        <button type="button" id="disableControl">Disable writes</button>
+      </div>
+      <div class="muted" style="margin-top:8px;">Status: <span id="controlStatus">—</span></div>
+      <div class="muted" style="font-size:12px;">
+        Same switch as <code>state/guardian_control_override.json</code> (<code>control_enabled</code>): these buttons only write that file.
+        While the file exists, it overrides <code>GUARDIAN_CONTROL_ENABLED</code> in <code>.env</code> (no process restart). Delete the file to follow <code>.env</code> again.
+        Runner and dashboard must share the same <code>state/</code> directory.
+      </div>
     </div>
-    <div class="muted" style="margin-top:8px;">Status: <span id="controlStatus">—</span></div>
-    <div class="muted" style="font-size:12px;">
-      Same switch as <code>state/guardian_control_override.json</code> (<code>control_enabled</code>): these buttons only write that file.
-      While the file exists, it overrides <code>GUARDIAN_CONTROL_ENABLED</code> in <code>.env</code> (no process restart). Delete the file to follow <code>.env</code> again.
-      Runner and dashboard must share the same <code>state/</code> directory.
-    </div>
-  </div>
+  </details>
 
-  <h2>Watchdog / SOC config</h2>
-  <div class="muted" style="margin-bottom:8px;">
-    Effective values after merging <code>.env</code> (at process start) with optional
-    <code>state/guardian_watchdog_override.json</code>. The hourly runner reloads that file every cycle — no restart.
-    Dashboard and runner must share the same <code>state/</code> directory (same as control override).
-  </div>
-  <div class="grid" id="watchdogSummaryCards"></div>
-  <div class="card" style="max-width: 520px; margin-top: 10px;">
-    <div class="k" id="wdPathLine">…</div>
-    <div style="display:grid; gap:8px; max-width: 440px; margin-top:8px;">
-      <label class="row">soc_night_reserve_pct <input id="wd_soc_night_reserve_pct" type="number" step="0.1" min="0" max="100" style="max-width: 8rem;" /></label>
-      <label class="row">soc_night_reserve_charge_pct <input id="wd_soc_night_reserve_charge_pct" type="number" step="1" min="-1" max="100" style="max-width: 8rem;" /></label>
-      <label class="row">soc_night_reserve_hours (CSV) <input id="wd_soc_night_reserve_hours" type="text" placeholder="22,23,0,1,2,3,4,5" style="width: 100%;" /></label>
-      <label class="row">soc_low_defense_threshold_pct <input id="wd_soc_low_defense_threshold_pct" type="number" step="0.1" min="0" max="100" style="max-width: 8rem;" /></label>
-      <label class="row">soc_full_defense_threshold_pct <input id="wd_soc_full_defense_threshold_pct" type="number" step="0.1" min="0" max="100" style="max-width: 8rem;" /></label>
+  <details class="advanced-panel">
+    <summary>Watchdog / SOC config</summary>
+    <div class="muted" style="margin: 10px 0 8px;">
+      Effective values after merging <code>.env</code> (at process start) with optional
+      <code>state/guardian_watchdog_override.json</code>. The hourly runner reloads that file every cycle — no restart.
+      Dashboard and runner must share the same <code>state/</code> directory (same as control override).
     </div>
-    <div class="row" style="margin-top:12px;">
-      <button type="button" id="saveWatchdog">Save overrides</button>
-      <button type="button" id="resetWatchdog">Clear overrides</button>
+    <div class="grid" id="watchdogSummaryCards"></div>
+    <div class="card" style="max-width: 520px; margin-top: 10px;">
+      <div class="k" id="wdPathLine">…</div>
+      <div style="display:grid; gap:8px; max-width: 440px; margin-top:8px;">
+        <label class="row">soc_night_reserve_pct <input id="wd_soc_night_reserve_pct" type="number" step="0.1" min="0" max="100" style="max-width: 8rem;" /></label>
+        <label class="row">soc_night_reserve_charge_pct <input id="wd_soc_night_reserve_charge_pct" type="number" step="1" min="-1" max="100" style="max-width: 8rem;" /></label>
+        <label class="row">soc_night_reserve_hours (CSV) <input id="wd_soc_night_reserve_hours" type="text" placeholder="22,23,0,1,2,3,4,5" style="width: 100%;" /></label>
+        <label class="row">soc_low_defense_threshold_pct <input id="wd_soc_low_defense_threshold_pct" type="number" step="0.1" min="0" max="100" style="max-width: 8rem;" /></label>
+        <label class="row">soc_full_defense_threshold_pct <input id="wd_soc_full_defense_threshold_pct" type="number" step="0.1" min="0" max="100" style="max-width: 8rem;" /></label>
+      </div>
+      <div class="row" style="margin-top:12px;">
+        <button type="button" id="saveWatchdog">Save overrides</button>
+        <button type="button" id="resetWatchdog">Clear overrides</button>
+      </div>
+      <div class="muted" id="wdSaveStatus" style="margin-top:8px;"></div>
     </div>
-    <div class="muted" id="wdSaveStatus" style="margin-top:8px;"></div>
-  </div>
+  </details>
 
   <h2>Current state</h2>
   <div class="grid" id="cards"></div>
