@@ -359,6 +359,23 @@ class TestWatchdogPolicy:
         assert d.enabled is True
         assert d.reason == "ok"
 
+    def test_late_export_surplus_low_pv_commands_charge_not_neutral(
+        self, default_inputs: BalanceInputs
+    ) -> None:
+        """Nadwyżka eksportu w kWh + małe PV: stary wzorzec max(bias, bias−P) dawał rozładowanie→0%→neutral."""
+        default_inputs.remaining_kwh = 0.15
+        default_inputs.time_to_end_s = 60.0
+        default_inputs.pv_w = 200.0
+        default_inputs.consumption_w = 2500.0
+        state = WatchdogState(mode="neutral", mode_since_s=None, import_streak=0)
+        cfg = WatchdogConfig(
+            late_window_s=600, late_power_threshold_kw=0.45, grid_export_bias_w=150.0
+        )
+        d = decide_watchdog(default_inputs, now_s=1000.0, state=state, cfg=cfg)
+        assert d.write_slot is True
+        assert d.mode == "charge"
+        assert d.power_pct < 0
+
     def test_emergency_import_triggers_even_early(
         self, default_inputs: BalanceInputs
     ) -> None:

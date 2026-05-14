@@ -460,14 +460,16 @@ def decide_watchdog(
             reason="late_but_below_threshold",
         )
 
-    # Docelowa moc sieci z biasem na lekki eksport.
+    # Docelowa moc sieci: import (remaining>0) musi być taki jak w compute_intervention (−required_w).
+    # Stary wzorzec max(bias, bias−required) zostawiał zawsze ~+bias eksportu — przy małym PV
+    # dawał rozładowanie → clamp „nie rozładuj przy surplusie” → 0% → direction_guard_neutral
+    # i brak sterowania mimo realnej energii do domknięcia.
     required_w = power_kw * 1000.0
     if inp.remaining_kwh < 0:
         # za dużo importu w energii -> chcemy eksport
         target_grid_w = cfg.grid_export_bias_w + required_w
     else:
-        # za dużo eksportu w energii -> chcemy zmniejszyć eksport; unikaj importu jeśli się da
-        target_grid_w = max(cfg.grid_export_bias_w, cfg.grid_export_bias_w - required_w)
+        target_grid_w = -required_w
 
     target_battery_w = target_grid_w - (inp.pv_w - inp.consumption_w)
     target_battery_w = max(-inp.p_battery_w, min(inp.p_battery_w, target_battery_w))
@@ -478,6 +480,9 @@ def decide_watchdog(
     target_pct = max(
         -100, min(100, int(round(target_battery_w / inp.watts_per_percent)))
     )
+    # Unikaj „martwego” 0% przy niezerowej mocy baterii (zaokrąglenie 35 W przy 70 W/%).
+    if target_pct == 0 and abs(target_battery_w) >= 0.5 * float(inp.watts_per_percent):
+        target_pct = 1 if target_battery_w > 0 else -1
 
     # Reguła kierunku + asymetria kosztowa: wolimy lekką nadwyżkę eksportu niż import z sieci.
     # - Nieładuj, dopóki remaining_kwh ≤ charge_min_remaining_kwh (ujemne, zero, mała nadwyżka).
@@ -515,14 +520,38 @@ def decide_watchdog(
     elif target_pct < 0:
         desired_mode = "charge"
     else:
-        return WatchdogDecision(
-            write_slot=False,
-            enabled=False,
-            power_pct=0,
-            duration_s=0.0,
-            mode="neutral",
-            reason="direction_guard_neutral",
-        )
+        # Neutral tylko przy bilansie w tolerancji (charge_min) lub bez mocy do sensownej interwencji.
+        if (
+            abs(float(inp.remaining_kwh)) <= float(cfg.charge_min_remaining_kwh)
+            and power_kw <= cfg.late_power_threshold_kw
+            and not emergency_import
+            and not emergency_unrecoverable
+        ):
+            return WatchdogDecision(
+                write_slot=False,
+                enabled=False,
+                power_pct=0,
+                duration_s=0.0,
+                mode="neutral",
+                reason="direction_guard_neutral",
+            )
+        # Resztkowa energia, ale % wyszło 0 — wymuś charge tylko powyżej charge_min (nie łam mikronadwyżki).
+        if float(inp.remaining_kwh) > float(cfg.charge_min_remaining_kwh):
+            target_pct = -max(1, min(100, int(round(power_kw * 1000.0 / inp.watts_per_percent))))
+            desired_mode = "charge"
+        elif float(inp.remaining_kwh) < 0.0 and min_discharge_assist > 0:
+            target_pct = min_discharge_assist
+            desired_mode = "discharge"
+            used_export_assist = True
+        else:
+            return WatchdogDecision(
+                write_slot=False,
+                enabled=False,
+                power_pct=0,
+                duration_s=0.0,
+                mode="neutral",
+                reason="direction_guard_neutral",
+            )
 
     if (
         state.mode in ("charge", "discharge")
