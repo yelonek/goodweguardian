@@ -33,6 +33,8 @@ from load_forecast import (
     run_load_forecast_backtest,
 )
 from pv_forecast import fetch_hourly_pv_forecast, fetch_hourly_pv_forecast_with_history
+from planner.plan_store import load_plan
+from planner.telemetry import hourly_actuals
 
 app = FastAPI(title="GoodWeGuardian Dashboard", version="0.1.0")
 
@@ -434,6 +436,7 @@ def index() -> str:
     table.forecast .grp-price { background: rgba(255, 200, 80, 0.10); }
     table.forecast .grp-load { background: rgba(120, 180, 255, 0.10); }
     table.forecast .grp-pv { background: rgba(120, 220, 140, 0.10); }
+    table.forecast .grp-planner { background: rgba(200, 160, 255, 0.12); }
     table.forecast tr.day-break td { border-top: 2px solid rgba(127,127,127,0.55); }
     table.forecast tr.now td { background: rgba(255, 215, 0, 0.18); font-weight: 700; }
     table.forecast tr.past td { opacity: 0.55; }
@@ -517,6 +520,7 @@ def index() -> str:
         <th colspan="2" class="grp-price">price [PLN/kWh]</th>
         <th colspan="5" class="grp-load">load [kWh]</th>
         <th colspan="5" class="grp-pv">PV [kWh]</th>
+        <th colspan="2" class="grp-planner">plan / actual</th>
       </tr>
       <tr>
         <th class="grp-price" title="Import netto w tej godzinie: TARIFF_DISTRIBUTION + TARIFF_ENERGY (dzień lub noc G12: 22–6, 13–15 = noc)">buy</th>
@@ -531,6 +535,8 @@ def index() -> str:
         <th class="grp-pv">p90</th>
         <th class="grp-pv" title="Przyrost licznika e_total inwertera w tej godzinie (kWh) — tylko po zakończeniu godziny">act</th>
         <th class="grp-pv" title="act − mean, gdy jest prognoza mean">Δ</th>
+        <th class="grp-planner" title="Bilans godzinowy Δexp−Δimp: fakty po zakończeniu h, inaczej target z planera">net kWh</th>
+        <th class="grp-planner" title="SOC na koniec h: z telemetrii po zakończeniu, inaczej planowany koniec h">SOC %</th>
       </tr>
     </thead>
     <tbody id="forecastRows"></tbody>
@@ -785,6 +791,8 @@ async function refresh() {
       ${fcell(r.pv_kwh_p90, 3)}
       ${fcell(r.pv_kwh_actual, 3)}
       ${fcellDelta(r.pv_kwh_delta_mean, 3, 0.05)}
+      ${fcell(r.net_kwh, 3)}
+      ${fcell(r.soc_pct, 1)}
     </tr>`;
   }).join("");
   document.getElementById("forecastRows").innerHTML = fcHtml;
@@ -1040,6 +1048,18 @@ def _telemetry_hourly_load_pv_actuals(
     return load_kwh, pv_kwh
 
 
+def _planner_hours_for_date(local_date: date) -> dict[int, Any]:
+    """Godzina → HourPlan (tylko wpisy z planu na ten dzień)."""
+    plan = load_plan(local_date.isoformat())
+    if plan is None:
+        return {}
+    return {
+        hp.hour: hp
+        for hp in plan.hours
+        if hp.date == local_date.isoformat()
+    }
+
+
 def _pricing_for_day_quiet(local_date: date) -> dict[str, Any] | None:
     """Like pricing_day_breakdown but returns None on any error (and caches that)."""
     global _tomorrow_pricing_cache
@@ -1102,6 +1122,10 @@ def _combined_forecast_payload() -> dict[str, Any]:
         today.isoformat(): actuals_today,
         tomorrow.isoformat(): actuals_tomorrow,
     }
+    planner_today = _planner_hours_for_date(today)
+    planner_tomorrow = _planner_hours_for_date(tomorrow)
+    telemetry_today = hourly_actuals(today)
+    telemetry_tomorrow = hourly_actuals(tomorrow)
 
     rows: list[dict[str, Any]] = []
     start_dt = datetime.combine(today, datetime.min.time())
@@ -1150,6 +1174,28 @@ def _combined_forecast_payload() -> dict[str, Any]:
             else None
         )
 
+        if d == today:
+            plan_h = planner_today.get(h)
+            tel_h = telemetry_today.get(h)
+        elif d == tomorrow:
+            plan_h = planner_tomorrow.get(h)
+            tel_h = telemetry_tomorrow.get(h)
+        else:
+            plan_h = None
+            tel_h = None
+
+        net_kwh: float | None
+        soc_pct: float | None
+        if tel_h is not None and (hour_complete or tel_h.get("samples", 0) > 0):
+            net_kwh = float(tel_h["net_kwh"])
+            soc_pct = float(tel_h["last_soc_pct"])
+        elif plan_h is not None:
+            net_kwh = float(plan_h.target_net_kwh)
+            soc_pct = float(plan_h.soc_end_pct)
+        else:
+            net_kwh = None
+            soc_pct = None
+
         rows.append(
             {
                 "date": d_iso,
@@ -1167,7 +1213,16 @@ def _combined_forecast_payload() -> dict[str, Any]:
                 "pv_kwh_p90": float(pv_row["pv_kw_p90"]) if pv_row and pv_row.get("pv_kw_p90") is not None else None,
                 "pv_kwh_actual": pv_actual,
                 "pv_kwh_delta_mean": pv_delta_mean,
+                "net_kwh": net_kwh,
+                "soc_pct": soc_pct,
             }
+        )
+
+    plan_obj_today = load_plan(today.isoformat())
+    plan_note = ""
+    if plan_obj_today is not None:
+        plan_note = (
+            f" Planer: {plan_obj_today.plan_id[:8]}… ({plan_obj_today.local_date})."
         )
 
     return {
@@ -1184,8 +1239,10 @@ def _combined_forecast_payload() -> dict[str, Any]:
             "first(H+1) − first(H)). Prognoza PV: średnia moc kW × 1h = kWh (sloty 30 min "
             "z Solcast zagregowane do godziny). Prognoza obciążenia: baseline z historii; "
             "dla slotów od „teraz” w przód — wartości z API z korektą nowcast (jeśli włączona). "
-            "Δ load = act − p50; Δ PV = act − mean tylko gdy jest prognoza mean w tym wierszu."
-        ),
+            "Δ load = act − p50; Δ PV = act − mean tylko gdy jest prognoza mean w tym wierszu. "
+            "net kWh / SOC %: po zakończeniu godziny (lub bieżąca z telemetrii) — fakty; "
+            "w przód — target_net_kwh i soc_end_pct z planera, jeśli jest plan_YYYY-MM-DD.json."
+        ) + plan_note,
         "rows": rows,
     }
 
