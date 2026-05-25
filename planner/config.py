@@ -9,6 +9,7 @@ from guardian_config import DATA_DIR, P_BATTERY_W, _float_env, _int_env
 PLANNER_DIR = DATA_DIR / "planner"
 PLANNER_AUDIT_DIR = PLANNER_DIR / "audit"
 PLANNER_PLANS_DIR = PLANNER_DIR / "plans"
+PLANNER_PLANS_HISTORY_DIR = PLANNER_PLANS_DIR / "history"
 PLANNER_REVIEWS_DIR = PLANNER_DIR / "reviews"
 
 # Pojemność magazynu [kWh] — do symulacji SOC w optymalizatorze
@@ -28,5 +29,5 @@ def max_battery_kwh_per_hour() -> float:
 
 
 def ensure_planner_dirs() -> None:
-    for d in (PLANNER_AUDIT_DIR, PLANNER_PLANS_DIR, PLANNER_REVIEWS_DIR):
+    for d in (PLANNER_AUDIT_DIR, PLANNER_PLANS_DIR, PLANNER_PLANS_HISTORY_DIR, PLANNER_REVIEWS_DIR):
         d.mkdir(parents=True, exist_ok=True)

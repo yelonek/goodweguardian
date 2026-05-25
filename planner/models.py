@@ -69,6 +69,8 @@ class HourReconciliation(BaseModel):
 
     date: str
     hour: int
+    plan_id_at_hour: str | None = None
+    plan_generated_at: str | None = None
     planned_net_kwh: float | None
     actual_net_kwh: float | None
     planned_cashflow_pln: float | None

@@ -77,7 +77,6 @@ def build_daily_plan(
 def reconcile_day(local_date: date | None = None) -> int:
     """Rekonsyliuje każdą godzinę z telemetrią; zapisuje audyt ``hour_reconciled``."""
     d = local_date or date.today()
-    plan = load_plan(d.isoformat())
     actuals = hourly_actuals(d)
     pricing = pricing_day_breakdown(d)
     n = 0
@@ -85,7 +84,6 @@ def reconcile_day(local_date: date | None = None) -> int:
         rec = reconcile_hour(
             local_date=d,
             hour=h,
-            plan=plan,
             actuals=actuals,
             pricing=pricing,
         )
@@ -93,7 +91,7 @@ def reconcile_day(local_date: date | None = None) -> int:
             new_event(
                 local_date=d.isoformat(),
                 kind="hour_reconciled",
-                plan_id=plan.plan_id if plan else None,
+                plan_id=rec.plan_id_at_hour,
                 payload=rec.model_dump(),
             )
         )

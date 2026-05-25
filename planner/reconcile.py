@@ -8,6 +8,7 @@ from economics import cashflow_pln_for_hour
 from energy_pricing import pricing_day_breakdown
 from planner.models import DailyPlan, HourInputs, HourReconciliation
 from planner.optimizer import optimize_horizon
+from planner.plan_store import hour_plan_from, plan_effective_at
 from planner.telemetry import hourly_actuals
 
 
@@ -15,10 +16,12 @@ def reconcile_hour(
     *,
     local_date: date,
     hour: int,
-    plan: DailyPlan | None,
+    plan: DailyPlan | None = None,
     actuals: dict[int, dict],
     pricing: dict,
 ) -> HourReconciliation:
+    if plan is None:
+        plan = plan_effective_at(local_date, hour)
     ph = pricing["hours"][hour]
     rce = float(ph["rce_pln_kwh"])
     imp = float(ph["import_pln_per_kwh"])
@@ -28,12 +31,11 @@ def reconcile_hour(
     forecast_load: float | None = None
     forecast_pv: float | None = None
 
+    hp = hour_plan_from(plan, local_date, hour)
+    if hp is not None:
+        planned_net = hp.target_net_kwh
+        planned_cf = hp.expected_cashflow_pln
     if plan:
-        for hp in plan.hours:
-            if hp.hour == hour and hp.date == local_date.isoformat():
-                planned_net = hp.target_net_kwh
-                planned_cf = hp.expected_cashflow_pln
-                break
         snap = plan.inputs_snapshot
         for row in snap.get("load_forecast", {}).get("hours", []):
             if int(row.get("hour", -1)) == hour and row.get("date") == local_date.isoformat():
@@ -92,6 +94,8 @@ def reconcile_hour(
     return HourReconciliation(
         date=local_date.isoformat(),
         hour=hour,
+        plan_id_at_hour=plan.plan_id if plan else None,
+        plan_generated_at=plan.generated_at if plan else None,
         planned_net_kwh=planned_net,
         actual_net_kwh=actual_net,
         planned_cashflow_pln=planned_cf,

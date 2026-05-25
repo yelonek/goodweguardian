@@ -63,7 +63,6 @@ def build_day_review(local_date: date) -> DayReview:
         reconcile_hour(
             local_date=local_date,
             hour=h,
-            plan=plan,
             actuals=actuals,
             pricing=pricing,
         )
@@ -94,9 +93,12 @@ def build_day_review(local_date: date) -> DayReview:
         )
 
     actual_total = total_cashflow_pln_for_horizon(cf_pairs)
-    planned_total = (
-        sum(h.expected_cashflow_pln for h in plan.hours) if plan else None
-    )
+    planned_parts = [
+        h.planned_cashflow_pln
+        for h in hour_rows
+        if h.planned_cashflow_pln is not None
+    ]
+    planned_total = sum(planned_parts) if planned_parts else None
 
     perfect_total: float | None = None
     if perfect_inputs:
