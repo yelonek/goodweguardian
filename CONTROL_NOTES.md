@@ -37,6 +37,8 @@ Użytkownik obserwuje i traktuje jako stały fakt:
 - Przypadki graniczne:
   - **`CHARGE 1%`**: bateria ładuje się „jakby” **całym PV + ~70W**, czyli PV jest kierowane do baterii, a `1%` jest tylko „dodatkiem”.
   - **`DISCHARGE 1%`**: do sieci trafia „jakby” **PV + ~70W − zużycie domu**.
+- Dodatkowe ograniczenie zaobserwowane w praktyce:
+  - Przy **SOC ≥ 90%** maksymalne rzeczywiste ładowanie baterii bywa ograniczone do ok. **2.1 kW** (nawet przy wyższym `CHARGE%`).
 - W praktyce łatwo o sytuacje, gdzie sterowanie małe w % powoduje duży efekt (bo PV „dokleja się” do trybu).
 
 Wniosek: regulacja musi brać pod uwagę, że **zmiana znaku trybu (charge↔discharge) jest kosztowna** i może powodować duże skoki.
