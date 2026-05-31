@@ -40,39 +40,23 @@ ECO_SLOT_BALANCING = _int_env("ECO_SLOT_BALANCING", 4)
 P_INVERTER_W = _float_env("P_INVERTER", 8200.0)
 P_BATTERY_W = _float_env("P_BATTERY", 5000.0)
 
-# Histereza [%] – domyślnie 15 i 2
-HYSTERESIS_TOLERANCE_START = _float_env("HYSTERESIS_TOLERANCE_START", 15.0)
-HYSTERESIS_TOLERANCE_END = _float_env("HYSTERESIS_TOLERANCE_END", 2.0)
-
-# Próg mocy bilansowania [kW]
+# Próg mocy bilansowania [kW] — wyświetlanie w logu dashboardu
 BALANCE_POWER_THRESHOLD_KW = _float_env("BALANCE_POWER_THRESHOLD_KW", 0.3)
 
 # ~70 W na 1% (plan)
 WATTS_PER_PERCENT = 70.0
 
-# Watchdog policy (domyślnie: pozwól GoodWe działać, interweniuj późno / awaryjnie)
-# Okno „domykania” na końcu godziny [s]
-LATE_WINDOW_S = _int_env("LATE_WINDOW_S", 1200)
-# Próg mocy wymaganej do domknięcia, powyżej którego zaczynamy interweniować w late window [kW]
-WATCHDOG_LATE_POWER_THRESHOLD_KW = _float_env("WATCHDOG_LATE_POWER_THRESHOLD_KW", 0.45)
-# Bias na lekki eksport (żeby unikać drogiego importu) [W]
+# Flappy Bird: bufor eksportu z nadwyżki PV, korekta deficytu, soak na koniec godziny
+FLAPPY_BUFFER_TARGET_KWH = _float_env("FLAPPY_BUFFER_TARGET_KWH", 0.2)
+FLAPPY_BUFFER_DISCHARGE_PCT = _int_env("FLAPPY_BUFFER_DISCHARGE_PCT", 1)
+END_HOUR_WINDOW_S = _int_env("END_HOUR_WINDOW_S", 600)
+END_HOUR_MAX_REMAINING_KWH = _float_env("END_HOUR_MAX_REMAINING_KWH", 0.2)
+# Margines bezpieczeństwa: deficyt > max_recoverable × fraction → pełna moc do capu inwertera
+RECOVERABLE_FRACTION = _float_env("RECOVERABLE_FRACTION", 0.9)
+# Bias na lekki eksport przy korekcie deficytu [W]
 GRID_EXPORT_BIAS_W = _float_env("GRID_EXPORT_BIAS_W", 150.0)
-# Awaryjna interwencja, gdy utrwalony import poniżej progu [W] przez N cykli
-WATCHDOG_IMPORT_W_THRESHOLD = _float_env("WATCHDOG_IMPORT_W_THRESHOLD", -300.0)
-WATCHDOG_IMPORT_STREAK_MIN = _int_env("WATCHDOG_IMPORT_STREAK_MIN", 3)
-# Minimalny czas trzymania kierunku (anti flip-flop) [s]
-WATCHDOG_DWELL_S = _int_env("WATCHDOG_DWELL_S", 600)
-# Awaryjnie: jeśli bilans energii jest już „nie do odrobienia” w samym late window,
-# to interweniuj wcześniej (ułamek marginesu bezpieczeństwa).
-WATCHDOG_UNRECOVERABLE_FRACTION = _float_env("WATCHDOG_UNRECOVERABLE_FRACTION", 0.9)
-# Przy remaining<0 i 0% po clampie kierunku: minimalne rozładowanie [%] (GoodWe: 0% bywa bezużyteczne). 0 = wyłącz.
+# Przy remaining<0 i brak mocy po obliczeniach: minimalne rozładowanie [%] (GoodWe: 0% bywa bezużyteczne). 0 = wyłącz.
 WATCHDOG_MIN_DISCHARGE_ASSIST_PCT = _int_env("WATCHDOG_MIN_DISCHARGE_ASSIST_PCT", 1)
-# Charge w watchdogu tylko przy nadwyżce eksportu > tego progu [kWh] (0 = jak wcześniej poza blokadą przy 0).
-WATCHDOG_CHARGE_MIN_REMAINING_KWH = _float_env("WATCHDOG_CHARGE_MIN_REMAINING_KWH", 0.05)
-# Bufor eksportu: pierwsze N min godziny (0 = wył.), cel [kWh], minimalny +% rozładowania (jak min_discharge assist).
-EXPORT_BUFFER_BUILD_MINUTES = _int_env("EXPORT_BUFFER_BUILD_MINUTES", 15)
-EXPORT_BUFFER_TARGET_KWH = _float_env("EXPORT_BUFFER_TARGET_KWH", 0.1)
-EXPORT_BUFFER_DISCHARGE_PCT = _int_env("EXPORT_BUFFER_DISCHARGE_PCT", 1)
 
 # SOC=100% “battery defense”: utrzymuj CHARGE 1% (blokuj discharge), dopóki bilans mocy nie jest „wystarczająco zły”.
 # Wyjście z obrony pełnej sterowane jest progiem mocy bilansu (moc_bilans [kW]), nie energią godzinową.
@@ -80,9 +64,7 @@ SOC_FULL_DEFENSE_THRESHOLD_PCT = _float_env("SOC_FULL_DEFENSE_THRESHOLD_PCT", 99
 SOC_FULL_DEFENSE_CHARGE_PCT = _int_env("SOC_FULL_DEFENSE_CHARGE_PCT", -1)
 # Próg mocy bilansu [kW], powyżej którego wyłączamy obronę pełną przy netto imporcie.
 # Np. 0.5 = puść SOC defense, gdy potrzeba ≥0.5kW wyrównania (moc_bilans ~ -0.5kW).
-SOC_FULL_DEFENSE_RELEASE_POWER_KW = _float_env(
-    "SOC_FULL_DEFENSE_RELEASE_POWER_KW", 0.5
-)
+SOC_FULL_DEFENSE_RELEASE_POWER_KW = _float_env("SOC_FULL_DEFENSE_RELEASE_POWER_KW", 0.5)
 # Pierwsze N minut nowej godziny: tarcza SOC jak po aktywności w ostatnich N minutach poprzedniej godziny.
 SOC_FULL_DEFENSE_CARRYOVER_MINUTES = _int_env("SOC_FULL_DEFENSE_CARRYOVER_MINUTES", 5)
 
@@ -128,9 +110,7 @@ def _hours_csv_env(name: str, default: str) -> frozenset[int]:
     return frozenset(hours)
 
 
-SOC_NIGHT_RESERVE_HOURS = _hours_csv_env(
-    "SOC_NIGHT_RESERVE_HOURS", "22,23,0,1,2,3,4,5"
-)
+SOC_NIGHT_RESERVE_HOURS = _hours_csv_env("SOC_NIGHT_RESERVE_HOURS", "22,23,0,1,2,3,4,5")
 
 # Ścieżki – katalog projektu
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -161,7 +141,9 @@ GUARDIAN_API_KEY = (os.environ.get("GUARDIAN_API_KEY") or "").strip()
 
 # Proxy endpoints (lokalna sieć): RCE i PV forecast (Solcast proxy).
 RCE_PROXY_BASE_URL = (os.environ.get("RCE_PROXY_BASE_URL") or "").strip().rstrip("/")
-SOLCAST_PROXY_BASE_URL = (os.environ.get("SOLCAST_PROXY_BASE_URL") or "").strip().rstrip("/")
+SOLCAST_PROXY_BASE_URL = (
+    (os.environ.get("SOLCAST_PROXY_BASE_URL") or "").strip().rstrip("/")
+)
 PROXY_HTTP_TIMEOUT_S = _float_env("PROXY_HTTP_TIMEOUT_S", 10.0)
 
 # Load forecast: korekta krótkoterminowa (średnia moc z ostatnich min vs baseline p50 bieżącej godz.)

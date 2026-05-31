@@ -1,7 +1,7 @@
 """Stan guardiana – pliki w katalogu state/.
 
 - hourly_balance_YYYY-MM-DD.json: stan startu godziny (E_exp_start, E_imp_start)
-- watchdog_state.json: lekki stan polityki watchdog (anti flip-flop, streak importu)
+- watchdog_carryover.json: kontynuacja tarczy SOC po przejściu :59→:00
 """
 import json
 from datetime import datetime
@@ -51,50 +51,24 @@ def save_state(now: datetime, E_exp_start: float, E_imp_start: float) -> None:
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
-def _watchdog_path() -> Path:
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    return STATE_DIR / "watchdog_state.json"
+_CARRYOVER_PATH = STATE_DIR / "watchdog_carryover.json"
 
 
-def load_watchdog_state() -> dict:
-    """Wczytuje stan watchdog (bez wyjątków); zwraca dict z domyślnymi wartościami."""
-    path = _watchdog_path()
-    if not path.exists():
-        return {
-            "mode": "neutral",
-            "mode_since": None,
-            "import_streak": 0,
-            "last_remaining_kwh": None,
-            "soc_full_defense_carryover": False,
-        }
+def load_soc_full_defense_carryover() -> bool:
+    """Czy tarcza SOC była aktywna w ostatnich minutach poprzedniej godziny."""
+    if not _CARRYOVER_PATH.exists():
+        return False
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(_CARRYOVER_PATH.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
-        return {
-            "mode": "neutral",
-            "mode_since": None,
-            "import_streak": 0,
-            "last_remaining_kwh": None,
-            "soc_full_defense_carryover": False,
-        }
-    if not isinstance(data, dict):
-        return {
-            "mode": "neutral",
-            "mode_since": None,
-            "import_streak": 0,
-            "last_remaining_kwh": None,
-            "soc_full_defense_carryover": False,
-        }
-    data.setdefault("mode", "neutral")
-    data.setdefault("mode_since", None)
-    data.setdefault("import_streak", 0)
-    data.setdefault("last_remaining_kwh", None)
-    data.setdefault("soc_full_defense_carryover", False)
-    return data
+        return False
+    return bool(data.get("soc_full_defense_carryover"))
 
 
-def save_watchdog_state(state: dict) -> None:
-    """Zapisuje stan watchdog."""
-    path = _watchdog_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+def save_soc_full_defense_carryover(active: bool) -> None:
+    """Zapisuje flagę carryover między cyklami (przejście godziny)."""
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    _CARRYOVER_PATH.write_text(
+        json.dumps({"soc_full_defense_carryover": bool(active)}, indent=2),
+        encoding="utf-8",
+    )

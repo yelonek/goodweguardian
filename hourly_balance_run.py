@@ -10,7 +10,6 @@ import asyncio
 import logging
 import math
 from datetime import datetime
-from time import time
 
 import goodwe
 
@@ -18,42 +17,34 @@ from ecoslot_config import ECO_SETTING_IDS, set_ecoslot
 from guardian_watchdog_override import effective_watchdog_soc
 from guardian_config import (
     BALANCE_POWER_THRESHOLD_KW,
-    GRID_EXPORT_BIAS_W,
+    END_HOUR_MAX_REMAINING_KWH,
+    END_HOUR_WINDOW_S,
+    FLAPPY_BUFFER_DISCHARGE_PCT,
+    FLAPPY_BUFFER_TARGET_KWH,
     get_slot_id,
-    HYSTERESIS_TOLERANCE_END,
-    HYSTERESIS_TOLERANCE_START,
+    GRID_EXPORT_BIAS_W,
     INVERTER_IP,
-    LATE_WINDOW_S,
     P_BATTERY_W,
     P_INVERTER_W,
-    TELEMETRY_ENABLED,
-    WATTS_PER_PERCENT,
-    WATCHDOG_DWELL_S,
-    WATCHDOG_IMPORT_STREAK_MIN,
-    WATCHDOG_IMPORT_W_THRESHOLD,
-    WATCHDOG_LATE_POWER_THRESHOLD_KW,
-    WATCHDOG_UNRECOVERABLE_FRACTION,
-    SOC_FULL_DEFENSE_CHARGE_PCT,
+    RECOVERABLE_FRACTION,
     SOC_FULL_DEFENSE_CARRYOVER_MINUTES,
-    SOC_FULL_DEFENSE_RELEASE_POWER_KW,
+    SOC_FULL_DEFENSE_CHARGE_PCT,
     SOC_FULL_DEFENSE_MAX_SLOT_MIN,
+    SOC_FULL_DEFENSE_RELEASE_POWER_KW,
     SOC_LOW_DEFENSE_CHARGE_PCT,
     SOC_LOW_DEFENSE_RELEASE_REMAINING_KWH,
     SOC_LOW_DISCHARGE_AVG_MINUTES,
     SOC_LOW_DISCHARGE_FALLBACK_W,
     SOC_LOW_DISCHARGE_MAX_W,
+    TELEMETRY_ENABLED,
+    WATTS_PER_PERCENT,
     WATCHDOG_MAX_SLOT_MIN,
     WATCHDOG_MIN_DISCHARGE_ASSIST_PCT,
-    WATCHDOG_CHARGE_MIN_REMAINING_KWH,
-    EXPORT_BUFFER_BUILD_MINUTES,
-    EXPORT_BUFFER_DISCHARGE_PCT,
-    EXPORT_BUFFER_TARGET_KWH,
 )
 from guardian_control import effective_control_enabled
 from guardian_logic import (
     BalanceInputs,
     WatchdogConfig,
-    WatchdogState,
     decide_watchdog,
     power_needed_kw,
 )
@@ -66,10 +57,10 @@ from guardian_log import (
     setup_logging,
 )
 from guardian_state import (
+    load_soc_full_defense_carryover,
     load_state,
-    load_watchdog_state,
+    save_soc_full_defense_carryover,
     save_state,
-    save_watchdog_state,
 )
 from sensor_mapping import (
     BATTERY_POWER,
@@ -89,16 +80,6 @@ from telemetry_store import (
     build_ts_and_calendar,
     recent_consumption_average_w,
 )
-
-
-def _watchdog_state_dict(wd: WatchdogState) -> dict:
-    return {
-        "mode": wd.mode,
-        "mode_since": wd.mode_since_s,
-        "import_streak": wd.import_streak,
-        "last_remaining_kwh": wd.last_remaining_kwh,
-        "soc_full_defense_carryover": wd.soc_full_defense_carryover,
-    }
 
 
 def _get_float(data: dict, key: str, default: float = 0.0) -> float:
@@ -189,6 +170,34 @@ async def _any_other_eco_slot_active(
     return False
 
 
+def _next_soc_full_carryover_flag(
+    current: bool,
+    *,
+    decision_reason: str,
+    now_minute: int,
+    time_to_end_s: float,
+    soc_pct: float,
+    soc_full_threshold_pct: float,
+    carryover_minutes: int,
+) -> bool:
+    """Ustawia flagę carryover: aktywna tarcza w ostatnich N min poprzedniej godziny."""
+    carryover_min = max(1, int(carryover_minutes))
+    last_n_min_of_hour = time_to_end_s <= float(carryover_min * 60)
+    if decision_reason == "soc_full_defense_hold" and last_n_min_of_hour:
+        return True
+    if now_minute >= carryover_min or soc_pct < soc_full_threshold_pct:
+        return False
+    if (
+        current
+        and now_minute < carryover_min
+        and decision_reason
+        not in ("soc_full_defense_hold", "soc_full_defense_carryover")
+        and decision_reason != "other_eco_slot_active"
+    ):
+        return False
+    return current
+
+
 async def run_one_cycle() -> None:
     """Wykonuje jeden cykl: odczyt → stan → logika → ewentualna interwencja."""
     now = datetime.now()
@@ -266,45 +275,22 @@ async def run_one_cycle() -> None:
         time_to_end_s=time_to_end_s,
         pv_w=pv_w,
         consumption_w=consumption_w,
-        grid_w=grid_w,
         soc_pct=soc_pct,
         p_inverter_w=P_INVERTER_W,
         p_battery_w=P_BATTERY_W,
-        current_ecoslot_pct=current_pct,
-        slot_active=slot_active,
-        hysteresis_start=HYSTERESIS_TOLERANCE_START,
-        hysteresis_end=HYSTERESIS_TOLERANCE_END,
-        balance_threshold_kw=BALANCE_POWER_THRESHOLD_KW,
         watts_per_percent=WATTS_PER_PERCENT,
-        balancing_slot_time_active=slot_active,
         other_eco_slot_active=other_eco_active,
         low_soc_discharge_target_w=low_soc_discharge_target_w,
     )
 
-    # Watchdog state (anti flip-flop + streak importu)
-    wd_raw = load_watchdog_state()
-    wd_state = WatchdogState(
-        mode=str(wd_raw.get("mode") or "neutral"),
-        mode_since_s=wd_raw.get("mode_since"),
-        import_streak=int(wd_raw.get("import_streak") or 0),
-        last_remaining_kwh=wd_raw.get("last_remaining_kwh"),
-        soc_full_defense_carryover=bool(wd_raw.get("soc_full_defense_carryover")),
-    )
-    # Aktualizacja streak importu (drogi import)
-    if grid_w < WATCHDOG_IMPORT_W_THRESHOLD:
-        wd_state.import_streak += 1
-    else:
-        wd_state.import_streak = 0
-    wd_state.last_remaining_kwh = remaining_kwh
-
     wd_cfg = WatchdogConfig(
-        late_window_s=int(LATE_WINDOW_S),
-        late_power_threshold_kw=float(WATCHDOG_LATE_POWER_THRESHOLD_KW),
         grid_export_bias_w=float(GRID_EXPORT_BIAS_W),
-        import_w_threshold=float(WATCHDOG_IMPORT_W_THRESHOLD),
-        import_streak_min=int(WATCHDOG_IMPORT_STREAK_MIN),
-        dwell_s=int(WATCHDOG_DWELL_S),
-        unrecoverable_fraction=float(WATCHDOG_UNRECOVERABLE_FRACTION),
+        recoverable_fraction=float(RECOVERABLE_FRACTION),
+        min_discharge_assist_pct=int(WATCHDOG_MIN_DISCHARGE_ASSIST_PCT),
+        flappy_buffer_target_kwh=float(FLAPPY_BUFFER_TARGET_KWH),
+        flappy_buffer_discharge_pct=int(FLAPPY_BUFFER_DISCHARGE_PCT),
+        end_hour_window_s=int(END_HOUR_WINDOW_S),
+        end_hour_max_remaining_kwh=float(END_HOUR_MAX_REMAINING_KWH),
         soc_full_threshold_pct=float(ws.soc_full_defense_threshold_pct),
         soc_full_defense_charge_pct=int(SOC_FULL_DEFENSE_CHARGE_PCT),
         soc_full_defense_release_power_kw=float(SOC_FULL_DEFENSE_RELEASE_POWER_KW),
@@ -314,36 +300,30 @@ async def run_one_cycle() -> None:
         soc_night_reserve_pct=float(ws.soc_night_reserve_pct),
         soc_night_reserve_charge_pct=int(ws.soc_night_reserve_charge_pct),
         night_reserve_hours=ws.night_reserve_hours,
-        min_discharge_assist_pct=int(WATCHDOG_MIN_DISCHARGE_ASSIST_PCT),
-        charge_min_remaining_kwh=float(WATCHDOG_CHARGE_MIN_REMAINING_KWH),
         soc_full_defense_carryover_minutes=max(1, int(SOC_FULL_DEFENSE_CARRYOVER_MINUTES)),
-        export_buffer_build_minutes=max(0, int(EXPORT_BUFFER_BUILD_MINUTES)),
-        export_buffer_target_kwh=float(EXPORT_BUFFER_TARGET_KWH),
-        export_buffer_discharge_pct=int(EXPORT_BUFFER_DISCHARGE_PCT),
-    )
-
-    decision = decide_watchdog(
-        inp,
-        now_s=time(),
-        state=wd_state,
-        cfg=wd_cfg,
-        minute_of_hour=now.minute,
-        hour_of_day=now.hour,
     )
 
     carryover_min = max(1, int(SOC_FULL_DEFENSE_CARRYOVER_MINUTES))
-    last_n_min_of_hour = time_to_end_s <= float(carryover_min * 60)
-    if decision.reason == "soc_full_defense_hold" and last_n_min_of_hour:
-        wd_state.soc_full_defense_carryover = True
-    elif now.minute >= carryover_min or soc_pct < ws.soc_full_defense_threshold_pct:
-        wd_state.soc_full_defense_carryover = False
-    elif (
-        wd_state.soc_full_defense_carryover
-        and now.minute < carryover_min
-        and decision.reason not in ("soc_full_defense_hold", "soc_full_defense_carryover")
-        and decision.reason != "other_eco_slot_active"
-    ):
-        wd_state.soc_full_defense_carryover = False
+    soc_full_carryover = load_soc_full_defense_carryover()
+
+    decision = decide_watchdog(
+        inp,
+        cfg=wd_cfg,
+        minute_of_hour=now.minute,
+        hour_of_day=now.hour,
+        soc_full_defense_carryover=soc_full_carryover,
+    )
+
+    soc_full_carryover = _next_soc_full_carryover_flag(
+        soc_full_carryover,
+        decision_reason=decision.reason,
+        now_minute=now.minute,
+        time_to_end_s=time_to_end_s,
+        soc_pct=soc_pct,
+        soc_full_threshold_pct=float(ws.soc_full_defense_threshold_pct),
+        carryover_minutes=carryover_min,
+    )
+    save_soc_full_defense_carryover(soc_full_carryover)
 
     power_kw = power_needed_kw(remaining_kwh, time_to_end_s)
     bal_kw = balancing_power_kw_signed(remaining_kwh, time_to_end_s)
@@ -438,15 +418,6 @@ async def run_one_cycle() -> None:
             )
 
     if not control_ok:
-        save_watchdog_state(
-            {
-                "mode": str(wd_raw.get("mode") or "neutral"),
-                "mode_since": wd_raw.get("mode_since"),
-                "import_streak": wd_state.import_streak,
-                "last_remaining_kwh": wd_state.last_remaining_kwh,
-                "soc_full_defense_carryover": wd_state.soc_full_defense_carryover,
-            }
-        )
         return
 
     if not decision.write_slot:
@@ -466,9 +437,6 @@ async def run_one_cycle() -> None:
                 )
             except Exception as e:
                 log_ecoslot_failure(slot_id, e)
-        wd_state.mode = "neutral"
-        wd_state.mode_since_s = None
-        save_watchdog_state(_watchdog_state_dict(wd_state))
         return
 
     # Ustawienie slotu: od teraz do min(end bieżącej godziny, now + duration)
@@ -505,12 +473,6 @@ async def run_one_cycle() -> None:
         )
     except Exception as e:
         log_ecoslot_failure(slot_id, e)
-
-    # Aktualizacja stanu watchdog po skutecznym zapisie (anti flip-flop)
-    wd_state.mode = decision.mode
-    if decision.mode in ("charge", "discharge"):
-        wd_state.mode_since_s = time()
-    save_watchdog_state(_watchdog_state_dict(wd_state))
 
 
 async def run_loop_forever() -> None:

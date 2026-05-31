@@ -30,7 +30,7 @@ def test_append_cycle_record_writes_jsonl(monkeypatch, tmp_path) -> None:
         other_eco_active=False,
         ecoslot_pct=None,
         watchdog_write_slot=False,
-        watchdog_reason="early_window_no_intervention",
+        watchdog_reason="flappy_buffer_hold",
         guardian_control_enabled=True,
         control_source="env",
         cmd_enabled=False,
@@ -43,5 +43,5 @@ def test_append_cycle_record_writes_jsonl(monkeypatch, tmp_path) -> None:
     line = path.read_text(encoding="utf-8").strip()
     row = json.loads(line)
     assert row["schema_version"] == 1
-    assert row["watchdog_reason"] == "early_window_no_intervention"
+    assert row["watchdog_reason"] == "flappy_buffer_hold"
     assert row["guardian_control_enabled"] is True

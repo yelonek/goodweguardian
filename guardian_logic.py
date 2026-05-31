@@ -1,5 +1,5 @@
 """
-Logika guardiana: stan zbilansowania, próg mocy, histereza, wyznaczanie mocy baterii i czasu.
+Logika guardiana: Flappy Bird — bilans godzinowy, obrony SOC, limit inwertera.
 
 Konwencja znaku (ujednolicona z mocą sieci):
   − remaining_kWh = ΔE_export − ΔE_import w bieżącej godzinie [kWh].
@@ -13,92 +13,41 @@ from dataclasses import dataclass
 
 @dataclass
 class BalanceInputs:
-    """Wejścia do wyznaczenia interwencji (bez inwertera).
-
-    remaining_kwh: Δeksport − Δimport w tej godzinie [kWh]; + = więcej oddane do sieci.
-    """
+    """Wejścia do decide_watchdog (tylko pola używane przez logikę)."""
 
     remaining_kwh: float
     time_to_end_s: float
     pv_w: float
     consumption_w: float
-    grid_w: float
     soc_pct: float
     p_inverter_w: float
     p_battery_w: float
-    current_ecoslot_pct: int | None  # None = brak ustawienia w tej godzinie
-    slot_active: bool
-    hysteresis_start: float
-    hysteresis_end: float
-    balance_threshold_kw: float = 0.3
     watts_per_percent: float = 70.0
-    # True = % z odczytu traktujemy jako „na żywo” (histereza/oscylacja). W runnerze = slot_active
-    # (on_off≠0 i czas w oknie); w testach można True przy slot_active=False.
-    balancing_slot_time_active: bool = True
-    # Inny eco_mode_1..4 (nie balansujący) ma teraz on_off i okno czasu — nie nadpisujemy slotu balansu.
     other_eco_slot_active: bool = False
-    # Przy niskim SOC: łagodny limit rozładowania liczony z historii zużycia domu [W].
     low_soc_discharge_target_w: float | None = None
 
 
 @dataclass
-class BalanceOutput:
-    """Wyjście: czy interweniować oraz parametry baterii."""
-
-    intervene: bool
-    battery_power_w: float
-    battery_power_pct: int
-    duration_s: float
-    reason: str = ""
-
-
-@dataclass
 class WatchdogConfig:
-    """Polityka watchdog: domyślnie nie steruj, interweniuj późno / awaryjnie."""
+    """Polityka Flappy Bird: bufor PV w bilansie, korekta deficytu, soak na koniec godziny."""
 
-    late_window_s: int = 600
-    late_power_threshold_kw: float = 0.45
     grid_export_bias_w: float = 150.0
-    import_w_threshold: float = -300.0
-    import_streak_min: int = 3
-    dwell_s: int = 600
-    unrecoverable_fraction: float = 0.9
-    # remaining<0 i po regule kierunku target_pct==0: ustaw +N% rozładowania (0 = tylko neutral jak dawniej).
+    recoverable_fraction: float = 0.9
     min_discharge_assist_pct: int = 1
-    # Charge (redukcja eksportu godzinowego) tylko gdy nadwyżka eksportu > tego progu [kWh] — unikaj sztucznego
-    # domykania do zera i wpędzania w import (0 = blokuj charge tylko przy remaining≤0).
-    charge_min_remaining_kwh: float = 0.05
+    flappy_buffer_target_kwh: float = 0.1
+    flappy_buffer_discharge_pct: int = 1
+    end_hour_window_s: int = 600
+    end_hour_max_remaining_kwh: float = 0.2
     soc_full_threshold_pct: float = 99.5
     soc_full_defense_charge_pct: int = -1
-    # Próg mocy bilansu [kW] przy netto imporcie, powyżej którego wychodzimy z obrony pełnej SOC.
     soc_full_defense_release_power_kw: float = 0.5
     soc_low_threshold_pct: float = 22.0
     soc_low_defense_charge_pct: int = -1
-    # Fallback legacy: trzymaj obronę CHARGE, dopóki remaining_kwh > tego (cel godziny; 0 = zbilansowany).
     soc_low_defense_release_remaining_kwh: float = 0.0
-    # Nocna rezerwa SOC: w wybranych godzinach blokuj rozładowanie gdy SOC ≤ progu.
-    # 0.0 = wyłączone. Domyślne godziny to ciągły blok nocny 22–5 (przed poranną drogą taryfą).
     soc_night_reserve_pct: float = 0.0
     soc_night_reserve_charge_pct: int = -1
     night_reserve_hours: frozenset[int] = frozenset({22, 23, 0, 1, 2, 3, 4, 5})
-    # Pierwsze N minut nowej godziny: kontynuuj tarczę SOC, jeśli była aktywna w ostatnich N min poprzedniej.
     soc_full_defense_carryover_minutes: int = 5
-    # Bufor eksportu (sieć): pierwsze N min (0 = wył.) przy PV>konsumpcja, dopóki remaining_kwh < target [kWh].
-    export_buffer_build_minutes: int = 15
-    export_buffer_target_kwh: float = 0.1
-    export_buffer_discharge_pct: int = 1
-
-
-@dataclass
-class WatchdogState:
-    """Lekki stan anti-flip-flop + watchdog importu."""
-
-    mode: str = "neutral"  # "charge" | "discharge" | "neutral"
-    mode_since_s: float | None = None  # unix seconds
-    import_streak: int = 0
-    last_remaining_kwh: float | None = None
-    # Ustawiane w runnerze: tarcza SOC była w ostatnich minutach poprzedniej godziny (reset bilansu na :00).
-    soc_full_defense_carryover: bool = False
 
 
 @dataclass
@@ -121,142 +70,138 @@ def power_needed_kw(remaining_kwh: float, time_to_end_s: float) -> float:
     return abs(remaining_kwh) / hours_left
 
 
-def tolerance_pct(time_to_end_s: float, start_pct: float, end_pct: float) -> float:
-    """Tolerancja histerezy [%] – liniowa od start (dużo czasu) do end (mało czasu)."""
-    if time_to_end_s >= 3600:
-        return start_pct
-    if time_to_end_s <= 0:
-        return end_pct
-    rem_min = time_to_end_s / 60.0
-    return end_pct + (start_pct - end_pct) * (rem_min / 60.0)
-
-
 def _discharge_cap_w(p_inverter_w: float, pv_w: float, p_battery_w: float) -> float:
     """Maks. moc rozładowania [W] – ograniczenie inwertera (PV + BATERIA <= P_INVERTER)."""
     headroom = max(0.0, p_inverter_w - pv_w)
     return min(p_battery_w, headroom)
 
 
-def _kw_to_pct(power_kw: float, watts_per_percent: float) -> int:
-    """Przelicza moc [kW] na % ecoslota (znak zachowany)."""
-    power_w = power_kw * 1000.0
-    pct = power_w / watts_per_percent
-    return max(-100, min(100, int(round(pct))))
+def _max_discharge_kw(p_inverter_w: float, pv_w: float, p_battery_w: float) -> float:
+    """Maks. moc rozładowania baterii [kW] przy obecnym PV (limit inwertera)."""
+    return _discharge_cap_w(p_inverter_w, pv_w, p_battery_w) / 1000.0
 
 
-def _pct_to_w(pct: int, watts_per_percent: float) -> float:
-    """Przelicza % na moc [W] (przybliżenie)."""
-    return pct * watts_per_percent
+def _max_recoverable_kwh(
+    p_inverter_w: float,
+    pv_w: float,
+    p_battery_w: float,
+    time_to_end_s: float,
+) -> float:
+    """Ile kWh deficytu można nadrobić rozładowaniem do końca godziny."""
+    return _max_discharge_kw(p_inverter_w, pv_w, p_battery_w) * (time_to_end_s / 3600.0)
 
 
-def compute_intervention(inp: BalanceInputs) -> BalanceOutput:
-    """
-    Wyznacza, czy wykonać interwencję oraz moc baterii [W], [%] i czas ustawienia [s].
-    """
-    # 1) Inny ecoslot (1–4) aktywny → nie uruchamiamy zapisu slotu balansującego
-    if inp.other_eco_slot_active:
-        return BalanceOutput(
-            intervene=False,
-            battery_power_w=0.0,
-            battery_power_pct=0,
-            duration_s=0.0,
-            reason="other_eco_slot_active",
-        )
+def _slot_duration_s(time_to_end_s: float) -> float:
+    return min(time_to_end_s, max(60.0, time_to_end_s))
 
-    # 2) Moc potrzebna do zbilansowania
-    power_kw = power_needed_kw(inp.remaining_kwh, inp.time_to_end_s)
-    if power_kw <= inp.balance_threshold_kw:
-        return BalanceOutput(
-            intervene=False,
-            battery_power_w=0.0,
-            battery_power_pct=0,
-            duration_s=0.0,
-            reason="power_below_threshold",
-        )
 
-    # 3) Zamiast mapować remaining_kwh -> znak baterii, wyznacz docelową moc SIECI.
-    # remaining_kwh < 0 (więcej importu) → chcemy eksport (+grid) o wielkości power_kw
-    # remaining_kwh > 0 (więcej eksportu) → chcemy import (−grid) o wielkości power_kw
-    target_grid_w = (power_kw * 1000.0) * (1.0 if inp.remaining_kwh < 0 else -1.0)
-
-    # Model bilansu chwilowego:
-    #   grid_w ≈ pv_w - consumption_w + battery_w
-    # stąd:
-    #   battery_w_target ≈ target_grid_w - (pv_w - consumption_w)
-    target_battery_w = target_grid_w - (inp.pv_w - inp.consumption_w)
-
-    # 4) Ograniczenia baterii oraz inwertera.
-    # Bateria: |P| <= P_BATTERY
-    target_battery_w = max(-inp.p_battery_w, min(inp.p_battery_w, target_battery_w))
-    # Inwerter: PV + rozładowanie <= P_INVERTER (dla discharge)
-    if target_battery_w > 0:
-        cap_w = _discharge_cap_w(inp.p_inverter_w, inp.pv_w, inp.p_battery_w)
-        target_battery_w = min(target_battery_w, cap_w)
-
-    target_pct = max(
-        -100, min(100, int(round(target_battery_w / inp.watts_per_percent)))
+def _neutral_decision(reason: str) -> WatchdogDecision:
+    return WatchdogDecision(
+        write_slot=False,
+        enabled=False,
+        power_pct=0,
+        duration_s=0.0,
+        mode="neutral",
+        reason=reason,
     )
 
-    live_pct = inp.current_ecoslot_pct if inp.balancing_slot_time_active else None
 
-    # 5) Histereza: porównanie w % (tylko gdy balancing_slot_time_active — inaczej % z rejestru jest tylko konfiguracją)
-    tol = tolerance_pct(inp.time_to_end_s, inp.hysteresis_start, inp.hysteresis_end)
-    if live_pct is not None:
-        if abs(target_pct - live_pct) <= tol:
-            return BalanceOutput(
-                intervene=False,
-                battery_power_w=_pct_to_w(live_pct, inp.watts_per_percent),
-                battery_power_pct=live_pct,
-                duration_s=0.0,
-                reason="hysteresis",
-            )
-    # 6) Unikanie oscylacji (tylko przy live_pct — bez „żywego” slotu nie blokuj znaku na starym %)
-    if live_pct is not None:
-        cur = live_pct
-        if (cur > 0 and target_pct < 0) or (cur < 0 and target_pct > 0):
-            if abs(target_pct) <= tol:
-                return BalanceOutput(
-                    intervene=False,
-                    battery_power_w=_pct_to_w(cur, inp.watts_per_percent),
-                    battery_power_pct=cur,
-                    duration_s=0.0,
-                    reason="oscillation_avoid",
-                )
+def _battery_pct_from_w(target_battery_w: float, watts_per_percent: float) -> int:
+    target_pct = max(
+        -100, min(100, int(round(target_battery_w / watts_per_percent)))
+    )
+    if target_pct == 0 and abs(target_battery_w) >= 0.5 * watts_per_percent:
+        target_pct = 1 if target_battery_w > 0 else -1
+    return target_pct
 
-    # 7) Czas ustawienia: nie przestrzelić – duration = energia / moc, cap na time_to_end_s
-    if inp.time_to_end_s <= 0:
-        duration_s = 0.0
+
+def _deficit_recovery_decision(
+    inp: BalanceInputs,
+    cfg: WatchdogConfig,
+) -> WatchdogDecision:
+    """Natychmiastowa korekta ujemnego bilansu z limitem inwertera (PV + bateria ≤ P_INVERTER)."""
+    power_kw = power_needed_kw(inp.remaining_kwh, inp.time_to_end_s)
+    max_discharge_kw = _max_discharge_kw(inp.p_inverter_w, inp.pv_w, inp.p_battery_w)
+    max_recoverable = _max_recoverable_kwh(
+        inp.p_inverter_w, inp.pv_w, inp.p_battery_w, inp.time_to_end_s
+    )
+    cap_w = _discharge_cap_w(inp.p_inverter_w, inp.pv_w, inp.p_battery_w)
+    min_assist = max(0, min(100, int(cfg.min_discharge_assist_pct)))
+
+    need_max_cap = max_discharge_kw > 0.0 and (
+        power_kw > max_discharge_kw * 0.95
+        or abs(inp.remaining_kwh)
+        > max_recoverable * float(cfg.recoverable_fraction)
+    )
+
+    if need_max_cap:
+        target_battery_w = cap_w
+        reason = "deficit_max_cap"
     else:
-        energy_kwh = abs(inp.remaining_kwh)
-        power_avail_kw = abs(target_battery_w) / 1000.0
-        if power_avail_kw <= 0:
-            duration_s = 0.0
-        else:
-            duration_s = min(
-                inp.time_to_end_s,
-                (energy_kwh / power_avail_kw) * 3600.0,
-            )
-        duration_s = max(0.0, duration_s)
+        required_w = cfg.grid_export_bias_w + power_kw * 1000.0
+        target_battery_w = required_w - (inp.pv_w - inp.consumption_w)
+        target_battery_w = max(0.0, min(inp.p_battery_w, target_battery_w))
+        target_battery_w = min(target_battery_w, cap_w)
+        reason = "deficit_recovery"
 
-    return BalanceOutput(
-        intervene=True,
-        battery_power_w=target_battery_w,
-        battery_power_pct=target_pct,
-        duration_s=duration_s,
-        reason="ok",
+    target_pct = _battery_pct_from_w(target_battery_w, inp.watts_per_percent)
+    if target_pct <= 0 and min_assist > 0:
+        target_pct = min_assist
+        if reason == "deficit_recovery":
+            reason = "deficit_min_assist"
+    elif target_pct <= 0:
+        return _neutral_decision("deficit_no_headroom")
+
+    return WatchdogDecision(
+        write_slot=True,
+        enabled=True,
+        power_pct=target_pct,
+        duration_s=_slot_duration_s(inp.time_to_end_s),
+        mode="discharge",
+        reason=reason,
+    )
+
+
+def _end_hour_soak_decision(
+    inp: BalanceInputs, cfg: WatchdogConfig
+) -> WatchdogDecision | None:
+    """Koniec godziny: nadwyżka eksportu > max → CHARGE (PV do baterii)."""
+    if inp.time_to_end_s > float(cfg.end_hour_window_s):
+        return None
+    max_rem = float(cfg.end_hour_max_remaining_kwh)
+    if float(inp.remaining_kwh) <= max_rem:
+        return None
+
+    excess_kwh = float(inp.remaining_kwh) - max_rem
+    power_kw = power_needed_kw(excess_kwh, inp.time_to_end_s)
+    target_grid_w = -power_kw * 1000.0
+    target_battery_w = target_grid_w - (inp.pv_w - inp.consumption_w)
+    target_battery_w = max(-inp.p_battery_w, min(inp.p_battery_w, target_battery_w))
+    if target_battery_w >= 0.0:
+        target_battery_w = -float(inp.watts_per_percent)
+    target_pct = _battery_pct_from_w(target_battery_w, inp.watts_per_percent)
+    if target_pct >= 0:
+        target_pct = -1
+
+    return WatchdogDecision(
+        write_slot=True,
+        enabled=True,
+        power_pct=target_pct,
+        duration_s=_slot_duration_s(inp.time_to_end_s),
+        mode="charge",
+        reason="end_hour_battery_soak",
     )
 
 
 def decide_watchdog(
     inp: BalanceInputs,
     *,
-    now_s: float,
-    state: WatchdogState,
     cfg: WatchdogConfig,
     minute_of_hour: int | None = None,
     hour_of_day: int | None = None,
+    soc_full_defense_carryover: bool = False,
 ) -> WatchdogDecision:
-    """Watchdog: pozwól GoodWe działać; interweniuj tylko gdy trzeba, potem wróć do neutral."""
+    """Flappy Bird: bufor PV, korekta deficytu, soak na koniec godziny; obrony SOC bez zmian."""
 
     low_soc_discharge_cap_active = (
         float(inp.soc_pct) <= float(cfg.soc_low_threshold_pct)
@@ -264,7 +209,6 @@ def decide_watchdog(
         and float(inp.low_soc_discharge_target_w) > 0.0
     )
 
-    # Standardowo nie nadpisuj innego eco-slotu. Wyjątek: low-SOC cap chroni LFP przed skokami obciążenia.
     if inp.other_eco_slot_active and not low_soc_discharge_cap_active:
         return WatchdogDecision(
             write_slot=False,
@@ -275,7 +219,6 @@ def decide_watchdog(
             reason="other_eco_slot_active",
         )
 
-    # Nocna rezerwa SOC: w godzinach nocnych trzymaj zapas na poranek (przed wschodem słońca).
     if (
         hour_of_day is not None
         and int(hour_of_day) in cfg.night_reserve_hours
@@ -294,26 +237,20 @@ def decide_watchdog(
 
     power_kw = power_needed_kw(inp.remaining_kwh, inp.time_to_end_s)
 
-    late = inp.time_to_end_s <= float(cfg.late_window_s)
-
     carryover_min = max(1, int(cfg.soc_full_defense_carryover_minutes))
     carryover_window_s = float(carryover_min * 60)
     in_soc_full_carryover_window = (
-        minute_of_hour is not None
-        and int(minute_of_hour) < carryover_min
-        and not late
+        minute_of_hour is not None and int(minute_of_hour) < carryover_min
     )
 
-    # SOC=100% defense: utrzymuj CHARGE 1% (blokuj discharge), dopóki bilans mocy
-    # nie przekroczy progu. W late window:
-    # - gdy remaining_kwh > 0 (nadwyżka eksportu energii) nadal trzymaj defense,
-    # - gdy remaining_kwh <= 0 priorytet ma domknięcie energii (wyjątek: ostatnia minuta, patrz niżej).
     if float(inp.soc_pct) >= float(cfg.soc_full_threshold_pct):
         r = float(inp.remaining_kwh)
         release_p = float(cfg.soc_full_defense_release_power_kw)
-        # Po resecie godziny remaining~0 — pierwsze N minut: tarcza może być kontynuacją z poprzedniej godziny
-        # albo „implicitzną” obroną pełną dla r≈0, dopóki nie pojawi się realny import netto.
-        if in_soc_full_carryover_window and r >= 0.0:
+        if (
+            in_soc_full_carryover_window
+            and r >= 0.0
+            and soc_full_defense_carryover
+        ):
             duration_s = min(inp.time_to_end_s, max(60.0, carryover_window_s))
             return WatchdogDecision(
                 write_slot=True,
@@ -323,14 +260,10 @@ def decide_watchdog(
                 mode="charge",
                 reason="soc_full_defense_carryover",
             )
-        # Standardowy hold:
-        # - zawsze w early window,
-        # - w late window tylko gdy nadwyżka energii jest dodatnia (r>0),
-        # - oraz w ostatniej minucie godziny (ochrona przed "dołkiem" na przejściu :59/:00).
-        # - zawsze przy netto eksporcie / zbilansowaniu (r>=0),
-        # - przy niewielkim imporcie, dopóki wymagane |moc_bilans| < próg.
-        if ((not late) or (late and r > 0.0) or float(inp.time_to_end_s) <= 60.0) and (
-            r >= 0.0 or (r < 0.0 and power_kw < release_p)
+        if (
+            r >= 0.0
+            or (r < 0.0 and power_kw < release_p)
+            or float(inp.time_to_end_s) <= 60.0
         ):
             duration_s = min(inp.time_to_end_s, max(60.0, inp.time_to_end_s))
             return WatchdogDecision(
@@ -342,16 +275,12 @@ def decide_watchdog(
                 reason="soc_full_defense_hold",
             )
 
-    # SOC niski: ogranicz rozładowanie do spokojnej mocy bazowej, niezależnie od bilansu godzinowego.
-    # Skoki obciążenia (np. czajnik) mają pójść z sieci, a nie wymuszać duży prąd z LFP przy niskim SOC.
     if float(inp.soc_pct) <= float(cfg.soc_low_threshold_pct):
         low_soc_target_w = inp.low_soc_discharge_target_w
         if low_soc_discharge_cap_active:
             load_deficit_w = float(inp.consumption_w) - float(inp.pv_w)
             if load_deficit_w <= 0.0:
                 if float(inp.remaining_kwh) < 0.0:
-                    # Priorytet bilansu godziny: przy netto imporcie nie pozwalaj przejść w neutral,
-                    # bo GoodWe może wtedy ładować baterię z nadwyżki PV zamiast oddawać do sieci.
                     target_pct = max(1, int(cfg.min_discharge_assist_pct))
                     duration_s = min(inp.time_to_end_s, max(60.0, inp.time_to_end_s))
                     return WatchdogDecision(
@@ -384,7 +313,6 @@ def decide_watchdog(
                 mode="discharge",
                 reason="soc_low_discharge_cap",
             )
-        # Legacy fallback: jeśli nie ma historii zużycia, zachowaj dawną obronę CHARGE.
         release_kwh = float(cfg.soc_low_defense_release_remaining_kwh)
         if float(inp.remaining_kwh) > release_kwh:
             duration_s = min(inp.time_to_end_s, max(60.0, inp.time_to_end_s))
@@ -397,199 +325,29 @@ def decide_watchdog(
                 reason="soc_low_defense_hold",
             )
 
-    # Awaryjny watchdog importu (drogi import): reaguj tylko gdy godzina jest już realnie w imporcie netto.
-    # Sam chwilowy import z sieci nie może wymuszać charge przy dodatnim bilansie godziny.
-    emergency_import = (
-        state.import_streak >= cfg.import_streak_min
-        and float(inp.remaining_kwh) < 0.0
-    )
+    if float(inp.remaining_kwh) < 0.0:
+        return _deficit_recovery_decision(inp, cfg)
 
-    # Awaryjny watchdog „unrecoverable”: bilans energii już nie do odrobienia w samym late window
-    # E_max_late ≈ P_battery * T_late
-    pmax_kw = max(0.0, float(inp.p_battery_w) / 1000.0)
-    emax_late_kwh = pmax_kw * (float(cfg.late_window_s) / 3600.0)
-    emergency_unrecoverable = abs(inp.remaining_kwh) > (
-        emax_late_kwh * float(cfg.unrecoverable_fraction)
-    )
+    soak = _end_hour_soak_decision(inp, cfg)
+    if soak is not None:
+        return soak
 
-    # Wcześnie: nie panikuj — tylko awaryjnie.
-    if not late and not emergency_import and not emergency_unrecoverable:
-        # Bufor w sieci: tylko przy nadwyżce PV (unikaj „dołka” w nocy), lekki +% aż do docelowej nadwyżki kWh.
-        # Nie wchodź tu przy SOC ≥ próg obrony pełnej — soc_full_defense_* wyżej ma pierwszeństwo (bez +% rozładowania).
-        if (
-            int(cfg.export_buffer_build_minutes) > 0
-            and minute_of_hour is not None
-            and int(minute_of_hour) < int(cfg.export_buffer_build_minutes)
-            and float(inp.pv_w) > float(inp.consumption_w)
-            and float(inp.remaining_kwh) < float(cfg.export_buffer_target_kwh)
-            and float(inp.soc_pct) > float(cfg.soc_low_threshold_pct)
-            and float(inp.soc_pct) < float(cfg.soc_full_threshold_pct)
-        ):
-            pct = max(1, int(cfg.export_buffer_discharge_pct))
-            duration_s = min(inp.time_to_end_s, max(60.0, inp.time_to_end_s))
-            return WatchdogDecision(
-                write_slot=True,
-                enabled=True,
-                power_pct=pct,
-                duration_s=duration_s,
-                mode="discharge",
-                reason="export_buffer_build",
-            )
+    buffer_target = float(cfg.flappy_buffer_target_kwh)
+    if (
+        float(inp.pv_w) > float(inp.consumption_w)
+        and float(inp.remaining_kwh) < buffer_target
+    ):
+        pct = max(1, int(cfg.flappy_buffer_discharge_pct))
         return WatchdogDecision(
-            write_slot=False,
-            enabled=False,
-            power_pct=0,
-            duration_s=0.0,
-            mode="neutral",
-            reason="early_window_no_intervention",
+            write_slot=True,
+            enabled=True,
+            power_pct=pct,
+            duration_s=_slot_duration_s(inp.time_to_end_s),
+            mode="discharge",
+            reason="flappy_buffer_build",
         )
 
-    # W late window: interweniuj dopiero gdy wymagane P jest sensownie duże.
-    if (
-        late
-        and power_kw <= cfg.late_power_threshold_kw
-        and not emergency_import
-        and not emergency_unrecoverable
-    ):
-        return WatchdogDecision(
-            write_slot=False,
-            enabled=False,
-            power_pct=0,
-            duration_s=0.0,
-            mode="neutral",
-            reason="late_but_below_threshold",
-        )
+    if float(inp.remaining_kwh) >= buffer_target:
+        return _neutral_decision("flappy_buffer_hold")
 
-    # Docelowa moc sieci: import (remaining>0) musi być taki jak w compute_intervention (−required_w).
-    # Stary wzorzec max(bias, bias−required) zostawiał zawsze ~+bias eksportu — przy małym PV
-    # dawał rozładowanie → clamp „nie rozładuj przy surplusie” → 0% → direction_guard_neutral
-    # i brak sterowania mimo realnej energii do domknięcia.
-    required_w = power_kw * 1000.0
-    if inp.remaining_kwh < 0:
-        # za dużo importu w energii -> chcemy eksport
-        target_grid_w = cfg.grid_export_bias_w + required_w
-    else:
-        target_grid_w = -required_w
-
-    target_battery_w = target_grid_w - (inp.pv_w - inp.consumption_w)
-    target_battery_w = max(-inp.p_battery_w, min(inp.p_battery_w, target_battery_w))
-    if target_battery_w > 0:
-        cap_w = _discharge_cap_w(inp.p_inverter_w, inp.pv_w, inp.p_battery_w)
-        target_battery_w = min(target_battery_w, cap_w)
-
-    target_pct = max(
-        -100, min(100, int(round(target_battery_w / inp.watts_per_percent)))
-    )
-    # Unikaj „martwego” 0% przy niezerowej mocy baterii (zaokrąglenie 35 W przy 70 W/%).
-    if target_pct == 0 and abs(target_battery_w) >= 0.5 * float(inp.watts_per_percent):
-        target_pct = 1 if target_battery_w > 0 else -1
-
-    # Reguła kierunku + asymetria kosztowa: wolimy lekką nadwyżkę eksportu niż import z sieci.
-    # - Nieładuj, dopóki remaining_kwh ≤ charge_min_remaining_kwh (ujemne, zero, mała nadwyżka).
-    # - Przy remaining>0 nie dopuszczaj DISCHARGE (już za dużo eksportu w kWh).
-    if target_pct < 0 and float(inp.remaining_kwh) <= float(cfg.charge_min_remaining_kwh):
-        target_pct = 0
-    elif inp.remaining_kwh > 0 and target_pct > 0:
-        target_pct = 0
-
-    # Emergency import ma pomagać baterią (discharge), nigdy wymuszać ładowania.
-    if emergency_import and target_pct < 0:
-        target_pct = 0
-
-    min_discharge_assist = max(0, min(100, int(cfg.min_discharge_assist_pct)))
-    used_export_assist = False
-    if (
-        target_pct == 0
-        and inp.remaining_kwh < 0
-        and min_discharge_assist > 0
-    ):
-        # Bilans wymaga eksportu; matematyka dała 0% (np. po zablokowaniu ładowania). Minimalne +%
-        # pozwala GoodWe utrzymać sensowny eco-slot i w praktyce „puścić” nadwyżkę PV do sieci.
-        target_pct = min_discharge_assist
-        used_export_assist = True
-
-    # Anti flip-flop: jeśli jesteśmy świeżo po zmianie trybu, nie zmieniaj znaku (chyba że late lub awaryjnie)
-    seconds_in_mode = (
-        999999.0
-        if state.mode_since_s is None
-        else max(0.0, now_s - float(state.mode_since_s))
-    )
-    desired_mode = "neutral"
-    if target_pct > 0:
-        desired_mode = "discharge"
-    elif target_pct < 0:
-        desired_mode = "charge"
-    else:
-        # Neutral tylko przy bilansie w tolerancji (charge_min) lub bez mocy do sensownej interwencji.
-        if (
-            abs(float(inp.remaining_kwh)) <= float(cfg.charge_min_remaining_kwh)
-            and power_kw <= cfg.late_power_threshold_kw
-            and not emergency_import
-            and not emergency_unrecoverable
-        ):
-            return WatchdogDecision(
-                write_slot=False,
-                enabled=False,
-                power_pct=0,
-                duration_s=0.0,
-                mode="neutral",
-                reason="direction_guard_neutral",
-            )
-        # Resztkowa energia, ale % wyszło 0 — wymuś charge tylko powyżej charge_min (nie łam mikronadwyżki).
-        if float(inp.remaining_kwh) > float(cfg.charge_min_remaining_kwh):
-            target_pct = -max(1, min(100, int(round(power_kw * 1000.0 / inp.watts_per_percent))))
-            desired_mode = "charge"
-        elif float(inp.remaining_kwh) < 0.0 and min_discharge_assist > 0:
-            target_pct = min_discharge_assist
-            desired_mode = "discharge"
-            used_export_assist = True
-        else:
-            return WatchdogDecision(
-                write_slot=False,
-                enabled=False,
-                power_pct=0,
-                duration_s=0.0,
-                mode="neutral",
-                reason="direction_guard_neutral",
-            )
-
-    if (
-        state.mode in ("charge", "discharge")
-        and desired_mode in ("charge", "discharge")
-        and desired_mode != state.mode
-        and seconds_in_mode < float(cfg.dwell_s)
-        and not emergency_import
-        and not late
-    ):
-        # Za wcześnie na flip: wróć do neutral i poczekaj (sieć jako bufor)
-        return WatchdogDecision(
-            write_slot=False,
-            enabled=False,
-            power_pct=0,
-            duration_s=0.0,
-            mode="neutral",
-            reason="dwell_block_flip",
-        )
-
-    # Ustaw krótko; runner i tak ogranicza okno slotu.
-    duration_s = min(inp.time_to_end_s, max(60.0, inp.time_to_end_s))
-    if emergency_unrecoverable and not late:
-        reason = "emergency_unrecoverable"
-    elif emergency_import and not late:
-        reason = "emergency_import"
-    elif emergency_unrecoverable and late:
-        reason = "late_unrecoverable"
-    elif emergency_import and late:
-        reason = "late_emergency_import"
-    elif used_export_assist:
-        reason = "min_discharge_export_assist"
-    else:
-        reason = "ok"
-    return WatchdogDecision(
-        write_slot=True,
-        enabled=True,
-        power_pct=target_pct,
-        duration_s=duration_s,
-        mode=desired_mode,
-        reason=reason,
-    )
+    return _neutral_decision("flappy_neutral")
