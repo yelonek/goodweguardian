@@ -47,8 +47,11 @@ BALANCE_POWER_THRESHOLD_KW = _float_env("BALANCE_POWER_THRESHOLD_KW", 0.3)
 WATTS_PER_PERCENT = 70.0
 
 # Flappy Bird: bufor eksportu z nadwyżki PV, korekta deficytu, soak na koniec godziny
-FLAPPY_BUFFER_TARGET_KWH = _float_env("FLAPPY_BUFFER_TARGET_KWH", 0.2)
 FLAPPY_BUFFER_DISCHARGE_PCT = _int_env("FLAPPY_BUFFER_DISCHARGE_PCT", 1)
+# Soak ciągły (przy nadwyżce PV): deadband [SOAK_TARGET_KWH, SOAK_TRIGGER_KWH].
+# > trigger → CHARGE w dół do target; w paśmie → hold; < target → drobny bufor (discharge 1%).
+SOAK_TARGET_KWH = _float_env("SOAK_TARGET_KWH", 0.1)
+SOAK_TRIGGER_KWH = _float_env("SOAK_TRIGGER_KWH", 0.2)
 END_HOUR_WINDOW_S = _int_env("END_HOUR_WINDOW_S", 600)
 END_HOUR_MAX_REMAINING_KWH = _float_env("END_HOUR_MAX_REMAINING_KWH", 0.2)
 # Margines bezpieczeństwa: deficyt > max_recoverable × fraction → pełna moc do capu inwertera

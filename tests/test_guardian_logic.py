@@ -41,7 +41,7 @@ class TestWatchdogPolicy:
         default_inputs.pv_w = 3000.0
         default_inputs.consumption_w = 1500.0
         cfg = WatchdogConfig(
-            flappy_buffer_target_kwh=0.1,
+            soak_target_kwh=0.1,
             flappy_buffer_discharge_pct=1,
         )
         d = decide_watchdog(
@@ -165,6 +165,47 @@ class TestWatchdogPolicy:
         assert d.write_slot is True
         assert d.mode == "charge"
         assert d.reason == "end_hour_battery_soak"
+
+    def test_continuous_soak_when_surplus_above_trigger(
+        self, default_inputs: BalanceInputs
+    ) -> None:
+        # nadwyżka PV + bilans > trigger 0.2, poza oknem końca godziny → soak ciągły (CHARGE).
+        default_inputs.remaining_kwh = 0.3
+        default_inputs.time_to_end_s = 2400.0
+        default_inputs.pv_w = 5000.0
+        default_inputs.consumption_w = 800.0
+        cfg = WatchdogConfig(soak_target_kwh=0.1, soak_trigger_kwh=0.2)
+        d = decide_watchdog(default_inputs, cfg=cfg)
+        assert d.write_slot is True
+        assert d.mode == "charge"
+        assert d.reason == "continuous_battery_soak"
+
+    def test_continuous_soak_holds_in_deadband(
+        self, default_inputs: BalanceInputs
+    ) -> None:
+        # bilans w paśmie [0.1, 0.2] przy nadwyżce → hold (bez charge i bez discharge).
+        default_inputs.remaining_kwh = 0.15
+        default_inputs.time_to_end_s = 2400.0
+        default_inputs.pv_w = 5000.0
+        default_inputs.consumption_w = 800.0
+        cfg = WatchdogConfig(soak_target_kwh=0.1, soak_trigger_kwh=0.2)
+        d = decide_watchdog(default_inputs, cfg=cfg)
+        assert d.write_slot is False
+        assert d.mode == "neutral"
+        assert d.reason == "flappy_buffer_hold"
+
+    def test_continuous_soak_skipped_without_pv_surplus(
+        self, default_inputs: BalanceInputs
+    ) -> None:
+        # bilans > trigger, ale brak nadwyżki PV → soak ciągły nie rusza, hold.
+        default_inputs.remaining_kwh = 0.3
+        default_inputs.time_to_end_s = 2400.0
+        default_inputs.pv_w = 700.0
+        default_inputs.consumption_w = 800.0
+        cfg = WatchdogConfig(soak_target_kwh=0.1, soak_trigger_kwh=0.2)
+        d = decide_watchdog(default_inputs, cfg=cfg)
+        assert d.write_slot is False
+        assert d.reason == "flappy_buffer_hold"
 
     def test_deficit_never_commands_charge_with_pv_surplus(
         self, default_inputs: BalanceInputs

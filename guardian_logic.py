@@ -34,8 +34,9 @@ class WatchdogConfig:
     grid_export_bias_w: float = 150.0
     recoverable_fraction: float = 0.9
     min_discharge_assist_pct: int = 1
-    flappy_buffer_target_kwh: float = 0.1
     flappy_buffer_discharge_pct: int = 1
+    soak_target_kwh: float = 0.1
+    soak_trigger_kwh: float = 0.2
     end_hour_window_s: int = 600
     end_hour_max_remaining_kwh: float = 0.2
     soc_full_threshold_pct: float = 99.5
@@ -162,17 +163,11 @@ def _deficit_recovery_decision(
     )
 
 
-def _end_hour_soak_decision(
-    inp: BalanceInputs, cfg: WatchdogConfig
-) -> WatchdogDecision | None:
-    """Koniec godziny: nadwyżka eksportu > max → CHARGE (PV do baterii)."""
-    if inp.time_to_end_s > float(cfg.end_hour_window_s):
-        return None
-    max_rem = float(cfg.end_hour_max_remaining_kwh)
-    if float(inp.remaining_kwh) <= max_rem:
-        return None
-
-    excess_kwh = float(inp.remaining_kwh) - max_rem
+def _soak_charge_decision(
+    inp: BalanceInputs, cfg: WatchdogConfig, *, target_kwh: float, reason: str
+) -> WatchdogDecision:
+    """CHARGE dociągający bilans godziny w dół do ``target_kwh`` (PV + ew. import do baterii)."""
+    excess_kwh = float(inp.remaining_kwh) - float(target_kwh)
     power_kw = power_needed_kw(excess_kwh, inp.time_to_end_s)
     target_grid_w = -power_kw * 1000.0
     target_battery_w = target_grid_w - (inp.pv_w - inp.consumption_w)
@@ -189,7 +184,34 @@ def _end_hour_soak_decision(
         power_pct=target_pct,
         duration_s=_slot_duration_s(inp.time_to_end_s),
         mode="charge",
-        reason="end_hour_battery_soak",
+        reason=reason,
+    )
+
+
+def _end_hour_soak_decision(
+    inp: BalanceInputs, cfg: WatchdogConfig
+) -> WatchdogDecision | None:
+    """Koniec godziny: w oknie i nadwyżka eksportu > max → CHARGE do ``end_hour_max_remaining_kwh``."""
+    if inp.time_to_end_s > float(cfg.end_hour_window_s):
+        return None
+    max_rem = float(cfg.end_hour_max_remaining_kwh)
+    if float(inp.remaining_kwh) <= max_rem:
+        return None
+    return _soak_charge_decision(
+        inp, cfg, target_kwh=max_rem, reason="end_hour_battery_soak"
+    )
+
+
+def _continuous_soak_decision(
+    inp: BalanceInputs, cfg: WatchdogConfig
+) -> WatchdogDecision | None:
+    """Soak ciągły: przy nadwyżce PV i bilansie > trigger → CHARGE do celu (deadband [target, trigger])."""
+    if float(inp.pv_w) <= float(inp.consumption_w):
+        return None
+    if float(inp.remaining_kwh) <= float(cfg.soak_trigger_kwh):
+        return None
+    return _soak_charge_decision(
+        inp, cfg, target_kwh=float(cfg.soak_target_kwh), reason="continuous_battery_soak"
     )
 
 
@@ -332,10 +354,14 @@ def decide_watchdog(
     if soak is not None:
         return soak
 
-    buffer_target = float(cfg.flappy_buffer_target_kwh)
+    cont = _continuous_soak_decision(inp, cfg)
+    if cont is not None:
+        return cont
+
+    target = float(cfg.soak_target_kwh)
     if (
         float(inp.pv_w) > float(inp.consumption_w)
-        and float(inp.remaining_kwh) < buffer_target
+        and float(inp.remaining_kwh) < target
     ):
         pct = max(1, int(cfg.flappy_buffer_discharge_pct))
         return WatchdogDecision(
@@ -347,7 +373,7 @@ def decide_watchdog(
             reason="flappy_buffer_build",
         )
 
-    if float(inp.remaining_kwh) >= buffer_target:
+    if float(inp.remaining_kwh) >= target:
         return _neutral_decision("flappy_buffer_hold")
 
     return _neutral_decision("flappy_neutral")
