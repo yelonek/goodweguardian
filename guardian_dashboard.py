@@ -194,6 +194,43 @@ def read_history(limit: int) -> list[DashboardRow]:
     return rows  # newest first
 
 
+def annotate_history_closing_balance(rows: list[DashboardRow]) -> None:
+    """Dla wierszy o pełnej godzinie (minute==0) dolicza bilans KOŃCOWY poprzedniej
+    godziny — bo runner resetuje ``remaining_kwh`` na :00, więc live byłoby 0.
+
+    Bilans liczony jest dokładnie z liczników telemetrii ``E_imp_kwh/E_exp_kwh``
+    (ta sama metoda co KPI: pierwszy odczyt godziny H vs pierwszy odczyt H+1,
+    ``net = Δexp − Δimp``), więc obejmuje całą godzinę, łącznie z ostatnią minutą.
+    Wynik trafia do ``fields['closing_prev_hour_kwh']``; ``remaining_kwh`` pozostaje
+    nietknięty (Current state ma pokazywać live).
+
+    rows: newest-first (jak z :func:`read_history`).
+    """
+    targets: list[tuple[int, date, int]] = []
+    needed_days: set[date] = set()
+    for i, r in enumerate(rows):
+        r.fields["closing_prev_hour_kwh"] = None
+        ts = r.ts
+        if ts is None or ts.minute != 0:
+            continue
+        prev_dt = ts - timedelta(hours=1)  # godzina, która właśnie się zakończyła
+        targets.append((i, prev_dt.date(), prev_dt.hour))
+        needed_days.add(prev_dt.date())
+
+    if not targets:
+        return
+
+    net_by_day: dict[date, dict[int, dict[str, Any]]] = {}
+    for d in needed_days:
+        nets, _warnings = _hourly_counter_net_kwh(day=d)
+        net_by_day[d] = nets
+
+    for i, prev_date, prev_hour in targets:
+        hn = net_by_day.get(prev_date, {}).get(prev_hour, {})
+        if hn.get("complete") and hn.get("net_kwh") is not None:
+            rows[i].fields["closing_prev_hour_kwh"] = hn["net_kwh"]
+
+
 def _read_telemetry_day(local_date: date) -> list[dict[str, Any]]:
     path = TELEMETRY_DIR / f"telemetry_{local_date.isoformat()}.jsonl"
     if not path.exists():
@@ -547,7 +584,7 @@ def index() -> str:
     <thead>
       <tr>
         <th>ts</th>
-        <th>remaining_kwh</th>
+        <th title="Bilans godziny (live). W wierszu pełnej godziny (HH:00) pokazany jest bilans KOŃCOWY poprzedniej godziny (∑), a nie zresetowane 0.">remaining_kwh</th>
         <th>grid_kw</th>
         <th>pv_kw</th>
         <th>house_w</th>
@@ -814,9 +851,13 @@ async function refresh() {
   const rows = (hist.rows || []).map(r => {
     const f = r.fields || {};
     const cmd = (f.cmd_enabled === null) ? "—" : `${f.cmd_enabled ? "On" : "Off"} ${fmt(f.cmd_pct)}% ${fmt(f.cmd_duration_s)}s`;
+    const closing = f.closing_prev_hour_kwh;
+    const balCell = (closing !== null && closing !== undefined)
+      ? `<td title="bilans końcowy poprzedniej godziny z liczników E_imp/E_exp (Δexp−Δimp); live na :00 = 0.000">${fmt(closing)} <span class="muted">∑</span></td>`
+      : `<td>${fmt(f.remaining_kwh)}</td>`;
     return `<tr>
       <td>${fmt(f.ts)}</td>
-      <td>${fmt(f.remaining_kwh)}</td>
+      ${balCell}
       <td>${fmt(f.grid_kw)}</td>
       <td>${fmt(f.pv_kw)}</td>
       <td>${fmt(f.house_w)}</td>
@@ -841,6 +882,7 @@ setInterval(() => refresh().catch(console.error), 15000);
 @app.get("/api/history")
 def api_history(limit: int = Query(default=200, ge=1, le=5000)) -> JSONResponse:
     rows = read_history(limit=limit)
+    annotate_history_closing_balance(rows)
     payload = {
         "log_path": str(LOG_PATH),
         "rows": [{"fields": r.fields, "raw": r.raw} for r in rows],
