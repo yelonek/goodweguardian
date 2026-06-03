@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
@@ -18,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 import guardian_config as guardian_cfg
 
 from energy_pricing import pricing_day_breakdown
-from guardian_config import LOG_DIR, TELEMETRY_DIR
+from guardian_config import LOG_DIR, TELEMETRY_DIR, TELEMETRY_TZ
 from guardian_control import effective_control_enabled, write_control_override
 from guardian_watchdog_override import (
     apply_watchdog_override_updates,
@@ -995,6 +996,9 @@ def api_kpi_today() -> JSONResponse:
 _TOMORROW_PRICING_TTL_S = 300.0
 _tomorrow_pricing_cache: tuple[date, float, dict[str, Any] | None] | None = None
 
+_COMBINED_FORECAST_TTL_S = 90.0
+_combined_forecast_cache: tuple[float, dict[str, Any]] | None = None
+
 
 def _first_pv_kwh_per_hour(local_date: date) -> dict[int, float]:
     """
@@ -1125,6 +1129,8 @@ def _combined_forecast_payload() -> dict[str, Any]:
     today = date.today()
     tomorrow = today + timedelta(days=1)
     lookback_days = 28
+    cache_min = today - timedelta(days=lookback_days + 2)
+    cache = build_daily_hourly_kwh_cache(min_date=cache_min)
 
     try:
         pricing_today: dict[str, Any] | None = pricing_day_breakdown(today)
@@ -1150,14 +1156,14 @@ def _combined_forecast_payload() -> dict[str, Any]:
         (str(h.get("date")), int(h.get("hour"))): h for h in pv_payload.get("hours", [])
     }
 
-    now = datetime.now()
-    load_payload = forecast_load_hours(start_dt=now, hours=48, lookback_days=lookback_days)
+    now = datetime.now(ZoneInfo(TELEMETRY_TZ)).replace(tzinfo=None)
+    load_payload = forecast_load_hours(
+        start_dt=now, hours=48, lookback_days=lookback_days, cache=cache
+    )
     load_by_dh = {
         (str(h.get("date")), int(h.get("hour"))): h
         for h in load_payload.get("hours", [])
     }
-
-    cache = build_daily_hourly_kwh_cache()
     actuals_today = _telemetry_hourly_load_pv_actuals(today)
     actuals_tomorrow = _telemetry_hourly_load_pv_actuals(tomorrow)
     actuals_by_date: dict[str, tuple[dict[int, float], dict[int, float]]] = {
@@ -1188,12 +1194,12 @@ def _combined_forecast_payload() -> dict[str, Any]:
 
         pv_row = pv_by_dh.get((d_iso, h))
         load_row = load_by_dh.get((d_iso, h))
-        base = predict_load_one_hour(d, h, lookback_days, cache)
         if load_row is not None:
             load_p25 = float(load_row["load_kwh_p25"])
             load_p50 = float(load_row["load_kwh_p50"])
             load_p75 = float(load_row["load_kwh_p75"])
         else:
+            base = predict_load_one_hour(d, h, lookback_days, cache)
             load_p25 = float(base["load_kwh_p25"])
             load_p50 = float(base["load_kwh_p50"])
             load_p75 = float(base["load_kwh_p75"])
@@ -1291,7 +1297,14 @@ def _combined_forecast_payload() -> dict[str, Any]:
 
 @app.get("/api/forecast/combined")
 def api_forecast_combined() -> JSONResponse:
-    return JSONResponse(_combined_forecast_payload())
+    global _combined_forecast_cache
+    mono = time.monotonic()
+    cached = _combined_forecast_cache
+    if cached is not None and (mono - cached[0]) < _COMBINED_FORECAST_TTL_S:
+        return JSONResponse(cached[1])
+    payload = _combined_forecast_payload()
+    _combined_forecast_cache = (mono, payload)
+    return JSONResponse(payload)
 
 
 @app.get("/api/guardian/control")

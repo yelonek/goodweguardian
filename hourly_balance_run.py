@@ -10,6 +10,7 @@ import asyncio
 import logging
 import math
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import goodwe
 
@@ -38,6 +39,7 @@ from guardian_config import (
     SOC_LOW_DISCHARGE_FALLBACK_W,
     SOC_LOW_DISCHARGE_MAX_W,
     TELEMETRY_ENABLED,
+    TELEMETRY_TZ,
     WATTS_PER_PERCENT,
     WATCHDOG_MAX_SLOT_MIN,
     WATCHDOG_MIN_DISCHARGE_ASSIST_PCT,
@@ -78,9 +80,15 @@ from sensor_mapping import (
 from telemetry_store import (
     CycleTelemetryRecord,
     append_cycle_record,
+    hour_start_counters_from_telemetry,
     build_ts_and_calendar,
     recent_consumption_average_w,
 )
+
+
+def _local_now() -> datetime:
+    """Lokalny czas ścienny (TELEMETRY_TZ), naive — sloty i bilans godzinowy."""
+    return datetime.now(ZoneInfo(TELEMETRY_TZ)).replace(tzinfo=None)
 
 
 def _get_float(data: dict, key: str, default: float = 0.0) -> float:
@@ -149,7 +157,7 @@ def _days_today_only(now: datetime) -> list[int]:
 
 def _seconds_until_next_minute_start() -> float:
     """Sekundy do początku następnej minuty (krótki margines po :00)."""
-    now = datetime.now()
+    now = _local_now()
     elapsed = now.second + now.microsecond / 1_000_000
     return max(0.05, 60.0 - elapsed + 0.05)
 
@@ -201,7 +209,7 @@ def _next_soc_full_carryover_flag(
 
 async def run_one_cycle() -> None:
     """Wykonuje jeden cykl: odczyt → stan → logika → ewentualna interwencja."""
-    now = datetime.now()
+    now = _local_now()
 
     if not INVERTER_IP:
         logging.getLogger("guardian").error("INVERTER_IP nie ustawione")
@@ -223,9 +231,22 @@ async def run_one_cycle() -> None:
         save_state(now, E_exp, E_imp)
 
     state = load_state(now)
+    log = logging.getLogger("guardian")
     if state is None:
-        # Bez pliku / złej godziny: baza = teraz; zapis wymagany, inaczej każdy cykl znów ma None i Δ=0.
-        E_exp_start, E_imp_start = E_exp, E_imp
+        recovered = hour_start_counters_from_telemetry(now)
+        if recovered is not None:
+            E_exp_start, E_imp_start = recovered
+            log.info(
+                "Baza godziny z telemetrii (start w środku godziny / po migracji): "
+                "E_exp=%.3f E_imp=%.3f",
+                E_exp_start,
+                E_imp_start,
+            )
+        else:
+            E_exp_start, E_imp_start = E_exp, E_imp
+            log.warning(
+                "Brak stanu i telemetrii dla godziny — baza = bieżące liczniki (bilans od teraz)"
+            )
         save_state(now, E_exp_start, E_imp_start)
     else:
         E_exp_start, E_imp_start = state

@@ -101,6 +101,44 @@ def recent_consumption_average_w(now: datetime, window_minutes: int) -> float | 
     return total / count
 
 
+def hour_start_counters_from_telemetry(now: datetime) -> tuple[float, float] | None:
+    """
+    Pierwszy odczyt E_exp_kwh / E_imp_kwh w bieżącej lokalnej godzinie (z JSONL).
+    Użyte przy starcie guardiana w środku godziny po migracji / restarcie.
+    """
+    path = TELEMETRY_DIR / f"telemetry_{now.strftime('%Y-%m-%d')}.jsonl"
+    if not path.exists():
+        return None
+    target_hour = now.hour
+    best_minute: int | None = None
+    exp_start: float | None = None
+    imp_start: float | None = None
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                    if int(row["local_hour"]) != target_hour:
+                        continue
+                    minute = int(row["local_minute"])
+                    exp = float(row["E_exp_kwh"])
+                    imp = float(row["E_imp_kwh"])
+                except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if best_minute is None or minute < best_minute:
+                    best_minute = minute
+                    exp_start = exp
+                    imp_start = imp
+    except OSError:
+        return None
+    if exp_start is None or imp_start is None:
+        return None
+    return exp_start, imp_start
+
+
 def build_ts_and_calendar(now: datetime) -> tuple[str, str, int, int, int, bool]:
     """now = naive local clock (jak datetime.now() w runnerze)."""
     ts_utc = datetime.now(timezone.utc).isoformat()

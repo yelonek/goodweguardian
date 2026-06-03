@@ -122,7 +122,10 @@ def _historical_hour_samples_cached(
     return same_type, any_type_same_hour, all_vals
 
 
-def build_daily_hourly_kwh_cache() -> dict[date, dict[int, float]]:
+def build_daily_hourly_kwh_cache(
+    *,
+    min_date: date | None = None,
+) -> dict[date, dict[int, float]]:
     """Jeden plik JSONL na dzien -> slownik godzina -> przyblizone kWh (srednia W/1000)."""
     out: dict[date, dict[int, float]] = {}
     for p in sorted(TELEMETRY_DIR.glob("telemetry_*.jsonl")):
@@ -134,6 +137,8 @@ def build_daily_hourly_kwh_cache() -> dict[date, dict[int, float]]:
         try:
             d = date.fromisoformat(stem.removeprefix("telemetry_"))
         except ValueError:
+            continue
+        if min_date is not None and d < min_date:
             continue
         hourly = _hourly_kwh_from_file(p)
         if hourly:
@@ -275,6 +280,7 @@ def _apply_nowcast_to_rows(
     *,
     now: datetime,
     lookback_days: int,
+    cache: dict[date, dict[int, float]] | None = None,
 ) -> tuple[list[dict], dict[str, Any]]:
     """
     Korekta: bias_w = srednia moc z ostatnich WINDOW min - (p50 biezacej godziny * 1000 W).
@@ -285,7 +291,10 @@ def _apply_nowcast_to_rows(
         meta["reason"] = "disabled"
         return rows, meta
 
-    cache = build_daily_hourly_kwh_cache()
+    if cache is None:
+        cache = build_daily_hourly_kwh_cache(
+            min_date=now.date() - timedelta(days=lookback_days + 2),
+        )
     today = now.date()
     ch = now.hour
     pred = predict_load_one_hour(today, ch, lookback_days, cache)
@@ -336,21 +345,27 @@ def forecast_load_hours(
     start_dt: datetime | None = None,
     hours: int = 24,
     lookback_days: int = 28,
+    cache: dict[date, dict[int, float]] | None = None,
 ) -> dict:
     """
     Baseline forecast: mediana historyczna per godzina, split weekday/weekend.
     """
     now = start_dt or datetime.now()
+    if cache is None:
+        cache = build_daily_hourly_kwh_cache(
+            min_date=now.date() - timedelta(days=lookback_days + 2),
+        )
     rows: list[dict] = []
     for step in range(max(1, hours)):
         dt = now + timedelta(hours=step)
         target_date = dt.date()
         target_hour = dt.hour
-        same_type, any_type_same_hour, all_vals = _historical_hour_samples(
+        same_type, any_type_same_hour, all_vals = _historical_hour_samples_cached(
             target_hour=target_hour,
             target_weekend=_is_weekend(target_date),
-            start_date=target_date,
+            target_date=target_date,
             lookback_days=lookback_days,
+            cache=cache,
         )
         samples = same_type if len(same_type) >= 5 else any_type_same_hour
         source = "weekday_weekend_hour"
@@ -383,7 +398,9 @@ def forecast_load_hours(
                 "source": source,
             }
         )
-    rows, nowcast_meta = _apply_nowcast_to_rows(rows, now=now, lookback_days=lookback_days)
+    rows, nowcast_meta = _apply_nowcast_to_rows(
+        rows, now=now, lookback_days=lookback_days, cache=cache
+    )
     out: dict[str, Any] = {
         "generated_at": now.isoformat(),
         "lookback_days": lookback_days,
