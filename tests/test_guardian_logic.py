@@ -166,6 +166,22 @@ class TestWatchdogPolicy:
         assert d.mode == "charge"
         assert d.reason == "end_hour_battery_soak"
 
+    def test_end_hour_skips_buffer_build_below_soak_target(
+        self, default_inputs: BalanceInputs
+    ) -> None:
+        # Ostatnie minuty: nie dokładaj eksportu discharge — neutral zamiast bufora.
+        default_inputs.remaining_kwh = 0.05
+        default_inputs.time_to_end_s = 120.0
+        default_inputs.pv_w = 3000.0
+        default_inputs.consumption_w = 1000.0
+        d = decide_watchdog(
+            default_inputs,
+            cfg=WatchdogConfig(end_hour_window_s=600, soak_target_kwh=0.1),
+        )
+        assert d.write_slot is False
+        assert d.mode == "neutral"
+        assert d.reason == "flappy_neutral"
+
     def test_continuous_soak_when_surplus_above_trigger(
         self, default_inputs: BalanceInputs
     ) -> None:

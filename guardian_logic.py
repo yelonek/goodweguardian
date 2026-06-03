@@ -359,8 +359,10 @@ def decide_watchdog(
         return cont
 
     target = float(cfg.soak_target_kwh)
+    in_end_hour_window = inp.time_to_end_s <= float(cfg.end_hour_window_s)
     if (
-        float(inp.pv_w) > float(inp.consumption_w)
+        not in_end_hour_window
+        and float(inp.pv_w) > float(inp.consumption_w)
         and float(inp.remaining_kwh) < target
     ):
         pct = max(1, int(cfg.flappy_buffer_discharge_pct))
