@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -20,6 +23,12 @@ import guardian_config as guardian_cfg
 
 from energy_pricing import pricing_day_breakdown
 from guardian_config import LOG_DIR, TELEMETRY_DIR, TELEMETRY_TZ
+from ecoslot_service import (
+    balancing_slot_id,
+    editable_slot_ids,
+    fetch_ecoslots_payload,
+    write_ecoslot,
+)
 from guardian_control import effective_control_enabled, write_control_override
 from guardian_watchdog_override import (
     apply_watchdog_override_updates,
@@ -42,6 +51,17 @@ app = FastAPI(title="GoodWeGuardian Dashboard", version="0.1.0")
 logger = logging.getLogger(__name__)
 
 LOG_PATH = Path(os.environ.get("GUARDIAN_LOG_PATH") or (LOG_DIR / "guardian.log"))
+
+_HEAVY_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="dash-heavy")
+_forecast_build_lock = threading.Lock()
+
+
+async def _run_heavy(fn, /, *args, **kwargs):
+    """Sync CPU/IO work off the asyncio event loop (single uvicorn worker)."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        _HEAVY_EXECUTOR, lambda: fn(*args, **kwargs)
+    )
 
 
 class GuardianControlBody(BaseModel):
@@ -71,6 +91,20 @@ class WatchdogSocUpdateBody(BaseModel):
                 raise ValueError("soc_night_reserve_hours: hour out of 0..23")
             out.add(hi)
         return sorted(out)
+
+
+class EcoslotWriteBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    start_h: int = Field(ge=0, le=23)
+    start_m: int = Field(ge=0, le=59)
+    end_h: int = Field(ge=0, le=23)
+    end_m: int = Field(ge=0, le=59)
+    power: int = Field(ge=-100, le=100)
+    days: str | list[int] = "Mon-Sun"
+    soc: int = Field(default=100, ge=0, le=100)
+    months: str | list[int] | None = None
+    enabled: bool = True
 
 
 def _require_guardian_api_key(
@@ -446,438 +480,15 @@ def _kpi_for_day(local_date: date) -> dict[str, Any]:
     }
 
 
+_DASHBOARD_UI_PATH = Path(__file__).resolve().parent / "dashboard_ui.html"
+
+
 @app.get("/", response_class=HTMLResponse)
 def index() -> str:
-    return """<!doctype html>
-<html lang="pl">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>GoodWeGuardian Dashboard</title>
-  <style>
-    :root { color-scheme: light dark; }
-    body { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; margin: 18px; }
-    .grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; }
-    .grid4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
-    .card { border: 1px solid rgba(127,127,127,0.35); border-radius: 10px; padding: 10px 12px; }
-    .k { opacity: 0.75; font-size: 12px; }
-    .v { font-size: 18px; font-weight: 700; }
-    .row { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
-    .tag { border: 1px solid rgba(127,127,127,0.35); border-radius: 999px; padding: 2px 8px; font-size: 12px; opacity: 0.9; }
-    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
-    th, td { border-bottom: 1px solid rgba(127,127,127,0.25); padding: 6px 8px; text-align: left; vertical-align: top; }
-    th { position: sticky; top: 0; background: rgba(0,0,0,0.05); backdrop-filter: blur(6px); }
-    .muted { opacity: 0.7; }
-    table.forecast td, table.forecast th { text-align: right; font-variant-numeric: tabular-nums; }
-    table.forecast td:first-child, table.forecast th:first-child,
-    table.forecast td:nth-child(2), table.forecast th:nth-child(2) { text-align: left; }
-    table.forecast .grp-price { background: rgba(255, 200, 80, 0.10); }
-    table.forecast .grp-load { background: rgba(120, 180, 255, 0.10); }
-    table.forecast .grp-pv { background: rgba(120, 220, 140, 0.10); }
-    table.forecast .grp-planner { background: rgba(200, 160, 255, 0.12); }
-    table.forecast tr.day-break td { border-top: 2px solid rgba(127,127,127,0.55); }
-    table.forecast tr.now td { background: rgba(255, 215, 0, 0.18); font-weight: 700; }
-    table.forecast tr.past td { opacity: 0.55; }
-    .nodata { opacity: 0.35; }
-    table.forecast td.delta-pos { color: #0d8050; }
-    table.forecast td.delta-neg { color: #b32d2d; }
-    table.forecast td.delta-ok { opacity: 0.85; }
-    @media (max-width: 1200px) { .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } .grid4 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-    @media (max-width: 760px) { .grid, .grid4 { grid-template-columns: repeat(1, minmax(0, 1fr)); } }
-    details.advanced-panel { margin: 14px 0 18px; }
-    details.advanced-panel > summary { cursor: pointer; font-weight: 700; font-size: 1.1em; user-select: none; }
-  </style>
-</head>
-<body>
-  <div class="row">
-    <div class="tag">log: <span id="logPath">(loading)</span></div>
-    <div class="tag">updated: <span id="updatedAt">—</span></div>
-  </div>
-
-  <details class="advanced-panel">
-    <summary>Guardian control</summary>
-    <div class="card" style="max-width: 520px; margin-top: 10px;">
-      <div class="k">API key (stored in browser localStorage)</div>
-      <input id="apiKey" type="password" placeholder="GUARDIAN_API_KEY" style="width: 100%; margin: 8px 0; padding: 6px;" />
-      <div class="row">
-        <button type="button" id="saveKey">Save key</button>
-        <button type="button" id="refreshControl">Refresh status</button>
-        <button type="button" id="enableControl">Enable writes</button>
-        <button type="button" id="disableControl">Disable writes</button>
-      </div>
-      <div class="muted" style="margin-top:8px;">Status: <span id="controlStatus">—</span></div>
-      <div class="muted" style="font-size:12px;">
-        Same switch as <code>state/guardian_control_override.json</code> (<code>control_enabled</code>): these buttons only write that file.
-        While the file exists, it overrides <code>GUARDIAN_CONTROL_ENABLED</code> in <code>.env</code> (no process restart). Delete the file to follow <code>.env</code> again.
-        Runner and dashboard must share the same <code>state/</code> directory.
-      </div>
-    </div>
-  </details>
-
-  <details class="advanced-panel">
-    <summary>Watchdog / SOC config</summary>
-    <div class="muted" style="margin: 10px 0 8px;">
-      Effective values after merging <code>.env</code> (at process start) with optional
-      <code>state/guardian_watchdog_override.json</code>. The hourly runner reloads that file every cycle — no restart.
-      Dashboard and runner must share the same <code>state/</code> directory (same as control override).
-    </div>
-    <div class="grid" id="watchdogSummaryCards"></div>
-    <div class="card" style="max-width: 520px; margin-top: 10px;">
-      <div class="k" id="wdPathLine">…</div>
-      <div style="display:grid; gap:8px; max-width: 440px; margin-top:8px;">
-        <label class="row">soc_night_reserve_pct <input id="wd_soc_night_reserve_pct" type="number" step="0.1" min="0" max="100" style="max-width: 8rem;" /></label>
-        <label class="row">soc_night_reserve_charge_pct <input id="wd_soc_night_reserve_charge_pct" type="number" step="1" min="-1" max="100" style="max-width: 8rem;" /></label>
-        <label class="row">soc_night_reserve_hours (CSV) <input id="wd_soc_night_reserve_hours" type="text" placeholder="22,23,0,1,2,3,4,5" style="width: 100%;" /></label>
-        <label class="row">soc_low_defense_threshold_pct <input id="wd_soc_low_defense_threshold_pct" type="number" step="0.1" min="0" max="100" style="max-width: 8rem;" /></label>
-        <label class="row">soc_full_defense_threshold_pct <input id="wd_soc_full_defense_threshold_pct" type="number" step="0.1" min="0" max="100" style="max-width: 8rem;" /></label>
-      </div>
-      <div class="row" style="margin-top:12px;">
-        <button type="button" id="saveWatchdog">Save overrides</button>
-        <button type="button" id="resetWatchdog">Clear overrides</button>
-      </div>
-      <div class="muted" id="wdSaveStatus" style="margin-top:8px;"></div>
-    </div>
-  </details>
-
-  <h2>Current state</h2>
-  <div class="grid" id="cards"></div>
-
-  <h2>KPI today</h2>
-  <div class="grid4" id="kpiCards"></div>
-  <div class="muted" id="kpiWarnings" style="margin-top:8px;"></div>
-
-  <h2>Forecast (today + tomorrow)</h2>
-  <div class="muted" id="forecastMeta" style="margin-top:4px;"></div>
-  <div class="muted" id="forecastCompareNote" style="font-size:11px; max-width:960px; margin-top:6px; line-height:1.35;"></div>
-  <div class="muted" id="loadNowcast" style="margin-top:4px;"></div>
-  <table class="forecast">
-    <thead>
-      <tr>
-        <th rowspan="2">date</th>
-        <th rowspan="2">hour</th>
-        <th colspan="2" class="grp-price">price [PLN/kWh]</th>
-        <th colspan="5" class="grp-load">load [kWh]</th>
-        <th colspan="5" class="grp-pv">PV [kWh]</th>
-        <th colspan="2" class="grp-planner">plan / actual</th>
-      </tr>
-      <tr>
-        <th class="grp-price" title="Import netto w tej godzinie: TARIFF_DISTRIBUTION + TARIFF_ENERGY (dzień lub noc G12: 22–6, 13–15 = noc)">buy</th>
-        <th class="grp-price" title="Eksport netto w tej godzinie: RCE PLN/kWh">sell</th>
-        <th class="grp-load">p25</th>
-        <th class="grp-load">p50</th>
-        <th class="grp-load">p75</th>
-        <th class="grp-load" title="Średnia consumption_w/1000 z telemetrii — tylko po zakończeniu godziny">act</th>
-        <th class="grp-load" title="act − p50 (w tej kolumnie p50)">Δ</th>
-        <th class="grp-pv">p10</th>
-        <th class="grp-pv">mean</th>
-        <th class="grp-pv">p90</th>
-        <th class="grp-pv" title="Przyrost licznika e_total inwertera w tej godzinie (kWh) — tylko po zakończeniu godziny">act</th>
-        <th class="grp-pv" title="act − mean, gdy jest prognoza mean">Δ</th>
-        <th class="grp-planner" title="Bilans godzinowy Δexp−Δimp: fakty po zakończeniu h, inaczej target z planera">net kWh</th>
-        <th class="grp-planner" title="SOC na koniec h: z telemetrii po zakończeniu, inaczej planowany koniec h">SOC %</th>
-      </tr>
-    </thead>
-    <tbody id="forecastRows"></tbody>
-  </table>
-
-  <h2>History (newest first)</h2>
-  <table>
-    <thead>
-      <tr>
-        <th>ts</th>
-        <th title="Bilans godziny (live). W wierszu pełnej godziny (HH:00) pokazany jest bilans KOŃCOWY poprzedniej godziny (∑), a nie zresetowane 0.">remaining_kwh</th>
-        <th>grid_kw</th>
-        <th>pv_kw</th>
-        <th>house_w</th>
-        <th>soc</th>
-        <th>p_bat_w</th>
-        <th>reason</th>
-        <th>cmd</th>
-      </tr>
-    </thead>
-    <tbody id="hist"></tbody>
-  </table>
-
-<script>
-const fmt = (v) => (v === null || v === undefined) ? "—" : v;
-
-function card(key, val) {
-  return `<div class="card"><div class="k">${key}</div><div class="v">${fmt(val)}</div></div>`;
-}
-
-function getKey() { return (localStorage.getItem("guardianApiKey") || "").trim(); }
-
-function hourArraysEqual(a, b) {
-  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
-  const sa = [...a].map(Number).sort((x, y) => x - y);
-  const sb = [...b].map(Number).sort((x, y) => x - y);
-  return sa.every((v, i) => v === sb[i]);
-}
-
-function flEq(a, b) {
-  return Math.abs(Number(a) - Number(b)) < 1e-6;
-}
-
-async function saveWatchdog() {
-  const key = getKey();
-  const st = document.getElementById("wdSaveStatus");
-  if (!key) { st.textContent = "Set API key first"; return; }
-  const wds = window._lastWds;
-  const eb = wds && wds.env_base;
-  if (!eb) { st.textContent = "No config loaded yet"; return; }
-  const body = {};
-  const snr = parseFloat(document.getElementById("wd_soc_night_reserve_pct").value);
-  const src = parseInt(document.getElementById("wd_soc_night_reserve_charge_pct").value, 10);
-  const slow = parseFloat(document.getElementById("wd_soc_low_defense_threshold_pct").value);
-  const sfull = parseFloat(document.getElementById("wd_soc_full_defense_threshold_pct").value);
-  if ([snr, slow, sfull].some((x) => Number.isNaN(x)) || Number.isNaN(src)) {
-    st.textContent = "Invalid number in form";
-    return;
-  }
-  body.soc_night_reserve_pct = flEq(snr, eb.soc_night_reserve_pct) ? null : snr;
-  body.soc_night_reserve_charge_pct = (src === eb.soc_night_reserve_charge_pct) ? null : src;
-  body.soc_low_defense_threshold_pct = flEq(slow, eb.soc_low_defense_threshold_pct) ? null : slow;
-  body.soc_full_defense_threshold_pct = flEq(sfull, eb.soc_full_defense_threshold_pct) ? null : sfull;
-  const rawH = document.getElementById("wd_soc_night_reserve_hours").value;
-  const hrs = rawH.split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => !Number.isNaN(n));
-  const ebh = eb.soc_night_reserve_hours || [];
-  body.soc_night_reserve_hours = hourArraysEqual(hrs, ebh) ? null : hrs;
-  try {
-    const r = await fetch("/api/guardian/watchdog-soc", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json", "X-Guardian-Api-Key": key },
-      body: JSON.stringify(body),
-    });
-    const j = await r.json().catch(() => ({}));
-    if (!r.ok) { st.textContent = j.detail || r.statusText || "error"; return; }
-    st.textContent = "Saved.";
-    window._lastWds = j;
-    renderWatchdogSoc(j);
-  } catch (e) {
-    st.textContent = String(e);
-  }
-}
-
-async function resetWatchdog() {
-  const key = getKey();
-  const st = document.getElementById("wdSaveStatus");
-  if (!key) { st.textContent = "Set API key first"; return; }
-  try {
-    const r = await fetch("/api/guardian/watchdog-soc", {
-      method: "DELETE",
-      headers: { "X-Guardian-Api-Key": key },
-    });
-    const j = await r.json().catch(() => ({}));
-    if (!r.ok) { st.textContent = j.detail || r.statusText || "error"; return; }
-    st.textContent = "Overrides cleared.";
-    window._lastWds = j;
-    renderWatchdogSoc(j);
-  } catch (e) {
-    st.textContent = String(e);
-  }
-}
-
-function renderWatchdogSoc(wds) {
-  if (!wds || !wds.effective) return;
-  const eff = wds.effective;
-  const src = wds.sources || {};
-  const line = document.getElementById("wdPathLine");
-  if (line) {
-    line.textContent = `File ${wds.override_path || "—"} — ${wds.override_exists ? "override present" : "no override (env only)"}`;
-  }
-  const wcards = [
-    ["soc_night_reserve_pct", `${fmt(eff.soc_night_reserve_pct)} <span class="muted">(${fmt(src.soc_night_reserve_pct)})</span>`],
-    ["soc_night_reserve_charge_pct", `${fmt(eff.soc_night_reserve_charge_pct)} <span class="muted">(${fmt(src.soc_night_reserve_charge_pct)})</span>`],
-    ["soc_night_reserve_hours", `${(eff.soc_night_reserve_hours || []).join(",")} <span class="muted">(${fmt(src.soc_night_reserve_hours)})</span>`],
-    ["soc_low_defense_threshold_pct", `${fmt(eff.soc_low_defense_threshold_pct)} <span class="muted">(${fmt(src.soc_low_defense_threshold_pct)})</span>`],
-    ["soc_full_defense_threshold_pct", `${fmt(eff.soc_full_defense_threshold_pct)} <span class="muted">(${fmt(src.soc_full_defense_threshold_pct)})</span>`],
-  ].map(([k, v]) => `<div class="card"><div class="k">${k}</div><div class="v" style="font-size:16px;">${v}</div></div>`).join("");
-  document.getElementById("watchdogSummaryCards").innerHTML = wcards;
-  document.getElementById("wd_soc_night_reserve_pct").value = eff.soc_night_reserve_pct;
-  document.getElementById("wd_soc_night_reserve_charge_pct").value = eff.soc_night_reserve_charge_pct;
-  document.getElementById("wd_soc_night_reserve_hours").value = (eff.soc_night_reserve_hours || []).join(",");
-  document.getElementById("wd_soc_low_defense_threshold_pct").value = eff.soc_low_defense_threshold_pct;
-  document.getElementById("wd_soc_full_defense_threshold_pct").value = eff.soc_full_defense_threshold_pct;
-}
-
-async function refreshControl() {
-  const key = getKey();
-  const el = document.getElementById("controlStatus");
-  if (!key) { el.textContent = "set API key"; return; }
-  const r = await fetch("/api/guardian/control", { headers: { "X-Guardian-Api-Key": key } });
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) { el.textContent = (j.detail || r.statusText || "error"); return; }
-  el.textContent = `enabled=${j.control_enabled} source=${j.source}`;
-}
-
-async function putControl(enabled) {
-  const key = getKey();
-  if (!key) { alert("Set API key first"); return; }
-  const r = await fetch("/api/guardian/control", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json", "X-Guardian-Api-Key": key },
-    body: JSON.stringify({ control_enabled: enabled }),
-  });
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) { alert(j.detail || r.statusText || "error"); return; }
-  document.getElementById("controlStatus").textContent = `enabled=${j.control_enabled} source=${j.source}`;
-}
-
-document.getElementById("saveKey").addEventListener("click", () => {
-  const v = document.getElementById("apiKey").value.trim();
-  localStorage.setItem("guardianApiKey", v);
-  refreshControl().catch(console.error);
-});
-document.getElementById("refreshControl").addEventListener("click", () => refreshControl().catch(console.error));
-document.getElementById("enableControl").addEventListener("click", () => putControl(true));
-document.getElementById("disableControl").addEventListener("click", () => putControl(false));
-document.getElementById("saveWatchdog").addEventListener("click", () => saveWatchdog().catch(console.error));
-document.getElementById("resetWatchdog").addEventListener("click", () => resetWatchdog().catch(console.error));
-
-async function refresh() {
-  const [statusRes, histRes, forecastRes, kpiRes] = await Promise.all([
-    fetch("/api/status"),
-    fetch("/api/history?limit=200"),
-    fetch("/api/forecast/combined"),
-    fetch("/api/kpi/today"),
-  ]);
-  const status = await statusRes.json();
-  const hist = await histRes.json();
-  const forecast = await forecastRes.json();
-  const kpi = await kpiRes.json();
-
-  document.getElementById("logPath").textContent = status.log_path || "—";
-  document.getElementById("updatedAt").textContent = new Date().toLocaleTimeString();
-
-  window._lastWds = status.watchdog_soc || {};
-  renderWatchdogSoc(window._lastWds);
-
-  const f = status.fields || {};
-  const cards = [
-    ["ts", f.ts],
-    ["remaining_kwh", f.remaining_kwh],
-    ["balancing_kw", f.balancing_kw],
-    ["grid_kw", f.grid_kw],
-    ["pv_kw", f.pv_kw],
-    ["house_w", f.house_w],
-    ["soc_pct", f.soc_pct],
-    ["p_bat_w", f.p_bat_w],
-    ["time_to_end_s", f.time_to_end_s],
-    ["ecoslot_read_pct", f.ecoslot_read_pct],
-    ["intervene", f.intervene],
-    ["reason", f.reason],
-    ["cmd_enabled", f.cmd_enabled],
-    ["cmd_pct", f.cmd_pct],
-    ["cmd_duration_s", f.cmd_duration_s],
-  ].map(([k,v]) => card(k, v)).join("");
-  document.getElementById("cards").innerHTML = cards;
-
-  const totals = kpi.totals || {};
-  const kpiCards = [
-    ["deposit_add_pln_day", Number(totals.deposit_add_pln_day || 0).toFixed(2)],
-    ["electricity_bill_pln_day", Number(totals.electricity_bill_pln_day || 0).toFixed(2)],
-    ["net_cashflow_pln_day", Number(totals.net_cashflow_pln_day || 0).toFixed(2)],
-    ["net_export_surplus_kwh", Number(totals.net_export_surplus_kwh || 0).toFixed(3)],
-    ["net_import_surplus_kwh", Number(totals.net_import_surplus_kwh || 0).toFixed(3)],
-    ["telemetry_rows", fmt(kpi.telemetry_rows)],
-    ["pricing_source", fmt(kpi.pricing_source)],
-  ].map(([k,v]) => card(k, v)).join("");
-   document.getElementById("kpiCards").innerHTML = kpiCards;
-  const warns = kpi.warnings || [];
-  const wEl = document.getElementById("kpiWarnings");
-  wEl.textContent = warns.length
-    ? `KPI warnings (${warns.length}): ${warns.slice(0, 5).join(" · ")}${warns.length > 5 ? " …" : ""}`
-    : "";
-
-  const fcell = (v, digits) => (v === null || v === undefined)
-    ? `<td class="nodata">—</td>`
-    : `<td>${Number(v).toFixed(digits)}</td>`;
-
-  const fcellDelta = (v, digits, eps) => {
-    if (v === null || v === undefined) return `<td class="nodata">—</td>`;
-    const n = Number(v);
-    let cls = "delta-ok";
-    if (n > eps) cls = "delta-pos";
-    else if (n < -eps) cls = "delta-neg";
-    const s = (n >= 0 ? "+" : "") + n.toFixed(digits);
-    return `<td class="${cls}">${s}</td>`;
-  };
-
-  const fcRows = forecast.rows || [];
-  const nowDate = (forecast.now || "").slice(0, 10);
-  const nowHour = Number((forecast.now || "T00").slice(11, 13));
-  let prevDate = null;
-  const fcHtml = fcRows.map(r => {
-    const cls = [];
-    if (prevDate && r.date !== prevDate) cls.push("day-break");
-    if (r.date === nowDate && r.hour === nowHour) cls.push("now");
-    if (r.date < nowDate || (r.date === nowDate && r.hour < nowHour)) cls.push("past");
-    prevDate = r.date;
-    const trClass = cls.length ? ` class="${cls.join(" ")}"` : "";
-    return `<tr${trClass}>
-      <td>${r.date.slice(5)}</td>
-      <td>${String(r.hour).padStart(2, "0")}:00</td>
-      ${fcell(r.buy_pln_kwh, 4)}
-      ${fcell(r.sell_pln_kwh, 4)}
-      ${fcell(r.load_kwh_p25, 3)}
-      ${fcell(r.load_kwh_p50, 3)}
-      ${fcell(r.load_kwh_p75, 3)}
-      ${fcell(r.load_kwh_actual, 3)}
-      ${fcellDelta(r.load_kwh_delta_p50, 3, 0.03)}
-      ${fcell(r.pv_kwh_p10, 3)}
-      ${fcell(r.pv_kwh, 3)}
-      ${fcell(r.pv_kwh_p90, 3)}
-      ${fcell(r.pv_kwh_actual, 3)}
-      ${fcellDelta(r.pv_kwh_delta_mean, 3, 0.05)}
-      ${fcell(r.net_kwh, 3)}
-      ${fcell(r.soc_pct, 1)}
-    </tr>`;
-  }).join("");
-  document.getElementById("forecastRows").innerHTML = fcHtml;
-
-  const meta = [];
-  meta.push(`today RCE: ${fmt(forecast.pricing_today_source)}`);
-  meta.push(forecast.pricing_tomorrow_available
-    ? `tomorrow RCE: ${fmt(forecast.pricing_tomorrow_source)}`
-    : `tomorrow RCE: not yet published`);
-  document.getElementById("forecastMeta").textContent = meta.join(" · ");
-  const cn = document.getElementById("forecastCompareNote");
-  if (cn) cn.textContent = forecast.comparison_note || "";
-
-  const nc = forecast.load_nowcast || {};
-  document.getElementById("loadNowcast").textContent = nc.applied
-    ? `load nowcast: bias ${Number(nc.bias_w || 0).toFixed(0)} W (ostatnie ${nc.window_min ?? "—"} min vs baseline p50 × 1000); decay ${nc.decay_hours ?? "—"} h, max Δ ${Number(nc.max_delta_kwh ?? 0).toFixed(2)} kWh/h`
-    : `load nowcast: ${nc.reason ? "off — " + nc.reason : "—"}`;
-
-  const rows = (hist.rows || []).map(r => {
-    const f = r.fields || {};
-    const cmd = (f.cmd_enabled === null) ? "—" : `${f.cmd_enabled ? "On" : "Off"} ${fmt(f.cmd_pct)}% ${fmt(f.cmd_duration_s)}s`;
-    const closing = f.closing_prev_hour_kwh;
-    const balCell = (closing !== null && closing !== undefined)
-      ? `<td title="bilans końcowy poprzedniej godziny z liczników E_imp/E_exp (Δexp−Δimp); live na :00 = 0.000">${fmt(closing)} <span class="muted">∑</span></td>`
-      : `<td>${fmt(f.remaining_kwh)}</td>`;
-    return `<tr>
-      <td>${fmt(f.ts)}</td>
-      ${balCell}
-      <td>${fmt(f.grid_kw)}</td>
-      <td>${fmt(f.pv_kw)}</td>
-      <td>${fmt(f.house_w)}</td>
-      <td>${fmt(f.soc_pct)}</td>
-      <td>${fmt(f.p_bat_w)}</td>
-      <td class="muted">${fmt(f.reason)}</td>
-      <td class="muted">${cmd}</td>
-    </tr>`;
-  }).join("");
-  document.getElementById("hist").innerHTML = rows;
-}
-
-document.getElementById("apiKey").value = getKey();
-refresh().catch(console.error);
-refreshControl().catch(console.error);
-setInterval(() => refresh().catch(console.error), 15000);
-</script>
-</body>
-</html>"""
+    try:
+        return _DASHBOARD_UI_PATH.read_text(encoding="utf-8")
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"dashboard UI missing: {e}") from e
 
 
 @app.get("/api/history")
@@ -983,9 +594,27 @@ def api_load_forecast_backtest(
     return JSONResponse(payload)
 
 
+_KPI_CACHE_TTL_S = 60.0
+_kpi_cache: tuple[date, float, dict[str, Any]] | None = None
+
+
+def _get_kpi_today_cached() -> dict[str, Any]:
+    global _kpi_cache
+    today = date.today()
+    mono = time.monotonic()
+    cached = _kpi_cache
+    if cached is not None:
+        d, at, payload = cached
+        if d == today and (mono - at) < _KPI_CACHE_TTL_S:
+            return payload
+    payload = _kpi_for_day(today)
+    _kpi_cache = (today, mono, payload)
+    return payload
+
+
 @app.get("/api/kpi/today")
-def api_kpi_today() -> JSONResponse:
-    payload = _kpi_for_day(date.today())
+async def api_kpi_today() -> JSONResponse:
+    payload = await _run_heavy(_get_kpi_today_cached)
     return JSONResponse(payload)
 
 
@@ -998,6 +627,9 @@ _tomorrow_pricing_cache: tuple[date, float, dict[str, Any] | None] | None = None
 
 _COMBINED_FORECAST_TTL_S = 90.0
 _combined_forecast_cache: tuple[float, dict[str, Any]] | None = None
+
+_ECOSLOTS_CACHE_TTL_S = 20.0
+_ecoslots_cache: tuple[float, dict[str, Any]] | None = None
 
 
 def _first_pv_kwh_per_hour(local_date: date) -> dict[int, float]:
@@ -1295,16 +927,84 @@ def _combined_forecast_payload() -> dict[str, Any]:
     }
 
 
-@app.get("/api/forecast/combined")
-def api_forecast_combined() -> JSONResponse:
+def _get_combined_forecast_cached() -> dict[str, Any]:
     global _combined_forecast_cache
     mono = time.monotonic()
     cached = _combined_forecast_cache
     if cached is not None and (mono - cached[0]) < _COMBINED_FORECAST_TTL_S:
-        return JSONResponse(cached[1])
-    payload = _combined_forecast_payload()
-    _combined_forecast_cache = (mono, payload)
+        return cached[1]
+    with _forecast_build_lock:
+        cached = _combined_forecast_cache
+        if cached is not None and (mono - cached[0]) < _COMBINED_FORECAST_TTL_S:
+            return cached[1]
+        payload = _combined_forecast_payload()
+        _combined_forecast_cache = (time.monotonic(), payload)
+        return payload
+
+
+@app.get("/api/forecast/combined")
+async def api_forecast_combined() -> JSONResponse:
+    payload = await _run_heavy(_get_combined_forecast_cached)
     return JSONResponse(payload)
+
+
+@app.get("/api/ecoslots")
+async def api_ecoslots_get(refresh: bool = Query(default=False)) -> JSONResponse:
+    global _ecoslots_cache
+    mono = time.monotonic()
+    if not refresh:
+        cached = _ecoslots_cache
+        if cached is not None and (mono - cached[0]) < _ECOSLOTS_CACHE_TTL_S:
+            return JSONResponse(cached[1])
+    try:
+        payload = await fetch_ecoslots_payload()
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    except TimeoutError as e:
+        raise HTTPException(status_code=504, detail=str(e)) from e
+    except Exception as e:
+        logger.warning("ecoslots read failed: %s", e)
+        raise HTTPException(status_code=502, detail=str(e)) from e
+    _ecoslots_cache = (mono, payload)
+    return JSONResponse(payload)
+
+
+@app.put("/api/ecoslots/{slot_id}")
+async def api_ecoslots_put(
+    slot_id: str,
+    body: EcoslotWriteBody,
+    _: None = Depends(_require_guardian_api_key),
+) -> JSONResponse:
+    global _ecoslots_cache
+    if slot_id not in editable_slot_ids():
+        raise HTTPException(
+            status_code=400,
+            detail=f"Slot {slot_id} jest zarezerwowany dla Guardiana ({balancing_slot_id()})",
+        )
+    try:
+        result = await write_ecoslot(
+            slot_id,
+            start_h=body.start_h,
+            start_m=body.start_m,
+            end_h=body.end_h,
+            end_m=body.end_m,
+            power=body.power,
+            days=body.days,
+            soc=body.soc,
+            months=body.months,
+            enabled=body.enabled,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except TimeoutError as e:
+        raise HTTPException(status_code=504, detail=str(e)) from e
+    except Exception as e:
+        logger.warning("ecoslot write %s failed: %s", slot_id, e)
+        raise HTTPException(status_code=502, detail=str(e)) from e
+    _ecoslots_cache = None
+    return JSONResponse(result)
 
 
 @app.get("/api/guardian/control")
