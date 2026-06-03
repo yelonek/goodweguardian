@@ -27,6 +27,7 @@ from ecoslot_service import (
     balancing_slot_id,
     editable_slot_ids,
     fetch_ecoslots_payload,
+    load_ecoslots_payload_from_snapshot,
     write_ecoslot,
 )
 from guardian_control import effective_control_enabled, write_control_override
@@ -102,7 +103,7 @@ class EcoslotWriteBody(BaseModel):
     end_m: int = Field(ge=0, le=59)
     power: int = Field(ge=-100, le=100)
     days: str | list[int] = "Mon-Sun"
-    soc: int = Field(default=100, ge=0, le=100)
+    soc: int = Field(default=100, ge=10, le=100)
     months: str | list[int] | None = None
     enabled: bool = True
 
@@ -482,13 +483,13 @@ def _kpi_for_day(local_date: date) -> dict[str, Any]:
 
 _DASHBOARD_UI_PATH = Path(__file__).resolve().parent / "dashboard_ui.html"
 
-
 @app.get("/", response_class=HTMLResponse)
 def index() -> str:
     try:
         return _DASHBOARD_UI_PATH.read_text(encoding="utf-8")
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"dashboard UI missing: {e}") from e
+
 
 
 @app.get("/api/history")
@@ -956,8 +957,12 @@ async def api_ecoslots_get(refresh: bool = Query(default=False)) -> JSONResponse
         cached = _ecoslots_cache
         if cached is not None and (mono - cached[0]) < _ECOSLOTS_CACHE_TTL_S:
             return JSONResponse(cached[1])
+        snap = load_ecoslots_payload_from_snapshot()
+        if snap is not None:
+            _ecoslots_cache = (mono, snap)
+            return JSONResponse(snap)
     try:
-        payload = await fetch_ecoslots_payload()
+        payload = await fetch_ecoslots_payload(live=True)
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e)) from e
     except TimeoutError as e:

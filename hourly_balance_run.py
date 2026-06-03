@@ -14,7 +14,13 @@ from zoneinfo import ZoneInfo
 
 import goodwe
 
-from ecoslot_config import ECO_SETTING_IDS, set_ecoslot
+from ecoslot_config import set_ecoslot
+from ecoslot_service import (
+    build_ecoslots_payload,
+    other_eco_slot_active,
+    read_all_eco_settings_raw,
+    save_ecoslots_snapshot,
+)
 from guardian_watchdog_override import effective_watchdog_soc
 from guardian_config import (
     BALANCE_POWER_THRESHOLD_KW,
@@ -162,23 +168,6 @@ def _seconds_until_next_minute_start() -> float:
     return max(0.05, 60.0 - elapsed + 0.05)
 
 
-async def _any_other_eco_slot_active(
-    inverter: object, skip_slot_id: str, now: datetime
-) -> bool:
-    """True, gdy któryś z eco_mode_1..4 (oprócz slotu balansującego) ma on_off i czas w oknie."""
-    log = logging.getLogger("guardian")
-    for sid in ECO_SETTING_IDS:
-        if sid == skip_slot_id:
-            continue
-        try:
-            s = await inverter.read_setting(sid)
-            if _slot_active(s, now):
-                return True
-        except Exception as e:
-            log.debug("read_setting %s (other eco): %s", sid, e)
-    return False
-
-
 def _next_soc_full_carryover_flag(
     current: bool,
     *,
@@ -272,15 +261,20 @@ async def run_one_cycle() -> None:
     )
 
     slot_id = get_slot_id()
-    try:
-        current_slot = await inverter.read_setting(slot_id)
-    except Exception as e:
-        logging.getLogger("guardian").warning("read_setting %s failed: %s", slot_id, e)
-        current_slot = None
-
+    eco_supported = {s.id_ for s in inverter.settings()}
+    slots_raw = await read_all_eco_settings_raw(inverter)
+    current_slot = slots_raw.get(slot_id)
     slot_active = _slot_active(current_slot, now)
     current_pct = _current_ecoslot_pct(current_slot)
-    other_eco_active = await _any_other_eco_slot_active(inverter, slot_id, now)
+    other_eco_active = other_eco_slot_active(slots_raw, slot_id, now)
+    try:
+        save_ecoslots_snapshot(
+            build_ecoslots_payload(
+                slots_raw, now=now, source="runner", supported_ids=eco_supported
+            )
+        )
+    except OSError as e:
+        logging.getLogger("guardian").warning("ecoslots snapshot save failed: %s", e)
     ws = effective_watchdog_soc()
     low_soc_discharge_target_w = None
     if soc_pct <= ws.soc_low_defense_threshold_pct:

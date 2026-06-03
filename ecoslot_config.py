@@ -73,8 +73,8 @@ async def set_ecoslot(
     days: 'Mon-Sun' | 'Mon,Tue,Wed' | lista 0..6 (Sun=0).
     months: None (cały rok) | 'Jan,Mar' | lista 1..12.
     """
-    if slot_id not in ECO_SETTING_IDS:
-        raise ValueError(f"slot_id musi być jednym z {ECO_SETTING_IDS}")
+    if not 10 <= soc <= 100:
+        raise ValueError("soc musi być 10..100")
     settings_map = {s.id_: s for s in inverter.settings()}
     if slot_id not in settings_map:
         raise ValueError(f"Ten model inwertera nie obsługuje {slot_id}")
