@@ -269,7 +269,43 @@ function ecoTime(h, m) {
 }
 
 function ecoTimeInput(h, m) {
+  if (h == null || Number.isNaN(Number(h))) return "";
   return ecoTime(h, m);
+}
+
+function snapSlot(slotId) {
+  return (window._lastEcoslots && window._lastEcoslots.slots && window._lastEcoslots.slots[slotId]) || {};
+}
+
+function showEcoStatus(msg) {
+  const st = document.getElementById("ecoSlotsStatus");
+  st.textContent = msg;
+  st.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function parseEcoTime(value) {
+  if (!value || !String(value).includes(":")) return [NaN, NaN];
+  const parts = String(value).split(":");
+  const h = parseInt(parts[0], 10);
+  const m = parseInt(parts[1], 10);
+  return [h, m];
+}
+
+function readEcoTimeFields(slotId) {
+  const startEl = document.querySelector(`[data-eco="${slotId}"][data-field="start_time"]`);
+  const endEl = document.querySelector(`[data-eco="${slotId}"][data-field="end_time"]`);
+  let [start_h, start_m] = parseEcoTime(startEl && startEl.value);
+  let [end_h, end_m] = parseEcoTime(endEl && endEl.value);
+  const snap = snapSlot(slotId);
+  if (Number.isNaN(start_h)) {
+    start_h = snap.start_h;
+    start_m = dv(snap.start_m, 0);
+  }
+  if (Number.isNaN(end_h)) {
+    end_h = snap.end_h;
+    end_m = dv(snap.end_m, 0);
+  }
+  return [start_h, start_m, end_h, end_m];
 }
 
 const ECO_DAY_PRESETS = [
@@ -317,9 +353,9 @@ function renderEcoslots(data) {
       <div class="eco-form">
         <div class="eco-time-grid">
           <label class="eco-field"><span>Od</span>
-            <input data-eco="${sid}" data-field="start_time" type="time" value="${ecoTimeInput(s.start_h, s.start_m)}" /></label>
+            <input data-eco="${sid}" data-field="start_time" type="time" ${ecoTimeInput(s.start_h, s.start_m) ? `value="${ecoTimeInput(s.start_h, s.start_m)}"` : ""} /></label>
           <label class="eco-field"><span>Do</span>
-            <input data-eco="${sid}" data-field="end_time" type="time" value="${ecoTimeInput(s.end_h, s.end_m)}" /></label>
+            <input data-eco="${sid}" data-field="end_time" type="time" ${ecoTimeInput(s.end_h, s.end_m) ? `value="${ecoTimeInput(s.end_h, s.end_m)}"` : ""} /></label>
         </div>
         <label class="eco-field"><span>Moc baterii (ujemne = ładowanie, dodatnie = rozładowanie)</span>
           <div class="eco-power-row">
@@ -342,16 +378,28 @@ function renderEcoslots(data) {
       </div>
     </article>`;
   }).join("") || '<div class="muted">Brak slotów.</div>';
-  document.querySelectorAll("[data-eco-save]").forEach((btn) => {
-    btn.addEventListener("click", () => saveEcoslot(btn.getAttribute("data-eco-save")).catch(console.error));
-  });
   (data.editable_slot_ids || []).forEach((sid) => bindEcoSlotForm(sid));
 }
 
-function parseEcoTime(value) {
-  if (!value || !value.includes(":")) return [NaN, NaN];
-  const [h, m] = value.split(":").map((x) => parseInt(x, 10));
-  return [h, m];
+let _ecoSaveInFlight = false;
+
+function handleEcoSaveEvent(e) {
+  const btn = e.target.closest("[data-eco-save]");
+  if (!btn) return;
+  e.preventDefault();
+  const slotId = btn.getAttribute("data-eco-save");
+  const run = () => saveEcoslot(slotId, btn).catch((err) => {
+    console.error(err);
+    showEcoStatus(String(err));
+  });
+  const ae = document.activeElement;
+  const editing = ae instanceof HTMLInputElement || ae instanceof HTMLSelectElement;
+  if (editing && ae !== btn) {
+    ae.blur();
+    setTimeout(run, 100);
+    return;
+  }
+  run();
 }
 
 async function refreshEcoslots(live = false) {
@@ -368,48 +416,74 @@ async function refreshEcoslots(live = false) {
   } catch (e) { st.textContent = String(e); }
 }
 
-async function saveEcoslot(slotId) {
-  const key = getKey(), st = document.getElementById("ecoSlotsStatus");
-  if (!key) { st.textContent = "Ustaw klucz API"; return; }
-  const pick = (field) => {
-    const el = document.querySelector(`[data-eco="${slotId}"][data-field="${field}"]`);
-    if (!el) return null;
-    if (el.type === "checkbox") return el.checked;
-    if (field === "days") {
-      const sel = document.querySelector(`[data-eco="${slotId}"][data-field="days_select"]`);
-      if (sel && sel.value !== "__custom__") return sel.value;
-      return el.value.trim() || "Mon-Sun";
+async function saveEcoslot(slotId, btn) {
+  if (_ecoSaveInFlight) return;
+  _ecoSaveInFlight = true;
+  const key = getKey();
+  if (!key) {
+    _ecoSaveInFlight = false;
+    showEcoStatus("Ustaw klucz API powyżej");
+    document.getElementById("apiKey").focus();
+    alert("Ustaw klucz API w sekcji Guardian control (ten sam co na laptopie).");
+    return;
+  }
+  const label = btn && btn.textContent;
+  if (btn) {
+    btn.classList.add("is-saving");
+    btn.disabled = true;
+    btn.textContent = "Zapisuję…";
+  }
+  showEcoStatus(`Zapisuję ${slotId}…`);
+  try {
+    const pick = (field) => {
+      const el = document.querySelector(`[data-eco="${slotId}"][data-field="${field}"]`);
+      if (!el) return null;
+      if (el.type === "checkbox") return el.checked;
+      if (field === "days") {
+        const sel = document.querySelector(`[data-eco="${slotId}"][data-field="days_select"]`);
+        if (sel && sel.value !== "__custom__") return sel.value;
+        return el.value.trim() || "Mon-Sun";
+      }
+      if (field === "power") return parseInt(el.value, 10);
+      return parseInt(el.value, 10);
+    };
+    const [start_h, start_m, end_h, end_m] = readEcoTimeFields(slotId);
+    let soc = pick("soc");
+    if (Number.isNaN(soc)) soc = dv(snapSlot(slotId).soc_pct, 100);
+    const body = {
+      start_h, start_m, end_h, end_m,
+      power: pick("power"),
+      days: pick("days"),
+      soc,
+      enabled: pick("enabled"),
+    };
+    if ([body.start_h, body.start_m, body.end_h, body.end_m, body.power, body.soc].some(Number.isNaN)) {
+      showEcoStatus("Sprawdź godzinę i liczby");
+      return;
     }
-    if (field === "power") return parseInt(el.value, 10);
-    return parseInt(el.value, 10);
-  };
-  const [start_h, start_m] = parseEcoTime(
-    (document.querySelector(`[data-eco="${slotId}"][data-field="start_time"]`) || {}).value
-  );
-  const [end_h, end_m] = parseEcoTime(
-    (document.querySelector(`[data-eco="${slotId}"][data-field="end_time"]`) || {}).value
-  );
-  const body = {
-    start_h, start_m, end_h, end_m,
-    power: pick("power"),
-    days: pick("days"),
-    soc: pick("soc"),
-    enabled: pick("enabled"),
-  };
-  if ([body.start_h, body.start_m, body.end_h, body.end_m, body.power, body.soc].some(Number.isNaN)) {
-    st.textContent = "Sprawdź godzinę i liczby"; return;
+    if (body.soc < 10 || body.soc > 100) {
+      showEcoStatus("SoC docelowy: 10–100");
+      return;
+    }
+    const r = await fetch(`/api/ecoslots/${slotId}`, {
+      method: "PUT", headers: { "Content-Type": "application/json", "X-Guardian-Api-Key": key },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      showEcoStatus(typeof j.detail === "string" ? j.detail : (j.detail || "error"));
+      return;
+    }
+    showEcoStatus("Zapisano " + slotId);
+    await refreshEcoslots(false);
+  } finally {
+    _ecoSaveInFlight = false;
+    if (btn) {
+      btn.classList.remove("is-saving");
+      btn.disabled = false;
+      btn.textContent = label || `Zapisz ${slotId.replace("eco_mode_", "slot ")}`;
+    }
   }
-  if (body.soc < 10 || body.soc > 100) {
-    st.textContent = "SoC docelowy: 10–100"; return;
-  }
-  const r = await fetch(`/api/ecoslots/${slotId}`, {
-    method: "PUT", headers: { "Content-Type": "application/json", "X-Guardian-Api-Key": key },
-    body: JSON.stringify(body),
-  });
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) { st.textContent = j.detail || "error"; return; }
-  st.textContent = "Zapisano " + slotId;
-  await refreshEcoslots(false);
 }
 
 const PAGE_LOADERS = {
@@ -463,6 +537,9 @@ document.getElementById("disableControl").addEventListener("click", () => putCon
 document.getElementById("saveWatchdog").addEventListener("click", () => saveWatchdog().catch(console.error));
 document.getElementById("resetWatchdog").addEventListener("click", () => resetWatchdog().catch(console.error));
 document.getElementById("refreshEcoslots").addEventListener("click", () => refreshEcoslots(true).catch(console.error));
+
+const ecoPanels = document.getElementById("ecoSlotsPanels");
+ecoPanels.addEventListener("click", handleEcoSaveEvent);
 
 document.getElementById("apiKey").value = getKey();
 if (!location.hash) location.hash = "overview";
