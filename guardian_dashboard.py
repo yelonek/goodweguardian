@@ -482,6 +482,8 @@ def _kpi_for_day(local_date: date) -> dict[str, Any]:
 
 
 _DASHBOARD_UI_PATH = Path(__file__).resolve().parent / "dashboard_ui.html"
+_DASHBOARD_JS_PATH = Path(__file__).resolve().parent / "dashboard.js"
+
 
 @app.get("/", response_class=HTMLResponse)
 def index() -> str:
@@ -490,6 +492,16 @@ def index() -> str:
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"dashboard UI missing: {e}") from e
 
+
+@app.get("/dashboard.js")
+def dashboard_js() -> HTMLResponse:
+    try:
+        return HTMLResponse(
+            _DASHBOARD_JS_PATH.read_text(encoding="utf-8"),
+            media_type="application/javascript",
+        )
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"dashboard JS missing: {e}") from e
 
 
 @app.get("/api/history")

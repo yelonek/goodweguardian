@@ -45,8 +45,67 @@
     table.forecast td.delta-ok { opacity: 0.85; }
     .settings-block { margin-bottom: 28px; }
     .settings-block h3 { margin: 0 0 10px; font-size: 1rem; }
+    /* Eco slots — mobile-first */
+    .eco-slots-toolbar { display: flex; flex-direction: column; gap: 10px; margin-bottom: 14px; }
+    .eco-slot-card { margin-bottom: 16px; padding: 14px 14px 16px; }
+    .eco-slot-title { font-size: 1.05rem; font-weight: 700; margin: 0 0 4px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .eco-slot-read { font-size: 12px; margin-bottom: 12px; }
+    .eco-form { display: flex; flex-direction: column; gap: 16px; }
+    .eco-field { display: flex; flex-direction: column; gap: 6px; }
+    .eco-field > span { font-size: 13px; line-height: 1.3; }
+    .eco-field input[type="text"],
+    .eco-field input[type="number"],
+    .eco-field input[type="time"],
+    .eco-field select {
+      font-size: 16px;
+      padding: 12px 14px;
+      border-radius: 10px;
+      border: 1px solid rgba(127,127,127,0.45);
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 48px;
+      background: Canvas;
+      color: CanvasText;
+    }
+    .eco-time-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .eco-power-row { display: flex; align-items: center; gap: 14px; }
+    .eco-power-row input[type="range"] { flex: 1; min-height: 40px; margin: 0; }
+    .eco-power-val { font-weight: 700; font-size: 1.1rem; min-width: 3.5rem; text-align: right; font-variant-numeric: tabular-nums; }
+    .eco-enabled {
+      display: flex; align-items: center; gap: 14px;
+      padding: 14px; border-radius: 10px;
+      background: rgba(127,127,127,0.08);
+      border: 1px solid rgba(127,127,127,0.25);
+      min-height: 48px;
+    }
+    .eco-enabled input[type="checkbox"] { width: 1.35rem; height: 1.35rem; flex-shrink: 0; }
+    .eco-enabled span { font-size: 15px; font-weight: 600; }
+    .btn-touch, .btn-eco-save, #refreshEcoslots {
+      min-height: 48px;
+      padding: 12px 18px;
+      font-size: 16px;
+      border-radius: 10px;
+      border: 1px solid rgba(127,127,127,0.45);
+      background: rgba(127,127,127,0.08);
+      cursor: pointer;
+      touch-action: manipulation;
+    }
+    .btn-eco-save { width: 100%; font-weight: 700; margin-top: 4px; }
+    #refreshEcoslots { width: 100%; }
+    .eco-days-custom { margin-top: 8px; }
+    @media (min-width: 640px) {
+      .eco-slots-toolbar { flex-direction: row; align-items: center; flex-wrap: wrap; }
+      #refreshEcoslots { width: auto; }
+      .btn-eco-save { width: auto; min-width: 180px; }
+      .eco-slot-card { max-width: 520px; }
+    }
     @media (max-width: 1200px) { .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } .grid4 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-    @media (max-width: 760px) { .grid, .grid4 { grid-template-columns: repeat(1, minmax(0, 1fr)); } }
+    @media (max-width: 760px) {
+      .grid, .grid4 { grid-template-columns: repeat(1, minmax(0, 1fr)); }
+      main { padding: 12px; }
+      nav a { padding: 10px 14px; font-size: 14px; }
+      .topbar { padding: 10px 12px; gap: 8px; }
+    }
   </style>
 </head>
 <body>
@@ -190,11 +249,12 @@
       <div class="settings-block">
         <h3>Eco slots (eco_mode_1–3)</h3>
         <div class="muted" style="margin-bottom:8px;">
-          Ładowanie: ujemne %, rozładowanie: dodatnie %.
+          Ładowanie: ujemne %, rozładowanie: dodatnie %. Dane z pliku
+          <code>state/ecoslots_snapshot.json</code> (runner co minutę).
           <code id="ecoBalancingSlot">—</code> — zarezerwowany dla Guardiana.
         </div>
-        <div class="row" style="margin-bottom:10px;">
-          <button type="button" id="refreshEcoslots">Odśwież z inwertera</button>
+        <div class="eco-slots-toolbar">
+          <button type="button" id="refreshEcoslots" class="btn-touch">Odśwież z inwertera</button>
           <span class="muted" id="ecoSlotsStatus">—</span>
         </div>
         <div id="ecoSlotsPanels"></div>
@@ -202,391 +262,6 @@
     </section>
   </main>
 
-<script>
-const fmt = (v) => (v === null || v === undefined) ? "—" : v;
-function card(key, val) {
-  return `<div class="card"><div class="k">${key}</div><div class="v">${fmt(val)}</div></div>`;
-}
-function getKey() { return (localStorage.getItem("guardianApiKey") || "").trim(); }
-
-const pageLoaded = {};
-let currentPage = null;
-let pollTimer = null;
-
-async function fetchJson(url, timeoutMs = 25000) {
-  const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), timeoutMs);
-  try {
-    const r = await fetch(url, { signal: ac.signal });
-    const j = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(j.detail || r.statusText || `HTTP ${r.status}`);
-    return j;
-  } catch (e) {
-    if (e.name === "AbortError") throw new Error(`timeout ${timeoutMs / 1000}s`);
-    throw e;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-function setUpdated(ok) {
-  document.getElementById("updatedAt").textContent = ok ? new Date().toLocaleTimeString() : "błąd";
-}
-
-async function loadOverview(force) {
-  if (!force && pageLoaded.overview) return;
-  try {
-    const status = await fetchJson("/api/status", 10000);
-    document.getElementById("logPath").textContent = status.log_path || "—";
-    const f = status.fields || {};
-    document.getElementById("cards").innerHTML = [
-      ["ts", f.ts], ["remaining_kwh", f.remaining_kwh], ["balancing_kw", f.balancing_kw],
-      ["grid_kw", f.grid_kw], ["pv_kw", f.pv_kw], ["house_w", f.house_w],
-      ["soc_pct", f.soc_pct], ["p_bat_w", f.p_bat_w], ["time_to_end_s", f.time_to_end_s],
-      ["ecoslot_read_pct", f.ecoslot_read_pct], ["intervene", f.intervene], ["reason", f.reason],
-      ["cmd_enabled", f.cmd_enabled], ["cmd_pct", f.cmd_pct], ["cmd_duration_s", f.cmd_duration_s],
-    ].map(([k, v]) => card(k, v)).join("");
-    pageLoaded.overview = true;
-    setUpdated(true);
-  } catch (e) {
-    setUpdated(false);
-    console.error(e);
-  }
-}
-
-async function loadHistory(force) {
-  if (!force && pageLoaded.history) return;
-  const st = document.getElementById("historyStatus");
-  st.textContent = "ładowanie…";
-  try {
-    const hist = await fetchJson("/api/history?limit=200", 15000);
-    document.getElementById("hist").innerHTML = (hist.rows || []).map((r) => {
-      const f = r.fields || {};
-      const cmd = (f.cmd_enabled === null) ? "—" : `${f.cmd_enabled ? "On" : "Off"} ${fmt(f.cmd_pct)}% ${fmt(f.cmd_duration_s)}s`;
-      const closing = f.closing_prev_hour_kwh;
-      const balCell = (closing !== null && closing !== undefined)
-        ? `<td title="bilans końcowy poprzedniej godziny (∑)">${fmt(closing)} <span class="muted">∑</span></td>`
-        : `<td>${fmt(f.remaining_kwh)}</td>`;
-      return `<tr><td>${fmt(f.ts)}</td>${balCell}<td>${fmt(f.grid_kw)}</td><td>${fmt(f.pv_kw)}</td><td>${fmt(f.house_w)}</td><td>${fmt(f.soc_pct)}</td><td>${fmt(f.p_bat_w)}</td><td class="muted">${fmt(f.reason)}</td><td class="muted">${cmd}</td></tr>`;
-    }).join("");
-    pageLoaded.history = true;
-    st.textContent = "OK";
-    setUpdated(true);
-  } catch (e) {
-    st.textContent = String(e);
-    setUpdated(false);
-  }
-}
-
-function renderForecastBlock(forecast) {
-  const fcell = (v, d) => (v == null) ? `<td class="nodata">—</td>` : `<td>${Number(v).toFixed(d)}</td>`;
-  const fcellDelta = (v, d, eps) => {
-    if (v == null) return `<td class="nodata">—</td>`;
-    const n = Number(v);
-    let cls = "delta-ok";
-    if (n > eps) cls = "delta-pos";
-    else if (n < -eps) cls = "delta-neg";
-    return `<td class="${cls}">${(n >= 0 ? "+" : "") + n.toFixed(d)}</td>`;
-  };
-  const nowDate = (forecast.now || "").slice(0, 10);
-  const nowHour = Number((forecast.now || "T00").slice(11, 13));
-  let prevDate = null;
-  document.getElementById("forecastRows").innerHTML = (forecast.rows || []).map((r) => {
-    const cls = [];
-    if (prevDate && r.date !== prevDate) cls.push("day-break");
-    if (r.date === nowDate && r.hour === nowHour) cls.push("now");
-    if (r.date < nowDate || (r.date === nowDate && r.hour < nowHour)) cls.push("past");
-    prevDate = r.date;
-    const trClass = cls.length ? ` class="${cls.join(" ")}"` : "";
-    return `<tr${trClass}><td>${r.date.slice(5)}</td><td>${String(r.hour).padStart(2, "0")}:00</td>
-      ${fcell(r.buy_pln_kwh, 4)}${fcell(r.sell_pln_kwh, 4)}
-      ${fcell(r.load_kwh_p25, 3)}${fcell(r.load_kwh_p50, 3)}${fcell(r.load_kwh_p75, 3)}${fcell(r.load_kwh_actual, 3)}${fcellDelta(r.load_kwh_delta_p50, 3, 0.03)}
-      ${fcell(r.pv_kwh_p10, 3)}${fcell(r.pv_kwh, 3)}${fcell(r.pv_kwh_p90, 3)}${fcell(r.pv_kwh_actual, 3)}${fcellDelta(r.pv_kwh_delta_mean, 3, 0.05)}
-      ${fcell(r.net_kwh, 3)}${fcell(r.soc_pct, 1)}</tr>`;
-  }).join("");
-  const meta = [`today RCE: ${fmt(forecast.pricing_today_source)}`,
-    forecast.pricing_tomorrow_available ? `tomorrow RCE: ${fmt(forecast.pricing_tomorrow_source)}` : "tomorrow RCE: not yet published"];
-  document.getElementById("forecastMeta").textContent = meta.join(" · ");
-  const cn = document.getElementById("forecastCompareNote");
-  if (cn) cn.textContent = forecast.comparison_note || "";
-  const nc = forecast.load_nowcast || {};
-  document.getElementById("loadNowcast").textContent = nc.applied
-    ? `load nowcast: bias ${Number(nc.bias_w || 0).toFixed(0)} W; decay ${nc.decay_hours ?? "—"} h`
-    : (nc.reason ? "nowcast off — " + nc.reason : "");
-}
-
-async function loadForecast(force) {
-  if (!force && pageLoaded.forecast) return;
-  const st = document.getElementById("forecastStatus");
-  st.textContent = "ładowanie…";
-  try {
-    const forecast = await fetchJson("/api/forecast/combined", 60000);
-    renderForecastBlock(forecast);
-    pageLoaded.forecast = true;
-    st.textContent = "OK";
-    setUpdated(true);
-  } catch (e) {
-    st.textContent = String(e);
-    document.getElementById("forecastMeta").textContent = "błąd: " + e;
-    setUpdated(false);
-  }
-}
-
-function renderKpiBlock(kpi) {
-  const totals = kpi.totals || {};
-  document.getElementById("kpiCards").innerHTML = [
-    ["deposit_add_pln_day", Number(totals.deposit_add_pln_day || 0).toFixed(2)],
-    ["electricity_bill_pln_day", Number(totals.electricity_bill_pln_day || 0).toFixed(2)],
-    ["net_cashflow_pln_day", Number(totals.net_cashflow_pln_day || 0).toFixed(2)],
-    ["net_export_surplus_kwh", Number(totals.net_export_surplus_kwh || 0).toFixed(3)],
-    ["net_import_surplus_kwh", Number(totals.net_import_surplus_kwh || 0).toFixed(3)],
-    ["telemetry_rows", fmt(kpi.telemetry_rows)],
-    ["pricing_source", fmt(kpi.pricing_source)],
-  ].map(([k, v]) => card(k, v)).join("");
-  const warns = kpi.warnings || [];
-  document.getElementById("kpiWarnings").textContent = warns.length
-    ? `KPI warnings (${warns.length}): ${warns.slice(0, 5).join(" · ")}` : "";
-}
-
-async function loadKpi(force) {
-  if (!force && pageLoaded.kpi) return;
-  const st = document.getElementById("kpiStatus");
-  st.textContent = "ładowanie…";
-  try {
-    renderKpiBlock(await fetchJson("/api/kpi/today", 30000));
-    pageLoaded.kpi = true;
-    st.textContent = "OK";
-    setUpdated(true);
-  } catch (e) {
-    st.textContent = String(e);
-    document.getElementById("kpiWarnings").textContent = "KPI: " + e;
-    setUpdated(false);
-  }
-}
-
-function hourArraysEqual(a, b) {
-  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
-  const sa = [...a].map(Number).sort((x, y) => x - y);
-  const sb = [...b].map(Number).sort((x, y) => x - y);
-  return sa.every((v, i) => v === sb[i]);
-}
-function flEq(a, b) { return Math.abs(Number(a) - Number(b)) < 1e-6; }
-
-function renderWatchdogSoc(wds) {
-  if (!wds || !wds.effective) return;
-  const eff = wds.effective, src = wds.sources || {};
-  document.getElementById("wdPathLine").textContent =
-    `File ${wds.override_path || "—"} — ${wds.override_exists ? "override present" : "env only"}`;
-  document.getElementById("watchdogSummaryCards").innerHTML = [
-    ["soc_night_reserve_pct", `${fmt(eff.soc_night_reserve_pct)} (${fmt(src.soc_night_reserve_pct)})`],
-    ["soc_night_reserve_charge_pct", `${fmt(eff.soc_night_reserve_charge_pct)} (${fmt(src.soc_night_reserve_charge_pct)})`],
-    ["soc_night_reserve_hours", `${(eff.soc_night_reserve_hours || []).join(",")}`],
-    ["soc_low_defense_threshold_pct", `${fmt(eff.soc_low_defense_threshold_pct)}`],
-    ["soc_full_defense_threshold_pct", `${fmt(eff.soc_full_defense_threshold_pct)}`],
-  ].map(([k, v]) => `<div class="card"><div class="k">${k}</div><div class="v" style="font-size:16px;">${v}</div></div>`).join("");
-  document.getElementById("wd_soc_night_reserve_pct").value = eff.soc_night_reserve_pct;
-  document.getElementById("wd_soc_night_reserve_charge_pct").value = eff.soc_night_reserve_charge_pct;
-  document.getElementById("wd_soc_night_reserve_hours").value = (eff.soc_night_reserve_hours || []).join(",");
-  document.getElementById("wd_soc_low_defense_threshold_pct").value = eff.soc_low_defense_threshold_pct;
-  document.getElementById("wd_soc_full_defense_threshold_pct").value = eff.soc_full_defense_threshold_pct;
-}
-
-async function loadSettings(force) {
-  if (!force && pageLoaded.settings) return;
-  try {
-    const wds = await fetchJson("/api/guardian/watchdog-soc", 10000);
-    window._lastWds = wds;
-    renderWatchdogSoc(wds);
-    pageLoaded.settings = true;
-    if (getKey()) refreshControl().catch(console.error);
-  } catch (e) {
-    console.error(e);
-  }
-}
-
-async function refreshControl() {
-  const key = getKey();
-  const el = document.getElementById("controlStatus");
-  if (!key) { el.textContent = "ustaw klucz API"; return; }
-  const r = await fetch("/api/guardian/control", { headers: { "X-Guardian-Api-Key": key } });
-  const j = await r.json().catch(() => ({}));
-  el.textContent = r.ok ? `enabled=${j.control_enabled} source=${j.source}` : (j.detail || "error");
-}
-
-async function putControl(enabled) {
-  const key = getKey();
-  if (!key) { alert("Ustaw klucz API"); return; }
-  const r = await fetch("/api/guardian/control", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json", "X-Guardian-Api-Key": key },
-    body: JSON.stringify({ control_enabled: enabled }),
-  });
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) { alert(j.detail || "error"); return; }
-  document.getElementById("controlStatus").textContent = `enabled=${j.control_enabled} source=${j.source}`;
-}
-
-async function saveWatchdog() {
-  const key = getKey(), st = document.getElementById("wdSaveStatus");
-  if (!key) { st.textContent = "Ustaw klucz API"; return; }
-  const eb = (window._lastWds || {}).env_base;
-  if (!eb) { st.textContent = "Brak konfiguracji"; return; }
-  const body = {};
-  const snr = parseFloat(document.getElementById("wd_soc_night_reserve_pct").value);
-  const src = parseInt(document.getElementById("wd_soc_night_reserve_charge_pct").value, 10);
-  const slow = parseFloat(document.getElementById("wd_soc_low_defense_threshold_pct").value);
-  const sfull = parseFloat(document.getElementById("wd_soc_full_defense_threshold_pct").value);
-  if ([snr, slow, sfull].some(Number.isNaN) || Number.isNaN(src)) { st.textContent = "Złe liczby"; return; }
-  body.soc_night_reserve_pct = flEq(snr, eb.soc_night_reserve_pct) ? null : snr;
-  body.soc_night_reserve_charge_pct = src === eb.soc_night_reserve_charge_pct ? null : src;
-  body.soc_low_defense_threshold_pct = flEq(slow, eb.soc_low_defense_threshold_pct) ? null : slow;
-  body.soc_full_defense_threshold_pct = flEq(sfull, eb.soc_full_defense_threshold_pct) ? null : sfull;
-  const hrs = document.getElementById("wd_soc_night_reserve_hours").value.split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => !Number.isNaN(n));
-  body.soc_night_reserve_hours = hourArraysEqual(hrs, eb.soc_night_reserve_hours || []) ? null : hrs;
-  const r = await fetch("/api/guardian/watchdog-soc", {
-    method: "PUT", headers: { "Content-Type": "application/json", "X-Guardian-Api-Key": key },
-    body: JSON.stringify(body),
-  });
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) { st.textContent = j.detail || "error"; return; }
-  st.textContent = "Zapisano.";
-  window._lastWds = j;
-  renderWatchdogSoc(j);
-}
-
-async function resetWatchdog() {
-  const key = getKey(), st = document.getElementById("wdSaveStatus");
-  if (!key) { st.textContent = "Ustaw klucz API"; return; }
-  const r = await fetch("/api/guardian/watchdog-soc", { method: "DELETE", headers: { "X-Guardian-Api-Key": key } });
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) { st.textContent = j.detail || "error"; return; }
-  st.textContent = "Override wyczyszczony.";
-  window._lastWds = j;
-  renderWatchdogSoc(j);
-}
-
-function ecoTime(h, m) {
-  if (h == null) return "—";
-  return String(h).padStart(2, "0") + ":" + String(m ?? 0).padStart(2, "0");
-}
-
-function renderEcoslots(data) {
-  if (!data) return;
-  document.getElementById("ecoBalancingSlot").textContent = data.balancing_slot_id || "—";
-  document.getElementById("ecoSlotsPanels").innerHTML = (data.editable_slot_ids || []).map((sid) => {
-    const s = (data.slots || {})[sid] || {};
-    const pwr = s.power_pct ?? "";
-    return `<div class="card" style="margin-bottom:12px;"><div class="k">${sid}${s.active_now ? " ACTIVE" : ""}</div>
-      <div style="display:grid;gap:6px;max-width:520px;margin-top:8px;">
-        <label class="row">Od <input data-eco="${sid}" data-field="start_h" type="number" min="0" max="23" value="${s.start_h ?? 0}" style="width:4rem"/> :
-          <input data-eco="${sid}" data-field="start_m" type="number" min="0" max="59" value="${s.start_m ?? 0}" style="width:4rem"/></label>
-        <label class="row">Do <input data-eco="${sid}" data-field="end_h" type="number" min="0" max="23" value="${s.end_h ?? 0}" style="width:4rem"/> :
-          <input data-eco="${sid}" data-field="end_m" type="number" min="0" max="59" value="${s.end_m ?? 0}" style="width:4rem"/></label>
-        <label class="row">Moc % <input data-eco="${sid}" data-field="power" type="number" min="-100" max="100" value="${pwr}" style="width:5rem"/></label>
-        <label class="row">Dni <input data-eco="${sid}" data-field="days" type="text" value="${s.days || "Mon-Sun"}" style="width:100%"/></label>
-        <label class="row">SoC % <input data-eco="${sid}" data-field="soc" type="number" min="0" max="100" value="${s.soc_pct ?? 100}" style="width:5rem"/></label>
-        <label class="row"><input data-eco="${sid}" data-field="enabled" type="checkbox" ${s.enabled ? "checked" : ""}/> Włączony</label>
-      </div>
-      <div class="muted" style="margin-top:6px;">Odczyt: ${ecoTime(s.start_h, s.start_m)}–${ecoTime(s.end_h, s.end_m)} | ${fmt(s.power_pct)}%</div>
-      <button type="button" data-eco-save="${sid}" style="margin-top:8px;">Zapisz ${sid}</button></div>`;
-  }).join("") || '<div class="muted">Brak slotów.</div>';
-  document.querySelectorAll("[data-eco-save]").forEach((btn) => {
-    btn.addEventListener("click", () => saveEcoslot(btn.getAttribute("data-eco-save")).catch(console.error));
-  });
-}
-
-async function refreshEcoslots() {
-  const st = document.getElementById("ecoSlotsStatus");
-  st.textContent = "ładowanie…";
-  try {
-    const j = await fetchJson("/api/ecoslots?refresh=1", 20000);
-    window._lastEcoslots = j;
-    renderEcoslots(j);
-    st.textContent = "OK " + new Date().toLocaleTimeString();
-  } catch (e) { st.textContent = String(e); }
-}
-
-async function saveEcoslot(slotId) {
-  const key = getKey(), st = document.getElementById("ecoSlotsStatus");
-  if (!key) { st.textContent = "Ustaw klucz API"; return; }
-  const pick = (field) => {
-    const el = document.querySelector(`[data-eco="${slotId}"][data-field="${field}"]`);
-    if (!el) return null;
-    if (el.type === "checkbox") return el.checked;
-    if (field === "days") return el.value.trim() || "Mon-Sun";
-    return parseInt(el.value, 10);
-  };
-  const body = { start_h: pick("start_h"), start_m: pick("start_m"), end_h: pick("end_h"), end_m: pick("end_m"),
-    power: pick("power"), days: pick("days"), soc: pick("soc"), enabled: pick("enabled") };
-  if ([body.start_h, body.start_m, body.end_h, body.end_m, body.power, body.soc].some(Number.isNaN)) {
-    st.textContent = "Złe liczby"; return;
-  }
-  const r = await fetch(`/api/ecoslots/${slotId}`, {
-    method: "PUT", headers: { "Content-Type": "application/json", "X-Guardian-Api-Key": key },
-    body: JSON.stringify(body),
-  });
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) { st.textContent = j.detail || "error"; return; }
-  st.textContent = "Zapisano " + slotId;
-  pageLoaded.ecoslots = false;
-  await refreshEcoslots();
-}
-
-const PAGE_LOADERS = {
-  overview: loadOverview,
-  history: loadHistory,
-  forecast: loadForecast,
-  kpi: loadKpi,
-  settings: loadSettings,
-};
-
-function navigate(page, force) {
-  if (!PAGE_LOADERS[page]) page = "overview";
-  if (currentPage === page && !force) return;
-  currentPage = page;
-  document.querySelectorAll(".page").forEach((el) => el.classList.remove("active"));
-  document.getElementById("page-" + page).classList.add("active");
-  document.querySelectorAll("#mainNav a").forEach((a) => {
-    a.classList.toggle("active", a.dataset.page === page);
-  });
-  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-  PAGE_LOADERS[page](!!force);
-  if (page === "overview") {
-    pollTimer = setInterval(() => loadOverview(true), 15000);
-  }
-}
-
-function parsePageFromHash() {
-  const h = (location.hash || "#overview").replace(/^#/, "");
-  return PAGE_LOADERS[h] ? h : "overview";
-}
-
-document.getElementById("mainNav").addEventListener("click", (e) => {
-  const a = e.target.closest("a[data-page]");
-  if (!a) return;
-  e.preventDefault();
-  location.hash = a.dataset.page;
-});
-
-window.addEventListener("hashchange", () => navigate(parsePageFromHash(), false));
-
-document.getElementById("btnRefreshHistory").addEventListener("click", () => { pageLoaded.history = false; loadHistory(true); });
-document.getElementById("btnRefreshForecast").addEventListener("click", () => { pageLoaded.forecast = false; loadForecast(true); });
-document.getElementById("btnRefreshKpi").addEventListener("click", () => { pageLoaded.kpi = false; loadKpi(true); });
-document.getElementById("saveKey").addEventListener("click", () => {
-  localStorage.setItem("guardianApiKey", document.getElementById("apiKey").value.trim());
-  refreshControl().catch(console.error);
-});
-document.getElementById("refreshControl").addEventListener("click", () => refreshControl().catch(console.error));
-document.getElementById("enableControl").addEventListener("click", () => putControl(true));
-document.getElementById("disableControl").addEventListener("click", () => putControl(false));
-document.getElementById("saveWatchdog").addEventListener("click", () => saveWatchdog().catch(console.error));
-document.getElementById("resetWatchdog").addEventListener("click", () => resetWatchdog().catch(console.error));
-document.getElementById("refreshEcoslots").addEventListener("click", () => refreshEcoslots().catch(console.error));
-
-document.getElementById("apiKey").value = getKey();
-if (!location.hash) location.hash = "overview";
-navigate(parsePageFromHash(), true);
-</script>
+<script src="/dashboard.js"></script>
 </body>
 </html>
