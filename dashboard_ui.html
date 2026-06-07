@@ -217,6 +217,24 @@
       </div>
 
       <div class="settings-block">
+        <h3>Planer — egzekucja w Guardianie</h3>
+        <div class="card" style="max-width: 520px;">
+          <div class="row">
+            <button type="button" id="refreshPlanner">Status</button>
+            <button type="button" id="enablePlanner">Guardian: plan ON</button>
+            <button type="button" id="disablePlanner">Guardian: plan OFF</button>
+          </div>
+          <div class="muted" style="margin-top:8px;">Egzekucja: <span id="plannerStatus">—</span></div>
+          <div class="muted" id="plannerHorizon" style="font-size:12px; margin-top:6px;"></div>
+          <div class="muted" style="font-size:12px; margin-top:8px;">
+            Rolling plan liczy się zawsze (<code>uv run python -m planner plan</code>, cron co ~10 min).
+            Ten przełącznik decyduje, czy Guardian celuje w <code>target_net_kwh</code> z planu
+            (plik <code>state/planner_override.json</code>).
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-block">
         <h3>Guardian control</h3>
         <div class="card" style="max-width: 520px;">
           <div class="row">

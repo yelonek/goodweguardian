@@ -31,6 +31,10 @@ from ecoslot_service import (
     write_ecoslot,
 )
 from guardian_control import effective_control_enabled, write_control_override
+from planner_control import (
+    effective_planner_execution_enabled,
+    write_planner_execution_override,
+)
 from guardian_watchdog_override import (
     apply_watchdog_override_updates,
     clear_watchdog_override,
@@ -44,7 +48,7 @@ from load_forecast import (
     run_load_forecast_backtest,
 )
 from pv_forecast import fetch_hourly_pv_forecast, fetch_hourly_pv_forecast_with_history
-from planner.plan_store import load_plan
+from planner.plan_store import load_latest_plan, load_plan
 from planner.telemetry import hourly_actuals
 
 app = FastAPI(title="GoodWeGuardian Dashboard", version="0.1.0")
@@ -67,6 +71,10 @@ async def _run_heavy(fn, /, *args, **kwargs):
 
 class GuardianControlBody(BaseModel):
     control_enabled: bool
+
+
+class PlannerControlBody(BaseModel):
+    planner_execution_enabled: bool
 
 
 class WatchdogSocUpdateBody(BaseModel):
@@ -740,15 +748,12 @@ def _telemetry_hourly_load_pv_actuals(
 
 
 def _planner_hours_for_date(local_date: date) -> dict[int, Any]:
-    """Godzina → HourPlan (tylko wpisy z planu na ten dzień)."""
-    plan = load_plan(local_date.isoformat())
+    """Godzina → HourPlan z rolling planu (``plan_latest.json``)."""
+    plan = load_latest_plan() or load_plan(local_date.isoformat())
     if plan is None:
         return {}
-    return {
-        hp.hour: hp
-        for hp in plan.hours
-        if hp.date == local_date.isoformat()
-    }
+    d_iso = local_date.isoformat()
+    return {hp.hour: hp for hp in plan.hours if hp.date == d_iso}
 
 
 def _pricing_for_day_quiet(local_date: date) -> dict[str, Any] | None:
@@ -911,12 +916,16 @@ def _combined_forecast_payload() -> dict[str, Any]:
             }
         )
 
-    plan_obj_today = load_plan(today.isoformat())
+    plan_latest = load_latest_plan()
+    plan_exec, plan_exec_src = effective_planner_execution_enabled()
     plan_note = ""
-    if plan_obj_today is not None:
+    if plan_latest is not None:
         plan_note = (
-            f" Planer: {plan_obj_today.plan_id[:8]}… ({plan_obj_today.local_date})."
+            f" Plan: {plan_latest.plan_id[:8]}… {plan_latest.horizon_start}→{plan_latest.horizon_end}."
+            f" Egzekucja w Guardianie: {'tak' if plan_exec else 'nie'} ({plan_exec_src})."
         )
+    else:
+        plan_note = " Brak plan_latest.json — uruchom: uv run python -m planner plan."
 
     return {
         "now": now.isoformat(timespec="seconds"),
@@ -934,7 +943,10 @@ def _combined_forecast_payload() -> dict[str, Any]:
             "dla slotów od „teraz” w przód — wartości z API z korektą nowcast (jeśli włączona). "
             "Δ load = act − p50; Δ PV = act − mean tylko gdy jest prognoza mean w tym wierszu. "
             "net kWh / SOC %: po zakończeniu godziny (lub bieżąca z telemetrii) — fakty; "
-            "w przód — target_net_kwh i soc_end_pct z planera, jeśli jest plan_YYYY-MM-DD.json."
+            "w przód — target_net_kwh i soc_end_pct z rolling planu (plan_latest.json). "
+            "Horyzont: bieżąca godzina → ostatnia z cenami RCE "
+            "(jutro wchodzi automatycznie po publikacji RCE). "
+            "Przełącznik w ustawieniach steruje tylko egzekucją w Guardianie, nie liczeniem planu."
         ) + plan_note,
         "rows": rows,
     }
@@ -1040,3 +1052,31 @@ def api_guardian_control_put(
     write_control_override(body.control_enabled)
     enabled, source = effective_control_enabled()
     return JSONResponse({"control_enabled": enabled, "source": source})
+
+
+@app.get("/api/guardian/planner")
+def api_planner_control_get(
+    _: None = Depends(_require_guardian_api_key),
+) -> JSONResponse:
+    enabled, source = effective_planner_execution_enabled()
+    plan = load_latest_plan()
+    payload: dict[str, Any] = {
+        "planner_execution_enabled": enabled,
+        "source": source,
+    }
+    if plan is not None:
+        payload["plan_id"] = plan.plan_id
+        payload["horizon_start"] = plan.horizon_start
+        payload["horizon_end"] = plan.horizon_end
+        payload["generated_at"] = plan.generated_at
+    return JSONResponse(payload)
+
+
+@app.put("/api/guardian/planner")
+def api_planner_control_put(
+    body: PlannerControlBody,
+    _: None = Depends(_require_guardian_api_key),
+) -> JSONResponse:
+    write_planner_execution_override(body.planner_execution_enabled)
+    enabled, source = effective_planner_execution_enabled()
+    return JSONResponse({"planner_execution_enabled": enabled, "source": source})

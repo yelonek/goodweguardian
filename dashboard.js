@@ -192,7 +192,10 @@ async function loadSettings(force) {
     const wds = await fetchJson("/api/guardian/watchdog-soc", 10000);
     window._lastWds = wds;
     renderWatchdogSoc(wds);
-    if (getKey()) refreshControl().catch(console.error);
+    if (getKey()) {
+      refreshControl().catch(console.error);
+      refreshPlanner().catch(console.error);
+    }
   } catch (e) {
     console.error(e);
   }
@@ -222,6 +225,34 @@ async function putControl(enabled) {
   const j = await r.json().catch(() => ({}));
   if (!r.ok) { alert(j.detail || "error"); return; }
   document.getElementById("controlStatus").textContent = `enabled=${j.control_enabled} source=${j.source}`;
+}
+
+async function refreshPlanner() {
+  const key = getKey();
+  const el = document.getElementById("plannerStatus");
+  const hz = document.getElementById("plannerHorizon");
+  if (!key) { el.textContent = "ustaw klucz API"; hz.textContent = ""; return; }
+  const r = await fetch("/api/guardian/planner", { headers: { "X-Guardian-Api-Key": key } });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { el.textContent = j.detail || "error"; hz.textContent = ""; return; }
+  el.textContent = `execution=${j.planner_execution_enabled} source=${j.source}`;
+  hz.textContent = j.horizon_start
+    ? `plan ${(j.plan_id || "").slice(0, 8)}… ${j.horizon_start} → ${j.horizon_end}`
+    : "brak plan_latest.json (uruchom: planner plan)";
+}
+
+async function putPlanner(enabled) {
+  const key = getKey();
+  if (!key) { alert("Ustaw klucz API"); return; }
+  const r = await fetch("/api/guardian/planner", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", "X-Guardian-Api-Key": key },
+    body: JSON.stringify({ planner_execution_enabled: enabled }),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { alert(j.detail || "error"); return; }
+  document.getElementById("plannerStatus").textContent =
+    `execution=${j.planner_execution_enabled} source=${j.source}`;
 }
 
 async function saveWatchdog() {
@@ -530,10 +561,14 @@ document.getElementById("btnRefreshKpi").addEventListener("click", () => { pageL
 document.getElementById("saveKey").addEventListener("click", () => {
   localStorage.setItem("guardianApiKey", document.getElementById("apiKey").value.trim());
   refreshControl().catch(console.error);
+  refreshPlanner().catch(console.error);
 });
 document.getElementById("refreshControl").addEventListener("click", () => refreshControl().catch(console.error));
 document.getElementById("enableControl").addEventListener("click", () => putControl(true));
 document.getElementById("disableControl").addEventListener("click", () => putControl(false));
+document.getElementById("refreshPlanner").addEventListener("click", () => refreshPlanner().catch(console.error));
+document.getElementById("enablePlanner").addEventListener("click", () => putPlanner(true));
+document.getElementById("disablePlanner").addEventListener("click", () => putPlanner(false));
 document.getElementById("saveWatchdog").addEventListener("click", () => saveWatchdog().catch(console.error));
 document.getElementById("resetWatchdog").addEventListener("click", () => resetWatchdog().catch(console.error));
 document.getElementById("refreshEcoslots").addEventListener("click", () => refreshEcoslots(true).catch(console.error));
