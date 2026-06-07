@@ -44,6 +44,10 @@ class CycleTelemetryRecord(BaseModel):
     cmd_enabled: bool
     cmd_pct: int
     cmd_duration_s: float
+    planner_execution_enabled: bool = False
+    planner_execution_source: str = "env"
+    plan_target_net_kwh: float | None = None
+    balance_remaining_kwh: float | None = None
 
 
 def append_cycle_record(record: CycleTelemetryRecord) -> None:

@@ -51,6 +51,8 @@ from guardian_config import (
     WATCHDOG_MIN_DISCHARGE_ASSIST_PCT,
 )
 from guardian_control import effective_control_enabled
+from planner.plan_target import plan_target_net_kwh_for_hour
+from planner_control import effective_planner_execution_enabled
 from guardian_logic import (
     BalanceInputs,
     WatchdogConfig,
@@ -245,6 +247,14 @@ async def run_one_cycle() -> None:
     # Dodatnie = więcej energii ODDANEJ do sieci niż pobrane (Δexp − Δimp), spójnie z grid_w > 0 = eksport.
     remaining_kwh = delta_exp - delta_imp
 
+    plan_exec_ok, plan_exec_source = effective_planner_execution_enabled()
+    plan_target_net_kwh: float | None = None
+    balance_remaining_kwh = remaining_kwh
+    if plan_exec_ok:
+        plan_target_net_kwh = plan_target_net_kwh_for_hour(now.date(), now.hour)
+        if plan_target_net_kwh is not None:
+            balance_remaining_kwh = remaining_kwh - plan_target_net_kwh
+
     time_to_end_s = (59 - now.minute) * 60 + (60 - now.second)
     if now.minute == 59:
         time_to_end_s = min(time_to_end_s, 60)
@@ -287,7 +297,7 @@ async def run_one_cycle() -> None:
             low_soc_discharge_target_w = min(recent_avg_w, max_w) if max_w > 0.0 else recent_avg_w
 
     inp = BalanceInputs(
-        remaining_kwh=remaining_kwh,
+        remaining_kwh=balance_remaining_kwh,
         time_to_end_s=time_to_end_s,
         pv_w=pv_w,
         consumption_w=consumption_w,
@@ -346,11 +356,16 @@ async def run_one_cycle() -> None:
     bal_kw = balancing_power_kw_signed(remaining_kwh, time_to_end_s)
 
     control_ok, control_source = effective_control_enabled()
-    reason_for_log = (
-        f"{decision.reason} [control_off:{control_source}]"
-        if not control_ok
-        else decision.reason
-    )
+    reason_for_log = decision.reason
+    if plan_exec_ok and plan_target_net_kwh is not None:
+        reason_for_log = (
+            f"{reason_for_log} [plan_exec:{plan_exec_source} "
+            f"target_net={plan_target_net_kwh:+.2f} actual_net={remaining_kwh:+.2f}]"
+        )
+    elif plan_exec_ok:
+        reason_for_log = f"{reason_for_log} [plan_exec:{plan_exec_source} no_target]"
+    if not control_ok:
+        reason_for_log = f"{reason_for_log} [control_off:{control_source}]"
     cmd_active = control_ok and decision.write_slot
 
     log_dashboard(
@@ -424,6 +439,10 @@ async def run_one_cycle() -> None:
                     watchdog_reason=decision.reason,
                     guardian_control_enabled=control_ok,
                     control_source=control_source,
+                    planner_execution_enabled=plan_exec_ok,
+                    planner_execution_source=plan_exec_source,
+                    plan_target_net_kwh=plan_target_net_kwh,
+                    balance_remaining_kwh=balance_remaining_kwh,
                     cmd_enabled=cmd_active,
                     cmd_pct=decision.power_pct if cmd_active else 0,
                     cmd_duration_s=float(decision.duration_s if cmd_active else 0.0),

@@ -5,7 +5,9 @@ Konwencja znaku (ujednolicona z mocą sieci):
   − remaining_kWh = ΔE_export − ΔE_import w bieżącej godzinie [kWh].
   − Dodatnie: przewaga energii oddanej do sieci; ujemne: przewaga pobranej z sieci.
   − moc sieci (grid): dodatnie = do sieci (eksport), ujemne = z sieci (import).
-Cel: bilans 0 na koniec godziny. Moc baterii: dodatnia = rozładowanie, ujemna = ładowanie.
+Cel domyślny: bilans ~0 na koniec godziny (Flappy Bird).
+Gdy Guardian egzekwuje plan: ``remaining_kwh`` w wejściu to odchyłka od ``target_net_kwh``
+(remaining_licznik − target_planu). Moc baterii: dodatnia = rozładowanie, ujemna = ładowanie.
 """
 
 from dataclasses import dataclass

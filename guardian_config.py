@@ -133,6 +133,13 @@ GUARDIAN_CONTROL_OVERRIDE_PATH = Path(
     or (STATE_DIR / "guardian_control_override.json")
 )
 
+# Guardian egzekwuje rolling plan (target_net_kwh); plan jest liczony niezależnie od tego
+PLANNER_EXECUTION_ENABLED = _bool_env("PLANNER_EXECUTION_ENABLED", False)
+PLANNER_OVERRIDE_PATH = Path(
+    os.environ.get("PLANNER_OVERRIDE_PATH")
+    or (STATE_DIR / "planner_override.json")
+)
+
 # Runtime watchdog SOC (plik JSON); brak klucza = wartość z env jak przy starcie procesu.
 GUARDIAN_WATCHDOG_OVERRIDE_PATH = Path(
     os.environ.get("GUARDIAN_WATCHDOG_OVERRIDE_PATH")
