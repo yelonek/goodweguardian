@@ -1,4 +1,4 @@
-"""CLI planera: ``uv run python -m planner plan|reconcile|review [--date YYYY-MM-DD]``."""
+"""CLI planera: ``uv run python -m planner plan|audit [--date YYYY-MM-DD]``."""
 
 from __future__ import annotations
 
@@ -7,21 +7,21 @@ import logging
 import sys
 from datetime import date
 
-from planner.service import build_daily_plan, reconcile_day, review_day
+from planner.service import audit_day, build_rolling_plan
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Audytowalny planer energii (PLN)")
     parser.add_argument(
         "command",
-        choices=["plan", "reconcile", "review"],
-        help="plan=nowy plan doby; reconcile=godziny vs telemetria; review=co poprawić",
+        choices=["plan", "audit"],
+        help="plan=rolling plan (co ~10 min); audit=dzienny audyt fakty vs perfect foresight",
     )
     parser.add_argument(
         "--date",
         type=lambda s: date.fromisoformat(s),
         default=None,
-        help="YYYY-MM-DD (domyślnie dziś)",
+        help="YYYY-MM-DD dla audit (domyślnie dziś); plan ignoruje — zawsze od teraz",
     )
     parser.add_argument(
         "--soc",
@@ -37,18 +37,18 @@ def main(argv: list[str] | None = None) -> int:
         format="%(levelname)s %(name)s: %(message)s",
     )
 
-    d = args.date
     if args.command == "plan":
-        plan = build_daily_plan(local_date=d, soc_start_pct=args.soc)
+        plan = build_rolling_plan(soc_start_pct=args.soc)
+        if plan is None:
+            print("Brak planu (brak slotów z cennikiem lub błąd wejść).")
+            return 1
         print(
-            f"Plan {plan.plan_id[:8]}… {plan.local_date}: "
-            f"oczekiwany cashflow {plan.expected_total_cashflow_pln:+.2f} PLN"
+            f"Plan {plan.plan_id[:8]}… {plan.horizon_start} → {plan.horizon_end}: "
+            f"oczekiwany cashflow {plan.expected_total_cashflow_pln:+.2f} PLN "
+            f"({len(plan.hours)} h)"
         )
-    elif args.command == "reconcile":
-        n = reconcile_day(local_date=d)
-        print(f"Zrekonsyliowano {n} godzin dla {d or date.today()}.")
     else:
-        text = review_day(local_date=d)
+        text = audit_day(local_date=args.date)
         print(text)
     return 0
 

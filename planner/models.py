@@ -34,13 +34,15 @@ class HourPlan(BaseModel):
 
 
 class DailyPlan(BaseModel):
-    """Pełny plan doby — zapisany atomowo do audytu."""
+    """Rolling plan — horyzont od bieżącej godziny do ostatniej z cenami."""
 
-    schema_version: int = 1
+    schema_version: int = 2
     plan_id: str
     local_date: str
     generated_at: str
     timezone: str
+    horizon_start: str = ""
+    horizon_end: str = ""
     soc_start_pct: float
     expected_total_cashflow_pln: float
     optimizer: str
@@ -57,6 +59,7 @@ class AuditEvent(BaseModel):
     local_date: str
     kind: Literal[
         "plan_created",
+        "day_audited",
         "hour_reconciled",
         "day_reviewed",
     ]
@@ -84,8 +87,34 @@ class HourReconciliation(BaseModel):
     notes: list[str] = Field(default_factory=list)
 
 
+class HourAuditRow(BaseModel):
+    """Jedna godzina w dziennym audycie."""
+
+    hour: int = Field(ge=0, le=23)
+    actual_net_kwh: float
+    actual_cashflow_pln: float
+    actual_load_kwh: float
+    actual_pv_kwh: float
+    optimal_net_kwh: float | None = None
+    optimal_cashflow_pln: float | None = None
+    gap_vs_optimal_pln: float | None = None
+
+
+class DayAudit(BaseModel):
+    """Dzienny audyt: fakty vs perfect foresight na telemetrii."""
+
+    schema_version: int = 1
+    local_date: str
+    audited_at: str
+    actual_total_cashflow_pln: float
+    perfect_foresight_cashflow_pln: float | None
+    uplift_vs_actual_pln: float | None
+    hours: list[HourAuditRow]
+    summary_pl: str
+
+
 class DayReview(BaseModel):
-    """Codzienna retrospektywa — odpowiedź na „co możemy poprawić?”."""
+    """@deprecated — użyj ``DayAudit``; zostawione dla starych plików review_*.json."""
 
     schema_version: int = 1
     local_date: str

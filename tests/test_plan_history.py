@@ -9,7 +9,12 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from planner.audit import append_audit, new_event, read_audit_events
-from planner.config import PLANNER_AUDIT_DIR, PLANNER_PLANS_DIR, PLANNER_PLANS_HISTORY_DIR
+from planner.config import (
+    PLANNER_AUDIT_DIR,
+    PLANNER_LATEST_PLAN_PATH,
+    PLANNER_PLANS_DIR,
+    PLANNER_PLANS_HISTORY_DIR,
+)
 from planner.config import ensure_planner_dirs
 from planner.models import DailyPlan, HourPlan
 from planner.plan_store import load_plan, load_plan_by_id, plan_effective_at, save_plan
@@ -30,6 +35,8 @@ def _minimal_plan(
         local_date=local_date,
         generated_at=generated_at,
         timezone="Europe/Warsaw",
+        horizon_start=f"{local_date}T{hour:02d}:00:00",
+        horizon_end=f"{local_date}T{hour:02d}:00:00",
         soc_start_pct=50.0,
         expected_total_cashflow_pln=1.0,
         optimizer="test",
@@ -55,6 +62,7 @@ def plan_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     hist.mkdir(parents=True)
     monkeypatch.setattr(ps_mod, "PLANNER_PLANS_DIR", plans)
     monkeypatch.setattr(ps_mod, "PLANNER_PLANS_HISTORY_DIR", hist)
+    monkeypatch.setattr(ps_mod, "PLANNER_LATEST_PLAN_PATH", plans / "plan_latest.json")
     audit_dir = tmp_path / "audit"
     audit_dir.mkdir(parents=True)
     monkeypatch.setattr(audit_mod, "PLANNER_AUDIT_DIR", audit_dir)

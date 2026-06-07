@@ -9,7 +9,12 @@ from zoneinfo import ZoneInfo
 
 from guardian_config import TELEMETRY_TZ
 from planner.audit import read_audit_events
-from planner.config import PLANNER_PLANS_DIR, PLANNER_PLANS_HISTORY_DIR, ensure_planner_dirs
+from planner.config import (
+    PLANNER_LATEST_PLAN_PATH,
+    PLANNER_PLANS_DIR,
+    PLANNER_PLANS_HISTORY_DIR,
+    ensure_planner_dirs,
+)
 from planner.models import DailyPlan, HourPlan
 
 
@@ -33,16 +38,30 @@ def save_plan(plan: DailyPlan) -> Path:
         json.dumps(plan.model_dump(), indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
+    payload = json.dumps(plan.model_dump(), indent=2, ensure_ascii=False)
     latest = plan_latest_path(plan.local_date)
-    latest.write_text(
-        json.dumps(plan.model_dump(), indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    latest.write_text(payload, encoding="utf-8")
+    PLANNER_LATEST_PLAN_PATH.write_text(payload, encoding="utf-8")
     return hist
 
 
+def load_latest_plan() -> DailyPlan | None:
+    """Bieżący rolling plan (``plan_latest.json``)."""
+    if not PLANNER_LATEST_PLAN_PATH.exists():
+        return None
+    try:
+        return DailyPlan.model_validate_json(
+            PLANNER_LATEST_PLAN_PATH.read_text(encoding="utf-8")
+        )
+    except Exception:
+        return None
+
+
 def load_plan(local_date: str) -> DailyPlan | None:
-    """Ostatni plan na daną dobę (do dashboardu / bieżącego horyzontu)."""
+    """Plan z godzinami na ``local_date`` — preferuje ``plan_latest.json``."""
+    latest = load_latest_plan()
+    if latest is not None and any(hp.date == local_date for hp in latest.hours):
+        return latest
     path = plan_latest_path(local_date)
     if not path.exists():
         return None

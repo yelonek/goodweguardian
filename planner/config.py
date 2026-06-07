@@ -11,6 +11,8 @@ PLANNER_AUDIT_DIR = PLANNER_DIR / "audit"
 PLANNER_PLANS_DIR = PLANNER_DIR / "plans"
 PLANNER_PLANS_HISTORY_DIR = PLANNER_PLANS_DIR / "history"
 PLANNER_REVIEWS_DIR = PLANNER_DIR / "reviews"
+PLANNER_AUDITS_DIR = PLANNER_DIR / "audits"
+PLANNER_LATEST_PLAN_PATH = PLANNER_PLANS_DIR / "plan_latest.json"
 
 # Pojemność magazynu [kWh] — do symulacji SOC w optymalizatorze
 PLANNER_BATTERY_KWH = _float_env("PLANNER_BATTERY_KWH", 10.0)
@@ -29,5 +31,11 @@ def max_battery_kwh_per_hour() -> float:
 
 
 def ensure_planner_dirs() -> None:
-    for d in (PLANNER_AUDIT_DIR, PLANNER_PLANS_DIR, PLANNER_PLANS_HISTORY_DIR, PLANNER_REVIEWS_DIR):
+    for d in (
+        PLANNER_AUDIT_DIR,
+        PLANNER_PLANS_DIR,
+        PLANNER_PLANS_HISTORY_DIR,
+        PLANNER_REVIEWS_DIR,
+        PLANNER_AUDITS_DIR,
+    ):
         d.mkdir(parents=True, exist_ok=True)
