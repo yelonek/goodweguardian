@@ -19,7 +19,7 @@ Norma docelowa produktu: [PLANNING_SYSTEM.md](../../PLANNING_SYSTEM.md) §12 ora
 | Korekta PV (`k`, `u`) | **Brak** — patrz [pv_correction.md](modules/pv_correction.md) |
 | `plan_series`, sloty load | **Brak** |
 | `policy_output` → Guardian | **Brak** |
-| Cykl co 10 min, histereza 0,5 PLN | **Brak** |
+| Cykl co 10 min | **Brak** |
 | `state/planner_output.json` | **Brak** — inna ścieżka artefaktów |
 
 ---
@@ -115,7 +115,7 @@ Katalogi wynikowe (w `.gitignore` przez `data/`): `data/planner/plans/`, `audit/
 | **5** bateria, η | Tak — `planner/battery.py`; bez cap `P_INVERTER` |
 | **6** korekta PV | Nie |
 | **8** horyzont tylko z parą cen | Częściowo — zawsze 24 h z `pricing_day_breakdown`; brak obcięcia przy brakach RCE |
-| **1** planer co 10 min, histereza 0,5 PLN | Nie — wywołanie ręczne / harmonogram zewnętrzny |
+| **1** planer co 10 min | Nie — wywołanie ręczne / harmonogram zewnętrzny |
 
 ---
 
@@ -150,7 +150,7 @@ Współdzielone z Guardianem: `P_BATTERY`, proxy RCE/Solcast, taryfa G12, `data/
 
 1. `pv_correction` + `pv_plan = k × p50`
 2. `policy_output` + odczyt w `hourly_balance_run.py`
-3. Harmonogram 10 min + histereza zapisu
+3. Harmonogram 10 min
 4. Horyzont cen zgodny z §12 pkt 8 (obcięcie przy brakach)
 
 *Przy zmianach w `planner/` — aktualizuj ten plik.*

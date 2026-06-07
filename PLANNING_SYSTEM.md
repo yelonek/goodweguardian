@@ -5,13 +5,12 @@ Planer **co 10 min** → `state/planner_output.json` (**policy** + parametry). G
 - **Horyzont:** godziny od `now` z **oboma** cenami (RCE + import), do **ostatniej znanej** godziny; braków **nie** uzupełniamy prognozą RCE.
 - **Serie:** `pv_plan = k×p50`, `load_plan` = p50 × korekta (brak danych → **1,0**) + sloty.
 - **Cel:** **max Σ** cashflow PLN / godz. (jak KPI).
-- **Histereza:** nowa policy zapisuje się tylko przy różnicy prognozy cashflow na horyzoncie **≥ 0,5 PLN**.
 
 ---
 
 ## 12. Konsensus (normatywne)
 
-1. **Architektura:** planer **co 10 min**; Guardian **co minutę**. Histereza zapisu policy: **≥ 0,5 PLN** różnicy cashflow na horyzoncie.
+1. **Architektura:** planer **co 10 min**; Guardian **co minutę**.
 
 2. **Cel ekonomiczny:** max sumy cashflow PLN; `net_kWh > 0` → **`+ net_kWh × RCE`**; `net_kWh < 0` → **`net_kWh × import_pln_per_kwh`**.
 
