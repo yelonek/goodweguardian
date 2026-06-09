@@ -136,10 +136,7 @@ Katalogi wynikowe (w `.gitignore` przez `data/`): `data/planner/plans/`, `audit/
 | `PLANNER_BATTERY_KWH` | 10 | Pojemność magazynu [kWh] |
 | `PLANNER_BATTERY_ETA` | 0.92 | Sprawność round-trip |
 | `PLANNER_SOC_MIN_PCT` / `MAX` | 10 / 100 | Granice SOC |
-| `PLANNER_MAX_NET_KWH_PER_H` | 5 | Siatka optimizera (±) |
-| `PLANNER_NET_STEP_KWH` | 0.25 | Krok siatki net |
-| `PLANNER_SOC_STEP_PCT` | 5 | Dyskretyzacja SOC w DP |
-| `PLANNER_HORIZON_HOURS` | 24 | Długość horyzontu |
+| `PLANNER_HORIZON_HOURS` | 24 | Długość horyzontu (legacy API) |
 | `PLANNER_LOAD_LOOKBACK_DAYS` | 28 | Lookback load forecast |
 
 Współdzielone z Guardianem: `P_BATTERY`, proxy RCE/Solcast, taryfa G12, `data/telemetry/`.

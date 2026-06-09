@@ -1,38 +1,26 @@
-"""Optymalizator DP: maksymalizacja cashflow PLN na horyzoncie godzin."""
+"""Optymalizator MILP/LP: maksymalizacja cashflow PLN na horyzoncie godzin."""
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
 
+import numpy as np
+from scipy.optimize import Bounds, LinearConstraint, milp
+
 from economics import cashflow_pln_for_hour
-from planner.battery import BatteryParams, apply_battery_step, battery_delta_from_net
-from planner.config import (
-    PLANNER_MAX_NET_KWH_PER_H,
-    PLANNER_NET_STEP_KWH,
-    PLANNER_SOC_STEP_PCT,
+from planner.battery import (
+    BatteryParams,
+    apply_battery_step,
+    battery_delta_from_net,
+    soc_kwh,
 )
 from planner.models import HourInputs, HourPlan
 
 log = logging.getLogger("planner")
 
-
-def _net_actions() -> list[float]:
-    step = max(0.05, float(PLANNER_NET_STEP_KWH))
-    cap = max(step, float(PLANNER_MAX_NET_KWH_PER_H))
-    actions: list[float] = []
-    v = -cap
-    while v <= cap + 1e-9:
-        actions.append(round(v, 4))
-        v += step
-    return actions
-
-
-def _soc_grid(params: BatteryParams) -> list[float]:
-    step = max(1, int(PLANNER_SOC_STEP_PCT))
-    lo = int(params.soc_min_pct)
-    hi = int(params.soc_max_pct)
-    return [float(x) for x in range(lo, hi + 1, step)]
+# Kara za jednoczesne ładowanie i rozładowanie (degeneracja numeryczna).
+_SIMULTANEOUS_PENALTY = 1e-4
 
 
 @dataclass
@@ -42,6 +30,158 @@ class OptimizeResult:
     soc_trajectory_pct: list[float]
 
 
+def _big_m(hours_in: list[HourInputs], params: BatteryParams) -> float:
+    peak = max(
+        (max(h.pv_kwh, h.load_kwh) for h in hours_in),
+        default=0.0,
+    )
+    return max(peak + params.max_power_kwh_per_h, params.max_power_kwh_per_h * 2.0, 1.0)
+
+
+def _var_layout(n_hours: int) -> tuple[int, dict[str, int]]:
+    """
+    Kolejność: soc[0..H], (imp, exp, ch, dis)×H, z[0..H-1] (binarne: 1=eksport).
+    """
+    n_soc = n_hours + 1
+    n_flow = 4 * n_hours
+    base_flow = n_soc
+    base_z = n_soc + n_flow
+
+    def hour_idx(h: int, field: int) -> int:
+        return base_flow + 4 * h + field
+
+    def z_idx(h: int) -> int:
+        return base_z + h
+
+    return base_z + n_hours, {
+        "n_soc": n_soc,
+        "imp": 0,
+        "exp": 1,
+        "ch": 2,
+        "dis": 3,
+        "hour_idx": hour_idx,
+        "z_idx": z_idx,
+    }
+
+
+def _solve_milp(
+    hours_in: list[HourInputs],
+    *,
+    soc_start_pct: float,
+    params: BatteryParams,
+) -> tuple[np.ndarray, float] | None:
+    """
+    MILP: max Σ (RCE·export − import·import).
+
+    Binarne z_h wymuszają wyłączność import/eksport (brak „mielenia” licznika).
+    """
+    n_h = len(hours_in)
+    n_vars, layout = _var_layout(n_h)
+    hour_idx = layout["hour_idx"]
+    z_idx = layout["z_idx"]
+    big_m = _big_m(hours_in, params)
+
+    c = np.zeros(n_vars)
+    for h, hin in enumerate(hours_in):
+        i = hour_idx(h, layout["imp"])
+        e = hour_idx(h, layout["exp"])
+        ch = hour_idx(h, layout["ch"])
+        dis = hour_idx(h, layout["dis"])
+        c[i] = hin.import_pln_per_kwh
+        c[e] = -hin.export_pln_per_kwh
+        c[ch] += _SIMULTANEOUS_PENALTY
+        c[dis] += _SIMULTANEOUS_PENALTY
+
+    eq_rows: list[np.ndarray] = []
+    eq_rhs: list[float] = []
+
+    soc0_kwh = soc_kwh(soc_start_pct, params)
+    row = np.zeros(n_vars)
+    row[0] = 1.0
+    eq_rows.append(row)
+    eq_rhs.append(soc0_kwh)
+
+    eta = params.eta
+    for h in range(n_h):
+        hin = hours_in[h]
+
+        row = np.zeros(n_vars)
+        row[h] = -1.0
+        row[h + 1] = 1.0
+        row[hour_idx(h, layout["ch"])] = -eta
+        row[hour_idx(h, layout["dis"])] = 1.0 / eta
+        eq_rows.append(row)
+        eq_rhs.append(0.0)
+
+        row = np.zeros(n_vars)
+        row[hour_idx(h, layout["dis"])] = 1.0
+        row[hour_idx(h, layout["imp"])] = 1.0
+        row[hour_idx(h, layout["ch"])] = -1.0
+        row[hour_idx(h, layout["exp"])] = -1.0
+        eq_rows.append(row)
+        eq_rhs.append(hin.load_kwh - hin.pv_kwh)
+
+    a_eq = np.vstack(eq_rows)
+    eq_constraint = LinearConstraint(a_eq, eq_rhs, eq_rhs)
+
+    # imp_h <= M·(1 − z_h),  exp_h <= M·z_h
+    ineq_rows: list[np.ndarray] = []
+    ineq_rhs: list[float] = []
+    for h in range(n_h):
+        row = np.zeros(n_vars)
+        row[hour_idx(h, layout["imp"])] = 1.0
+        row[z_idx(h)] = big_m
+        ineq_rows.append(row)
+        ineq_rhs.append(big_m)
+
+        row = np.zeros(n_vars)
+        row[hour_idx(h, layout["exp"])] = 1.0
+        row[z_idx(h)] = -big_m
+        ineq_rows.append(row)
+        ineq_rhs.append(0.0)
+
+    a_ub = np.vstack(ineq_rows)
+    ub_constraint = LinearConstraint(a_ub, -np.inf * np.ones(len(ineq_rhs)), np.array(ineq_rhs))
+
+    soc_min = soc_kwh(params.soc_min_pct, params)
+    soc_max = soc_kwh(params.soc_max_pct, params)
+    p_max = params.max_power_kwh_per_h
+
+    lb = np.zeros(n_vars)
+    ub = np.full(n_vars, np.inf)
+    for h in range(n_h + 1):
+        lb[h] = soc_min
+        ub[h] = soc_max
+    for h in range(n_h):
+        ub[hour_idx(h, layout["ch"])] = p_max
+        ub[hour_idx(h, layout["dis"])] = p_max
+        lb[z_idx(h)] = 0.0
+        ub[z_idx(h)] = 1.0
+
+    integrality = np.zeros(n_vars, dtype=np.int8)
+    for h in range(n_h):
+        integrality[z_idx(h)] = 1
+
+    res = milp(
+        c=c,
+        integrality=integrality,
+        bounds=Bounds(lb, ub),
+        constraints=[eq_constraint, ub_constraint],
+    )
+    if not res.success:
+        log.warning("MILP optimizer failed: %s", res.message)
+        return None
+
+    total_cf = -float(res.fun)
+    return res.x, total_cf
+
+
+def _soc_pct(energy_kwh: float, params: BatteryParams) -> float:
+    if params.capacity_kwh <= 0:
+        return 0.0
+    return (energy_kwh / params.capacity_kwh) * 100.0
+
+
 def optimize_horizon(
     hours_in: list[HourInputs],
     *,
@@ -49,76 +189,35 @@ def optimize_horizon(
     params: BatteryParams | None = None,
 ) -> OptimizeResult:
     """
-    Dynamic programming: stan = dyskretny SOC, akcja = target net_kwh.
-    Maksymalizuje sumę cashflow_pln_for_hour.
+    MILP z ciągłym SOC i net_kwh — bez siatki 0,25 kWh.
+
+    Maksymalizuje sumę cashflow_pln_for_hour przy modelu baterii z η.
     """
     bp = params or BatteryParams()
-    actions = _net_actions()
-    soc_states = _soc_grid(bp)
     if not hours_in:
         return OptimizeResult(hours=[], total_cashflow_pln=0.0, soc_trajectory_pct=[soc_start_pct])
 
-    # start_idx: najbliższy dyskretny SOC
-    start_idx = min(range(len(soc_states)), key=lambda i: abs(soc_states[i] - soc_start_pct))
-    n_h = len(hours_in)
-    n_s = len(soc_states)
-
-    # dp[h][s] = (total_cf, prev_s, action_net)
-    neg_inf = -1e30
-    dp: list[list[float]] = [[neg_inf] * n_s for _ in range(n_h + 1)]
-    back: list[list[tuple[int, float] | None]] = [[None] * n_s for _ in range(n_h + 1)]
-    dp[0][start_idx] = 0.0
-
-    for h_idx, hin in enumerate(hours_in):
-        for s_idx, soc in enumerate(soc_states):
-            base = dp[h_idx][s_idx]
-            if base <= neg_inf / 2:
-                continue
-            for net in actions:
-                bd = battery_delta_from_net(
-                    pv_kwh=hin.pv_kwh, load_kwh=hin.load_kwh, net_kwh=net
-                )
-                soc_new = apply_battery_step(soc, bd, bp)
-                if soc_new is None:
-                    continue
-                cf = cashflow_pln_for_hour(
-                    net,
-                    rce_pln_per_kwh=hin.export_pln_per_kwh,
-                    import_pln_per_kwh=hin.import_pln_per_kwh,
-                )
-                new_idx = min(range(n_s), key=lambda i: abs(soc_states[i] - soc_new))
-                total = base + cf
-                if total > dp[h_idx + 1][new_idx]:
-                    dp[h_idx + 1][new_idx] = total
-                    back[h_idx + 1][new_idx] = (s_idx, net)
-
-    # wybierz najlepszy koniec
-    end_idx = max(range(n_s), key=lambda i: dp[n_h][i])
-    if dp[n_h][end_idx] <= neg_inf / 2:
-        log.warning("optimizer: brak ścieżki — fallback neutralny")
+    solved = _solve_milp(hours_in, soc_start_pct=soc_start_pct, params=bp)
+    if solved is None:
+        log.warning("optimizer: brak rozwiązania MILP — fallback neutralny")
         return _fallback_neutral(hours_in, soc_start_pct, bp)
 
-    # odtwórz ścieżkę (indeksy SOC + net)
-    steps: list[tuple[int, float]] = []
-    cur = end_idx
-    for h_idx in range(n_h, 0, -1):
-        prev = back[h_idx][cur]
-        if prev is None:
-            break
-        p_idx, net = prev
-        steps.append((p_idx, net))
-        cur = p_idx
-    steps.reverse()
+    x, _total_cf_lp = solved
+    n_h = len(hours_in)
+    _, layout = _var_layout(n_h)
+    hour_idx = layout["hour_idx"]
 
     plans: list[HourPlan] = []
-    traj: list[float] = [soc_states[start_idx]]
+    traj: list[float] = [_soc_pct(float(x[0]), bp)]
     total_cf = 0.0
-    for hin, (s_idx, net) in zip(hours_in, steps, strict=False):
-        soc = soc_states[s_idx]
+
+    for h, hin in enumerate(hours_in):
+        soc_start = _soc_pct(float(x[h]), bp)
+        imp = float(x[hour_idx(h, layout["imp"])])
+        exp = float(x[hour_idx(h, layout["exp"])])
+        net = exp - imp
         bd = battery_delta_from_net(pv_kwh=hin.pv_kwh, load_kwh=hin.load_kwh, net_kwh=net)
-        soc_new = apply_battery_step(soc, bd, bp)
-        if soc_new is None:
-            soc_new = soc
+        soc_end = _soc_pct(float(x[h + 1]), bp)
         cf = cashflow_pln_for_hour(
             net,
             rce_pln_per_kwh=hin.export_pln_per_kwh,
@@ -131,14 +230,14 @@ def optimize_horizon(
                 hour=hin.hour,
                 target_net_kwh=net,
                 expected_cashflow_pln=cf,
-                soc_start_pct=soc,
-                soc_end_pct=soc_new,
+                soc_start_pct=soc_start,
+                soc_end_pct=soc_end,
                 battery_delta_kwh=bd,
             )
         )
-        traj.append(soc_new)
+        traj.append(soc_end)
 
-    return OptimizeResult(hours=plans, total_cashflow_pln=dp[n_h][end_idx], soc_trajectory_pct=traj)
+    return OptimizeResult(hours=plans, total_cashflow_pln=total_cf, soc_trajectory_pct=traj)
 
 
 def _fallback_neutral(

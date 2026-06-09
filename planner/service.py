@@ -55,7 +55,7 @@ def build_rolling_plan(
         horizon_end=slot_to_local_iso(slots[-1]),
         soc_start_pct=soc,
         expected_total_cashflow_pln=opt.total_cashflow_pln,
-        optimizer="dp_net_kwh_v1",
+        optimizer="lp_battery_v1",
         inputs_snapshot=snapshot,
         hours=opt.hours,
     )
