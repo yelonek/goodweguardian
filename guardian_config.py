@@ -151,6 +151,8 @@ GUARDIAN_API_KEY = (os.environ.get("GUARDIAN_API_KEY") or "").strip()
 
 # Proxy endpoints (lokalna sieć): RCE i PV forecast (Solcast proxy).
 RCE_PROXY_BASE_URL = (os.environ.get("RCE_PROXY_BASE_URL") or "").strip().rstrip("/")
+# Mnożnik RCE z PSE/proxy → stawka rozliczenia eksportu u sprzedawcy (np. VAT 1,23).
+RCE_EXPORT_MULTIPLIER = _float_env("RCE_EXPORT_MULTIPLIER", 1.23)
 SOLCAST_PROXY_BASE_URL = (
     (os.environ.get("SOLCAST_PROXY_BASE_URL") or "").strip().rstrip("/")
 )

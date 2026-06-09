@@ -10,7 +10,7 @@ from typing import Any
 
 import httpx
 
-from guardian_config import DATA_DIR, RCE_PROXY_BASE_URL, TELEMETRY_TZ
+from guardian_config import DATA_DIR, RCE_EXPORT_MULTIPLIER, RCE_PROXY_BASE_URL, TELEMETRY_TZ
 from pse_rce import get_or_fetch_hourly_rce_pln_per_kwh
 from tariff_g12 import G12TariffConfig, g12_tariff_from_env
 
@@ -78,6 +78,14 @@ def fetch_hourly_rce_from_proxy(
     return [float(v) for v in out]
 
 
+def adjust_rce_for_export_settlement(hourly_rce: list[float]) -> list[float]:
+    """RCE z rynku (PSE/proxy) → stawka używana przy eksporcie (KPI, planer)."""
+    m = float(RCE_EXPORT_MULTIPLIER)
+    if m == 1.0:
+        return list(hourly_rce)
+    return [float(v) * m for v in hourly_rce]
+
+
 def get_hourly_rce_pln_per_kwh(
     local_date: date,
     *,
@@ -89,10 +97,10 @@ def get_hourly_rce_pln_per_kwh(
     """
     if RCE_PROXY_BASE_URL:
         try:
-            return (
-                fetch_hourly_rce_from_proxy(local_date, base_url=RCE_PROXY_BASE_URL, client=client),
-                "rce_proxy",
+            hourly_rce = fetch_hourly_rce_from_proxy(
+                local_date, base_url=RCE_PROXY_BASE_URL, client=client
             )
+            return adjust_rce_for_export_settlement(hourly_rce), "rce_proxy"
         except Exception as e:
             log.warning("rce proxy fetch failed for %s: %s", local_date.isoformat(), e)
     hourly_rce = get_or_fetch_hourly_rce_pln_per_kwh(
@@ -102,7 +110,7 @@ def get_hourly_rce_pln_per_kwh(
         client=client,
         force_refresh=force_refresh_rce,
     )
-    return hourly_rce, "pse_api"
+    return adjust_rce_for_export_settlement(hourly_rce), "pse_api"
 
 
 def effective_import_pln_per_kwh(
