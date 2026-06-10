@@ -17,6 +17,8 @@ PLANNER_LATEST_PLAN_PATH = PLANNER_PLANS_DIR / "plan_latest.json"
 # Pojemność magazynu [kWh] — do symulacji SOC w optymalizatorze
 PLANNER_BATTERY_KWH = _float_env("PLANNER_BATTERY_KWH", 10.0)
 PLANNER_BATTERY_ETA = _float_env("PLANNER_BATTERY_ETA", 0.92)
+# Amortyzacja: PLN za pełny cykl 1 kWh ładowania + 1 kWh rozładowania (połowa na ch, połowa na dis).
+PLANNER_BATTERY_CYCLE_COST_PLN = _float_env("PLANNER_BATTERY_CYCLE_COST_PLN", 0.10)
 PLANNER_SOC_MIN_PCT = _float_env("PLANNER_SOC_MIN_PCT", 10.0)
 PLANNER_SOC_MAX_PCT = _float_env("PLANNER_SOC_MAX_PCT", 100.0)
 PLANNER_HORIZON_HOURS = _int_env("PLANNER_HORIZON_HOURS", 24)

@@ -78,6 +78,36 @@ def test_lp_energy_balance_and_soc_limits() -> None:
     assert res.total_cashflow_pln > 0.0
 
 
+def test_battery_wear_reduces_export_vs_no_wear(monkeypatch: pytest.MonkeyPatch) -> None:
+    import planner.optimizer as opt_mod
+
+    bp = BatteryParams(capacity_kwh=10.0, soc_min_pct=10.0, soc_max_pct=100.0, max_power_kwh_per_h=5.0)
+    hours = [
+        HourInputs(
+            date="2026-06-09",
+            hour=15,
+            load_kwh=0.5,
+            pv_kwh=3.0,
+            import_pln_per_kwh=1.11,
+            export_pln_per_kwh=0.35,
+        ),
+    ]
+    monkeypatch.setattr(opt_mod, "PLANNER_BATTERY_CYCLE_COST_PLN", 0.0)
+    no_wear = optimize_horizon(hours, soc_start_pct=80.0, params=bp)
+    monkeypatch.setattr(opt_mod, "PLANNER_BATTERY_CYCLE_COST_PLN", 0.10)
+    with_wear = optimize_horizon(hours, soc_start_pct=80.0, params=bp)
+    assert with_wear.hours[0].target_net_kwh <= no_wear.hours[0].target_net_kwh + 1e-6
+    if with_wear.hours[0].battery_wear_cost_pln > 0:
+        grid = cashflow_pln_for_hour(
+            with_wear.hours[0].target_net_kwh,
+            rce_pln_per_kwh=0.35,
+            import_pln_per_kwh=1.11,
+        )
+        assert with_wear.hours[0].expected_cashflow_pln == pytest.approx(
+            grid - with_wear.hours[0].battery_wear_cost_pln
+        )
+
+
 def test_optimizer_prefers_export_when_rce_high() -> None:
     """Przy dużym RCE i nadwyżce PV planer powinien eksportować zamiast trzymać w magazynie."""
     bp = BatteryParams(capacity_kwh=5.0, soc_min_pct=10.0, soc_max_pct=100.0, max_power_kwh_per_h=5.0)
@@ -92,12 +122,15 @@ def test_optimizer_prefers_export_when_rce_high() -> None:
         ),
     ]
     res = optimize_horizon(hours, soc_start_pct=50.0, params=bp)
-    assert res.hours[0].target_net_kwh >= 0.0
-    assert res.total_cashflow_pln >= cashflow_pln_for_hour(
-        res.hours[0].target_net_kwh,
+    hp = res.hours[0]
+    assert hp.target_net_kwh >= 0.0
+    grid_cf = cashflow_pln_for_hour(
+        hp.target_net_kwh,
         rce_pln_per_kwh=2.0,
         import_pln_per_kwh=0.8,
     )
+    assert hp.expected_cashflow_pln == pytest.approx(grid_cf - hp.battery_wear_cost_pln)
+    assert res.total_cashflow_pln > 0.0
 
 
 def test_audit_roundtrip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

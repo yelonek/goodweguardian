@@ -28,6 +28,7 @@ class HourPlan(BaseModel):
     hour: int = Field(ge=0, le=23)
     target_net_kwh: float
     expected_cashflow_pln: float
+    battery_wear_cost_pln: float = 0.0
     soc_start_pct: float
     soc_end_pct: float
     battery_delta_kwh: float

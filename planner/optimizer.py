@@ -8,13 +8,14 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.optimize import Bounds, LinearConstraint, milp
 
-from economics import cashflow_pln_for_hour
+from economics import battery_wear_pln_for_hour, cashflow_pln_for_hour
 from planner.battery import (
     BatteryParams,
     apply_battery_step,
     battery_delta_from_net,
     soc_kwh,
 )
+from planner.config import PLANNER_BATTERY_CYCLE_COST_PLN
 from planner.models import HourInputs, HourPlan
 
 log = logging.getLogger("planner")
@@ -71,10 +72,13 @@ def _solve_milp(
     params: BatteryParams,
 ) -> tuple[np.ndarray, float] | None:
     """
-    MILP: max Σ (RCE·export − import·import).
+    MILP: max Σ (RCE·export − import·import − wear).
 
+    Wear: połowa kosztu cyklu na ch, połowa na dis (``PLANNER_BATTERY_CYCLE_COST_PLN``).
     Binarne z_h wymuszają wyłączność import/eksport (brak „mielenia” licznika).
     """
+    cycle_cost = float(PLANNER_BATTERY_CYCLE_COST_PLN)
+    wear_half = cycle_cost / 2.0 if cycle_cost > 0.0 else 0.0
     n_h = len(hours_in)
     n_vars, layout = _var_layout(n_h)
     hour_idx = layout["hour_idx"]
@@ -89,8 +93,8 @@ def _solve_milp(
         dis = hour_idx(h, layout["dis"])
         c[i] = hin.import_pln_per_kwh
         c[e] = -hin.export_pln_per_kwh
-        c[ch] += _SIMULTANEOUS_PENALTY
-        c[dis] += _SIMULTANEOUS_PENALTY
+        c[ch] += _SIMULTANEOUS_PENALTY + wear_half
+        c[dis] += _SIMULTANEOUS_PENALTY + wear_half
 
     eq_rows: list[np.ndarray] = []
     eq_rhs: list[float] = []
@@ -191,9 +195,10 @@ def optimize_horizon(
     """
     MILP z ciągłym SOC i net_kwh — bez siatki 0,25 kWh.
 
-    Maksymalizuje sumę cashflow_pln_for_hour przy modelu baterii z η.
+    Maksymalizuje sumę cashflow (sieć − amortyzacja baterii) przy modelu z η.
     """
     bp = params or BatteryParams()
+    cycle_cost = float(PLANNER_BATTERY_CYCLE_COST_PLN)
     if not hours_in:
         return OptimizeResult(hours=[], total_cashflow_pln=0.0, soc_trajectory_pct=[soc_start_pct])
 
@@ -202,34 +207,36 @@ def optimize_horizon(
         log.warning("optimizer: brak rozwiązania MILP — fallback neutralny")
         return _fallback_neutral(hours_in, soc_start_pct, bp)
 
-    x, _total_cf_lp = solved
+    x, total_cf = solved
     n_h = len(hours_in)
     _, layout = _var_layout(n_h)
     hour_idx = layout["hour_idx"]
 
     plans: list[HourPlan] = []
     traj: list[float] = [_soc_pct(float(x[0]), bp)]
-    total_cf = 0.0
 
     for h, hin in enumerate(hours_in):
         soc_start = _soc_pct(float(x[h]), bp)
         imp = float(x[hour_idx(h, layout["imp"])])
         exp = float(x[hour_idx(h, layout["exp"])])
+        ch = float(x[hour_idx(h, layout["ch"])])
+        dis = float(x[hour_idx(h, layout["dis"])])
         net = exp - imp
         bd = battery_delta_from_net(pv_kwh=hin.pv_kwh, load_kwh=hin.load_kwh, net_kwh=net)
         soc_end = _soc_pct(float(x[h + 1]), bp)
-        cf = cashflow_pln_for_hour(
+        grid_cf = cashflow_pln_for_hour(
             net,
             rce_pln_per_kwh=hin.export_pln_per_kwh,
             import_pln_per_kwh=hin.import_pln_per_kwh,
         )
-        total_cf += cf
+        wear = battery_wear_pln_for_hour(ch, dis, cycle_cost_pln=cycle_cost)
         plans.append(
             HourPlan(
                 date=hin.date,
                 hour=hin.hour,
                 target_net_kwh=net,
-                expected_cashflow_pln=cf,
+                expected_cashflow_pln=grid_cf - wear,
+                battery_wear_cost_pln=wear,
                 soc_start_pct=soc_start,
                 soc_end_pct=soc_end,
                 battery_delta_kwh=bd,

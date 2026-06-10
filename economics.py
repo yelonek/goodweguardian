@@ -21,6 +21,19 @@ def cashflow_pln_for_hour(
     return 0.0
 
 
+def battery_wear_pln_for_hour(
+    charge_kwh: float,
+    discharge_kwh: float,
+    *,
+    cycle_cost_pln: float,
+) -> float:
+    """Amortyzacja: ``cycle_cost_pln`` za pełny cykl 1 kWh ład + 1 kWh rozł — połowa na nogę."""
+    if cycle_cost_pln <= 0.0:
+        return 0.0
+    half = cycle_cost_pln / 2.0
+    return half * max(0.0, charge_kwh) + half * max(0.0, discharge_kwh)
+
+
 def total_cashflow_pln_for_horizon(
     hours: list[tuple[float, float, float]],
 ) -> float:

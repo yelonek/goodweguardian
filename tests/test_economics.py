@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from economics import cashflow_pln_for_hour, total_cashflow_pln_for_horizon
+from economics import (
+    battery_wear_pln_for_hour,
+    cashflow_pln_for_hour,
+    total_cashflow_pln_for_horizon,
+)
 
 
 def test_export_positive() -> None:
@@ -40,6 +44,13 @@ def test_matches_kpi_style_deposit_minus_bill() -> None:
         ]
     )
     assert cf == pytest.approx(kpi_net)
+
+
+def test_battery_wear_full_cycle() -> None:
+  assert battery_wear_pln_for_hour(1.0, 1.0, cycle_cost_pln=0.10) == pytest.approx(0.10)
+  assert battery_wear_pln_for_hour(1.0, 0.0, cycle_cost_pln=0.10) == pytest.approx(0.05)
+  assert battery_wear_pln_for_hour(0.0, 1.0, cycle_cost_pln=0.10) == pytest.approx(0.05)
+  assert battery_wear_pln_for_hour(1.0, 1.0, cycle_cost_pln=0.0) == 0.0
 
 
 def test_horizon_sum() -> None:
