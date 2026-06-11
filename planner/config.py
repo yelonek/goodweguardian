@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 
-from guardian_config import DATA_DIR, P_BATTERY_W, _float_env, _int_env
+from guardian_config import DATA_DIR, P_BATTERY_W, STATE_DIR, _float_env, _int_env
 
 PLANNER_DIR = DATA_DIR / "planner"
 PLANNER_AUDIT_DIR = PLANNER_DIR / "audit"
@@ -13,6 +13,8 @@ PLANNER_PLANS_HISTORY_DIR = PLANNER_PLANS_DIR / "history"
 PLANNER_REVIEWS_DIR = PLANNER_DIR / "reviews"
 PLANNER_AUDITS_DIR = PLANNER_DIR / "audits"
 PLANNER_LATEST_PLAN_PATH = PLANNER_PLANS_DIR / "plan_latest.json"
+PLANNER_OUTPUT_PATH = STATE_DIR / "planner_output.json"
+PLANNER_POLICY_VALID_MINUTES = _int_env("PLANNER_POLICY_VALID_MINUTES", 10)
 
 # Pojemność magazynu [kWh] — do symulacji SOC w optymalizatorze
 PLANNER_BATTERY_KWH = _float_env("PLANNER_BATTERY_KWH", 10.0)

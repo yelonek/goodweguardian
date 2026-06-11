@@ -114,6 +114,48 @@ class DayAudit(BaseModel):
     summary_pl: str
 
 
+PlannerPolicyName = Literal[
+    "hold_neutral",
+    "hold_export",
+    "hold_import",
+    "charge",
+    "discharge_export",
+    "discharge_serve",
+]
+
+
+class HourPolicyParams(BaseModel):
+    """Parametry policy dla jednej godziny (kontekst dla Guardiana / dashboardu)."""
+
+    target_net_kwh: float
+    battery_delta_kwh: float
+    soc_end_pct: float
+    pv_plan_kwh: float | None = None
+    load_plan_kwh: float | None = None
+    allow_grid_charge: bool = False
+
+
+class HourPolicyRow(BaseModel):
+    """Policy na godzinę — wynik mapowania HourPlan → intencja sterowania."""
+
+    date: str
+    hour: int = Field(ge=0, le=23)
+    policy: PlannerPolicyName
+    params: HourPolicyParams
+
+
+class PlannerPolicyArtifact(BaseModel):
+    """Artefakt dla Guardiana / dashboardu — ``state/planner_output.json``."""
+
+    schema_version: int = 1
+    plan_id: str
+    computed_at: str
+    valid_until: str
+    timezone: str
+    degraded: bool = False
+    hours: list[HourPolicyRow]
+
+
 class DayReview(BaseModel):
     """@deprecated — użyj ``DayAudit``; zostawione dla starych plików review_*.json."""
 

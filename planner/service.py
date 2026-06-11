@@ -14,7 +14,9 @@ from planner.inputs import build_hour_inputs_for_slots, latest_soc_from_telemetr
 from planner.models import DailyPlan
 from planner.optimizer import optimize_horizon
 from planner.plan_store import save_plan
+from planner.policy_output import build_policy_artifact, save_policy_artifact
 from planner.pricing_horizon import local_now_naive, priced_horizon_slots, slot_to_local_iso
+
 log = logging.getLogger("planner")
 
 
@@ -60,6 +62,10 @@ def build_rolling_plan(
         hours=opt.hours,
     )
     save_plan(plan)
+    pv_meta = snapshot.get("pv_forecast_meta") or {}
+    degraded = bool(pv_meta.get("error"))
+    policy_art = build_policy_artifact(plan, hour_inputs, degraded=degraded)
+    save_policy_artifact(policy_art)
     append_audit(
         new_event(
             local_date=anchor_date,
