@@ -3,7 +3,7 @@
 Planer **co 10 min** → `state/planner_output.json` (**policy** + parametry). Guardian **co 1 min** → eco-slot, `remaining_kwh` (bez zmian). Moduły: [`docs/planner/`](docs/planner/).
 
 - **Horyzont:** godziny od `now` z **oboma** cenami (RCE + import), do **ostatniej znanej** godziny; braków **nie** uzupełniamy prognozą RCE.
-- **Serie:** `pv_plan = k×p50`, `load_plan` = p50 × korekta (brak danych → **1,0**) + sloty.
+- **Serie:** `pv_plan` = korekta `k_intra` na **h** i **h+1**, dalej Solcast p50; `load_plan` = p50 × nowcast (brak danych → bez korekty) + sloty.
 - **Cel:** **max Σ** cashflow PLN / godz. (jak KPI).
 
 ---
@@ -14,22 +14,25 @@ Planer **co 10 min** → `state/planner_output.json` (**policy** + parametry). G
 
 2. **Cel ekonomiczny:** max sumy cashflow PLN; `net_kWh > 0` → **`+ net_kWh × RCE`**; `net_kWh < 0` → **`net_kWh × import_pln_per_kwh`**.
 
-3. **Dane do optimizera:** `pv_plan[h] = k × pv_p50[h]`, `load_plan[h]` jak wyżej. Jedna optymalizacja **max Σ_h cashflow_h**; **rolling** co cykl.
+3. **Dane do optimizera:** `pv_plan[h]` jak w pkt 6; `load_plan[h]` jak wyżej. Jedna optymalizacja **max Σ_h cashflow_h**; **rolling** co cykl.
 
 4. **Wyjście:** **policy + parametry**; optimizer → wektor `e_bat_kwh[h]` w granicach **battery_model**; **policy_output** → enum + JSON. Guardian mapuje policy na sterowanie.
 
 5. **Bateria w solverze:** `soc_kwh`, limity z `.env`, **jedno η** round-trip (`η_rt`).
 
-6. **Korekta PV (`k`, `u` tylko w metrykach):**
-   - **ε = 0,1 kWh/h** (agregacja godzinowa telemetrii vs prognozy).
-   - Godzina znacząca: **(p50 > ε) ∨ (faktyczna w zamkniętej h > ε)**; przeszłość z `/history` gdy brak w snapshocie.
-   - Pierwsza znacząca **h** od północy; brak do `now` → **`k = 1`**.
-   - **`start = max`(początek pierwszej znaczącej h, `now − 3 h`)**; koniec okna = **`now`**.
-   - Sumy w oknie: **wszystkie pełne** godziny od `start` do godziny **poprzedzającej** bieżącą + dla **bieżącej** h: **α ×** energia (prognoza i faktyczna), **α = (minuta + sekunda/60) / 60**.
-   - **`k = clip(A / F50, k_min, k_max)`** przy **`k_min = 0,65`**, **`k_max = 1,35`**; **`F50 < 10⁻⁶` kWh** → **`k = 1`**; **`start ≥ now`** → **`k = 1`**.
-   - **`u`:** interpolacja **A** względem **F10, F50, F90** w oknie (szczegół w `docs/planner/modules/pv_correction.md`); **nie** w funkcji celu.
+6. **Korekta PV (`k_intra`):**
+   - **ε = 0,1 kWh/h** — próg znaczącej prognozy w ułamku godziny.
+   - **α = (minuta + sekunda/60) / 60** — ułamek **bieżącej** godziny lokalnej (od `:00` tej godziny, nie od północy).
+   - **A_so_far** — energia PV z telemetrii od początku bieżącej godziny [kWh].
+   - **F_elapsed = α × F50_current** — prognoza p50 na minioną część bieżącej godziny.
+   - Gdy **F_elapsed > ε × α**: **`k_intra = clip(A_so_far / F_elapsed, k_min, k_max)`** przy **`k_min = 0,65`**, **`k_max = 1,35`**.
+   - Gdy warunek nie spełniony (noc, początek godziny, brak telemetrii): **`k_intra` nieaktywne** — surowy Solcast p50.
+   - **pv_plan[bieżąca h]** = **`A_so_far + (1−α) × F50 × k_intra`** (gdy `k_intra` aktywne).
+   - **pv_plan[h+1]** = **`k_intra × F50`** (gdy `k_intra` aktywne).
+   - **pv_plan[h+2…]** = **F50** (Solcast bez korekty).
+   - Korekta **nie** obejmuje całego dnia jednym współczynnikiem — przesuwa się co godzinę.
 
-7. **Solcast:** `fetched_at`, `age_hours`, `GET /status` — logi; okno **k** nie zależy od harmonogramu fetchy.
+7. **Solcast:** `fetched_at`, `age_hours`, `GET /status` — logi.
 
 8. **Horyzont cen:** tylko godziny z **`rce_pln_kwh`** i **`import_pln_per_kwh`**. Koniec = **ostatnia znana** h z parą (np. do **24:00** dnia dostawy w feedzie). Późniejsze h bez pary — poza planem.
 

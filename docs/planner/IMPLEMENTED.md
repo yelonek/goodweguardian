@@ -16,7 +16,7 @@ Norma docelowa produktu: [PLANNING_SYSTEM.md](../../PLANNING_SYSTEM.md) §12 ora
 | Ceny RCE + G12 | **Zaimplementowane** — `energy_pricing.py` |
 | Audyt (JSONL) | **Zaimplementowane** — nie było w docs docelowych |
 | Review / reconcile | **Zaimplementowane** — CLI + `DayReview` |
-| Korekta PV (`k`, `u`) | **Brak** — patrz [pv_correction.md](modules/pv_correction.md) |
+| Korekta PV (`k_intra`, h + h+1) | **Zaimplementowane** — `planner/pv_correction.py` |
 | `plan_series`, sloty load | **Brak** |
 | `policy_output` → Guardian | **Brak** |
 | Cykl co 10 min | **Brak** |
@@ -32,7 +32,7 @@ Norma docelowa produktu: [PLANNING_SYSTEM.md](../../PLANNING_SYSTEM.md) §12 ora
 | load_forecast | [load_forecast.md](modules/load_forecast.md) | `load_forecast.py` → `planner/inputs.py` (`load_kwh_p50`) |
 | battery_model | [battery_model.md](modules/battery_model.md) | `planner/battery.py` (uproszczone — patrz różnice poniżej) |
 | optimizer | [optimizer.md](modules/optimizer.md) | `planner/optimizer.py` (DP, nie coordinate descent) |
-| pv_correction | [pv_correction.md](modules/pv_correction.md) | — |
+| pv_correction | [pv_correction.md](modules/pv_correction.md) | `planner/pv_correction.py` → `planner/inputs.py` |
 | plan_series / scenarios | [scenarios.md](modules/scenarios.md) | — |
 | policy_output | [policy_output.md](modules/policy_output.md) | — |
 | planner_service | [planner_service.md](modules/planner_service.md) | `planner/service.py` + `planner/__main__.py` |
@@ -45,7 +45,9 @@ Norma docelowa produktu: [PLANNING_SYSTEM.md](../../PLANNING_SYSTEM.md) §12 ora
 ```mermaid
 flowchart LR
   LF[load_forecast] --> IN[planner/inputs]
-  PV[pv_forecast] --> IN
+  PV[pv_forecast] --> PVC[pv_correction]
+  TEL[telemetry pv_w] --> PVC
+  PVC --> IN
   EP[energy_pricing] --> IN
   IN --> OPT[planner/optimizer]
   BAT[planner/battery] --> OPT
@@ -79,6 +81,7 @@ Guardian (`hourly_balance_run.py`) **nie czyta** planu — sterowanie bez zmian 
 | `config.py` | Ścieżki `data/planner/*`, env (`PLANNER_*`) |
 | `models.py` | `HourInputs`, `HourPlan`, `DailyPlan`, `AuditEvent`, `DayReview`, … |
 | `inputs.py` | Składanie prognoz + cen na horyzoncie |
+| `pv_correction.py` | `k_intra` z telemetrii vs Solcast p50 (h, h+1) |
 | `battery.py` | SOC, η, limity mocy; `battery_delta = pv − load − net` |
 | `optimizer.py` | DP: maks. Σ cashflow, akcja = `target_net_kwh` (siatka 0,25 kWh) |
 | `plan_store.py` | Odczyt/zapis `plan_*.json` |
@@ -110,10 +113,10 @@ Katalogi wynikowe (w `.gitignore` przez `data/`): `data/planner/plans/`, `audit/
 | Punkt §12 | W kodzie |
 |-----------|----------|
 | **2** Cel cashflow PLN | Tak — `cashflow_pln_for_hour` |
-| **3** `pv_plan`, `load_plan`, max Σ | Częściowo — p50 load i surowe PV; brak `k`, brak `plan_series` |
+| **3** `pv_plan`, `load_plan`, max Σ | Częściowo — load z nowcast; PV z `k_intra` (h, h+1); brak `plan_series` |
 | **4** policy + parametry dla Guardiana | Nie |
 | **5** bateria, η | Tak — `planner/battery.py`; bez cap `P_INVERTER` |
-| **6** korekta PV | Nie |
+| **6** korekta PV (`k_intra`) | Tak — h + h+1; dalsze h = Solcast |
 | **8** horyzont tylko z parą cen | Częściowo — zawsze 24 h z `pricing_day_breakdown`; brak obcięcia przy brakach RCE |
 | **1** planer co 10 min | Nie — wywołanie ręczne / harmonogram zewnętrzny |
 
@@ -138,6 +141,9 @@ Katalogi wynikowe (w `.gitignore` przez `data/`): `data/planner/plans/`, `audit/
 | `PLANNER_SOC_MIN_PCT` / `MAX` | 10 / 100 | Granice SOC |
 | `PLANNER_HORIZON_HOURS` | 24 | Długość horyzontu (legacy API) |
 | `PLANNER_LOAD_LOOKBACK_DAYS` | 28 | Lookback load forecast |
+| `PV_CORRECTION_ENABLED` | true | Włącz korektę `k_intra` |
+| `PV_CORRECTION_EPS_KWH` | 0.1 | Próg ε [kWh/h] |
+| `PV_CORRECTION_K_MIN` / `K_MAX` | 0.65 / 1.35 | Clip `k_intra` |
 
 Współdzielone z Guardianem: `P_BATTERY`, proxy RCE/Solcast, taryfa G12, `data/telemetry/`.
 
@@ -145,8 +151,7 @@ Współdzielone z Guardianem: `P_BATTERY`, proxy RCE/Solcast, taryfa G12, `data/
 
 ## Kolejne kroki (docelowo, poza tym plikiem)
 
-1. `pv_correction` + `pv_plan = k × p50`
-2. `policy_output` + odczyt w `hourly_balance_run.py`
+1. `policy_output` + odczyt w `hourly_balance_run.py`
 3. Harmonogram 10 min
 4. Horyzont cen zgodny z §12 pkt 8 (obcięcie przy brakach)
 

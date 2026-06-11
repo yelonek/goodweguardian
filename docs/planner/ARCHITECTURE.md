@@ -2,7 +2,7 @@
 
 **Stan kodu:** [IMPLEMENTED.md](IMPLEMENTED.md) (co jest w repo vs ten dokument docelowy).
 
-Planer **co 10 min**: ceny (h z RCE+import do ostatniej znanej) → PV `k` → `pv_plan` / `load_plan` → **max Σ cashflow** (`e_bat`) → **policy** → `state/planner_output.json`. Guardian **co 1 min** (po integracji: czyta policy).
+Planer **co 10 min**: ceny (h z RCE+import do ostatniej znanej) → PV `k_intra` (h, h+1) → `pv_plan` / `load_plan` → **max Σ cashflow** (`e_bat`) → **policy** → `state/planner_output.json`. Guardian **co 1 min** (po integracji: czyta policy).
 
 ```mermaid
 flowchart LR
@@ -41,5 +41,5 @@ flowchart LR
 | Problem | Działanie |
 |---------|-----------|
 | Brak pary cen dla h | Poza horyzontem |
-| Słaba telemetria | `degraded`; bez okna → `k=1` |
+| Słaba telemetria | `k_intra` nieaktywne → surowy Solcast |
 | Brak pliku dla Guardian | Tak jak dziś (bez policy) |
