@@ -10,9 +10,11 @@ from statistics import median
 from typing import Any
 
 from guardian_config import (
+    LOAD_NOWCAST_BASELINE_MIN_W,
     LOAD_NOWCAST_DECAY_HOURS,
     LOAD_NOWCAST_ENABLED,
-    LOAD_NOWCAST_MAX_DELTA_KWH,
+    LOAD_NOWCAST_FACTOR_MAX,
+    LOAD_NOWCAST_FACTOR_MIN,
     LOAD_NOWCAST_WINDOW_MIN,
     TELEMETRY_DIR,
 )
@@ -275,6 +277,18 @@ def run_load_forecast_backtest(
     }
 
 
+def _clip_nowcast_factor(factor: float) -> float:
+    lo = float(LOAD_NOWCAST_FACTOR_MIN)
+    hi = float(LOAD_NOWCAST_FACTOR_MAX)
+    if lo > hi:
+        lo, hi = hi, lo
+    if factor < lo:
+        return lo
+    if factor > hi:
+        return hi
+    return factor
+
+
 def _apply_nowcast_to_rows(
     rows: list[dict],
     *,
@@ -283,8 +297,9 @@ def _apply_nowcast_to_rows(
     cache: dict[date, dict[int, float]] | None = None,
 ) -> tuple[list[dict], dict[str, Any]]:
     """
-    Korekta: bias_w = srednia moc z ostatnich WINDOW min - (p50 biezacej godziny * 1000 W).
-    Dodaje delta_kWh do p25/p50/p75 dla kolejnych slotow z waga 1 - step/decay (clamp).
+    Korekta względna: factor = clip(recent_W / baseline_W, min, max).
+    Dla slotu step: effective_factor = 1 + (factor - 1) * (1 - step/decay).
+    p25/p50/p75 *= effective_factor (nie schodzi poniżej 0).
     """
     meta: dict[str, Any] = {"applied": False}
     if not LOAD_NOWCAST_ENABLED:
@@ -304,35 +319,39 @@ def _apply_nowcast_to_rows(
 
     p50 = float(pred["load_kwh_p50"])
     baseline_w = p50 * 1000.0
+    if baseline_w < float(LOAD_NOWCAST_BASELINE_MIN_W):
+        meta["reason"] = "weak_baseline"
+        return rows, meta
+
     recent = recent_consumption_average_w(now, int(LOAD_NOWCAST_WINDOW_MIN))
     if recent is None:
         meta["reason"] = "no_recent_telemetry"
         return rows, meta
 
-    bias_w = float(recent) - baseline_w
+    recent_w = float(recent)
+    factor = _clip_nowcast_factor(recent_w / baseline_w)
+    bias_w = recent_w - baseline_w
     decay = max(1, int(LOAD_NOWCAST_DECAY_HOURS))
-    max_d = float(LOAD_NOWCAST_MAX_DELTA_KWH)
 
     new_rows: list[dict] = []
     for step, row in enumerate(rows):
         weight = max(0.0, 1.0 - float(step) / float(decay))
-        delta_kwh = (bias_w / 1000.0) * weight
-        if delta_kwh > max_d:
-            delta_kwh = max_d
-        elif delta_kwh < -max_d:
-            delta_kwh = -max_d
+        effective_factor = 1.0 + (factor - 1.0) * weight
         nr = dict(row)
         for key in ("load_kwh_p25", "load_kwh_p50", "load_kwh_p75"):
             if key in nr and nr[key] is not None:
-                nr[key] = max(0.0, float(nr[key]) + delta_kwh)
+                nr[key] = max(0.0, float(nr[key]) * effective_factor)
         new_rows.append(nr)
 
     meta = {
         "applied": True,
+        "mode": "relative_factor",
         "window_min": int(LOAD_NOWCAST_WINDOW_MIN),
         "decay_hours": decay,
-        "max_delta_kwh": max_d,
-        "recent_avg_w": float(recent),
+        "factor_min": float(LOAD_NOWCAST_FACTOR_MIN),
+        "factor_max": float(LOAD_NOWCAST_FACTOR_MAX),
+        "factor": factor,
+        "recent_avg_w": recent_w,
         "baseline_p50_kwh": p50,
         "baseline_w": baseline_w,
         "bias_w": bias_w,

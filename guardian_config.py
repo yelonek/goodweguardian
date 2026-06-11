@@ -158,11 +158,13 @@ SOLCAST_PROXY_BASE_URL = (
 )
 PROXY_HTTP_TIMEOUT_S = _float_env("PROXY_HTTP_TIMEOUT_S", 10.0)
 
-# Load forecast: korekta krótkoterminowa (średnia moc z ostatnich min vs baseline p50 bieżącej godz.)
+# Load forecast: korekta krótkoterminowa (factor = recent/baseline p50 bieżącej godz.)
 LOAD_NOWCAST_ENABLED = _bool_env("LOAD_NOWCAST_ENABLED", True)
 LOAD_NOWCAST_WINDOW_MIN = _int_env("LOAD_NOWCAST_WINDOW_MIN", 45)
 LOAD_NOWCAST_DECAY_HOURS = _int_env("LOAD_NOWCAST_DECAY_HOURS", 4)
-LOAD_NOWCAST_MAX_DELTA_KWH = _float_env("LOAD_NOWCAST_MAX_DELTA_KWH", 1.0)
+LOAD_NOWCAST_FACTOR_MIN = _float_env("LOAD_NOWCAST_FACTOR_MIN", 0.65)
+LOAD_NOWCAST_FACTOR_MAX = _float_env("LOAD_NOWCAST_FACTOR_MAX", 1.35)
+LOAD_NOWCAST_BASELINE_MIN_W = _float_env("LOAD_NOWCAST_BASELINE_MIN_W", 50.0)
 
 # PV correction (k_intra): telemetria bieżącej godziny vs Solcast p50 na h i h+1
 PV_CORRECTION_ENABLED = _bool_env("PV_CORRECTION_ENABLED", True)
