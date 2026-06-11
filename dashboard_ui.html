@@ -174,7 +174,7 @@
             <th colspan="2" class="grp-price">price [PLN/kWh]</th>
             <th colspan="5" class="grp-load">load [kWh]</th>
             <th colspan="5" class="grp-pv">PV [kWh]</th>
-            <th colspan="2" class="grp-planner">plan / actual</th>
+            <th colspan="5" class="grp-planner">plan / policy</th>
           </tr>
           <tr>
             <th class="grp-price">buy</th>
@@ -189,6 +189,9 @@
             <th class="grp-pv">p90</th>
             <th class="grp-pv">act</th>
             <th class="grp-pv">Δ</th>
+            <th class="grp-planner">policy</th>
+            <th class="grp-planner">bat Δ</th>
+            <th class="grp-planner">grid?</th>
             <th class="grp-planner">net kWh</th>
             <th class="grp-planner">SOC %</th>
           </tr>
@@ -228,8 +231,8 @@
           <div class="muted" id="plannerHorizon" style="font-size:12px; margin-top:6px;"></div>
           <div class="muted" style="font-size:12px; margin-top:8px;">
             Rolling plan liczy się zawsze (<code>uv run python -m planner plan</code>, cron co ~10 min).
-            Ten przełącznik decyduje, czy Guardian celuje w <code>target_net_kwh</code> z planu
-            (plik <code>state/planner_override.json</code>).
+            Policy (6 intencji) zapisuje się w <code>state/planner_output.json</code> i widać je w Prognozie.
+            Przełącznik egzekucji (<code>state/planner_override.json</code>) — na razie bez podpięcia do watchdog.
           </div>
         </div>
       </div>

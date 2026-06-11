@@ -49,6 +49,12 @@ from load_forecast import (
 )
 from pv_forecast import fetch_hourly_pv_forecast, fetch_hourly_pv_forecast_with_history
 from planner.plan_store import load_latest_plan, load_plan
+from planner.policy_output import (
+    load_policy_artifact,
+    map_hour_to_policy,
+    policy_label_pl,
+    policy_rows_by_slot,
+)
 from planner.telemetry import hourly_actuals
 
 app = FastAPI(title="GoodWeGuardian Dashboard", version="0.1.0")
@@ -747,13 +753,17 @@ def _telemetry_hourly_load_pv_actuals(
     return load_kwh, pv_kwh
 
 
-def _planner_hours_for_date(local_date: date) -> dict[int, Any]:
+def _planner_hours_for_date(
+    local_date: date,
+    *,
+    plan: Any | None = None,
+) -> dict[int, Any]:
     """Godzina → HourPlan z rolling planu (``plan_latest.json``)."""
-    plan = load_latest_plan() or load_plan(local_date.isoformat())
-    if plan is None:
+    p = plan if plan is not None else (load_latest_plan() or load_plan(local_date.isoformat()))
+    if p is None:
         return {}
     d_iso = local_date.isoformat()
-    return {hp.hour: hp for hp in plan.hours if hp.date == d_iso}
+    return {hp.hour: hp for hp in p.hours if hp.date == d_iso}
 
 
 def _pricing_for_day_quiet(local_date: date) -> dict[str, Any] | None:
@@ -820,8 +830,11 @@ def _combined_forecast_payload() -> dict[str, Any]:
         today.isoformat(): actuals_today,
         tomorrow.isoformat(): actuals_tomorrow,
     }
-    planner_today = _planner_hours_for_date(today)
-    planner_tomorrow = _planner_hours_for_date(tomorrow)
+    plan_latest = load_latest_plan()
+    policy_artifact = load_policy_artifact()
+    policy_by_slot = policy_rows_by_slot(policy_artifact)
+    planner_today = _planner_hours_for_date(today, plan=plan_latest)
+    planner_tomorrow = _planner_hours_for_date(tomorrow, plan=plan_latest)
     telemetry_today = hourly_actuals(today)
     telemetry_tomorrow = hourly_actuals(tomorrow)
 
@@ -894,6 +907,10 @@ def _combined_forecast_payload() -> dict[str, Any]:
             net_kwh = None
             soc_pct = None
 
+        policy_row = policy_by_slot.get((d_iso, h))
+        if policy_row is None and plan_h is not None:
+            policy_row = map_hour_to_policy(plan_h)
+
         rows.append(
             {
                 "date": d_iso,
@@ -913,19 +930,44 @@ def _combined_forecast_payload() -> dict[str, Any]:
                 "pv_kwh_delta_mean": pv_delta_mean,
                 "net_kwh": net_kwh,
                 "soc_pct": soc_pct,
+                "policy": policy_row.policy if policy_row else None,
+                "policy_label": policy_label_pl(policy_row.policy) if policy_row else None,
+                "policy_battery_delta_kwh": (
+                    float(policy_row.params.battery_delta_kwh) if policy_row else None
+                ),
+                "policy_allow_grid_charge": (
+                    policy_row.params.allow_grid_charge if policy_row else None
+                ),
             }
         )
 
-    plan_latest = load_latest_plan()
     plan_exec, plan_exec_src = effective_planner_execution_enabled()
     plan_note = ""
     if plan_latest is not None:
+        pol_note = ""
+        if policy_artifact is not None and policy_artifact.plan_id == plan_latest.plan_id:
+            pol_note = (
+                f" Policy: {len(policy_artifact.hours)} h"
+                f"{' (degraded)' if policy_artifact.degraded else ''},"
+                f" ważne do {policy_artifact.valid_until[:19]}."
+            )
         plan_note = (
             f" Plan: {plan_latest.plan_id[:8]}… {plan_latest.horizon_start}→{plan_latest.horizon_end}."
-            f" Egzekucja w Guardianie: {'tak' if plan_exec else 'nie'} ({plan_exec_src})."
+            f"{pol_note}"
+            f" Egzekucja policy w Guardianie: {'tak' if plan_exec else 'nie'} ({plan_exec_src})."
         )
     else:
         plan_note = " Brak plan_latest.json — uruchom: uv run python -m planner plan."
+
+    policy_meta: dict[str, Any] | None = None
+    if policy_artifact is not None:
+        policy_meta = {
+            "plan_id": policy_artifact.plan_id,
+            "computed_at": policy_artifact.computed_at,
+            "valid_until": policy_artifact.valid_until,
+            "degraded": policy_artifact.degraded,
+            "hours_count": len(policy_artifact.hours),
+        }
 
     return {
         "now": now.isoformat(timespec="seconds"),
@@ -944,10 +986,14 @@ def _combined_forecast_payload() -> dict[str, Any]:
             "Δ load = act − p50; Δ PV = act − mean tylko gdy jest prognoza mean w tym wierszu. "
             "net kWh / SOC %: po zakończeniu godziny (lub bieżąca z telemetrii) — fakty; "
             "w przód — target_net_kwh i soc_end_pct z rolling planu (plan_latest.json). "
+            "policy: intencja sterowania z planera (hold/charge/discharge) — "
+            "plik state/planner_output.json; na razie tylko podgląd, bez watchdog. "
+            "bat Δ = battery_delta_kwh; grid = allow_grid_charge przy ładowaniu. "
             "Horyzont: bieżąca godzina → ostatnia z cenami RCE "
             "(jutro wchodzi automatycznie po publikacji RCE). "
-            "Przełącznik w ustawieniach steruje tylko egzekucją w Guardianie, nie liczeniem planu."
+            "Przełącznik w ustawieniach steruje egzekucją w Guardianie (jeszcze nie podpięte do policy)."
         ) + plan_note,
+        "planner_policy": policy_meta,
         "rows": rows,
     }
 
@@ -971,6 +1017,15 @@ def _get_combined_forecast_cached() -> dict[str, Any]:
 async def api_forecast_combined() -> JSONResponse:
     payload = await _run_heavy(_get_combined_forecast_cached)
     return JSONResponse(payload)
+
+
+@app.get("/api/planner/policy")
+def api_planner_policy() -> JSONResponse:
+    """Artefakt policy (``state/planner_output.json``) — podgląd, bez egzekucji."""
+    artifact = load_policy_artifact()
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="brak state/planner_output.json — uruchom: planner plan")
+    return JSONResponse(artifact.model_dump())
 
 
 @app.get("/api/ecoslots")
@@ -1069,6 +1124,12 @@ def api_planner_control_get(
         payload["horizon_start"] = plan.horizon_start
         payload["horizon_end"] = plan.horizon_end
         payload["generated_at"] = plan.generated_at
+        art = load_policy_artifact()
+        if art is not None and art.plan_id == plan.plan_id:
+            payload["policy_computed_at"] = art.computed_at
+            payload["policy_valid_until"] = art.valid_until
+            payload["policy_degraded"] = art.degraded
+            payload["policy_hours_count"] = len(art.hours)
     return JSONResponse(payload)
 
 

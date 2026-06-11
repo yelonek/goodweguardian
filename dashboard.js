@@ -76,6 +76,13 @@ async function loadHistory(force) {
 
 function renderForecastBlock(forecast) {
   const fcell = (v, d) => (v == null) ? `<td class="nodata">—</td>` : `<td>${Number(v).toFixed(d)}</td>`;
+  const policyCell = (r) => {
+    if (!r.policy) return `<td class="nodata">—</td>`;
+    const title = r.policy + (r.policy_label ? ` (${r.policy_label})` : "");
+    const label = r.policy_label || r.policy;
+    return `<td class="grp-planner" title="${title}">${label}</td>`;
+  };
+  const boolCell = (v) => (v == null) ? `<td class="nodata">—</td>` : `<td>${v ? "tak" : "nie"}</td>`;
   const fcellDelta = (v, d, eps) => {
     if (v == null) return `<td class="nodata">—</td>`;
     const n = Number(v);
@@ -98,6 +105,7 @@ function renderForecastBlock(forecast) {
       ${fcell(r.buy_pln_kwh, 4)}${fcell(r.sell_pln_kwh, 4)}
       ${fcell(r.load_kwh_p25, 3)}${fcell(r.load_kwh_p50, 3)}${fcell(r.load_kwh_p75, 3)}${fcell(r.load_kwh_actual, 3)}${fcellDelta(r.load_kwh_delta_p50, 3, 0.03)}
       ${fcell(r.pv_kwh_p10, 3)}${fcell(r.pv_kwh, 3)}${fcell(r.pv_kwh_p90, 3)}${fcell(r.pv_kwh_actual, 3)}${fcellDelta(r.pv_kwh_delta_mean, 3, 0.05)}
+      ${policyCell(r)}${fcell(r.policy_battery_delta_kwh, 3)}${boolCell(r.policy_allow_grid_charge)}
       ${fcell(r.net_kwh, 3)}${fcell(r.soc_pct, 1)}</tr>`;
   }).join("");
   const meta = [`today RCE: ${fmt(forecast.pricing_today_source)}`,
@@ -236,9 +244,16 @@ async function refreshPlanner() {
   const j = await r.json().catch(() => ({}));
   if (!r.ok) { el.textContent = j.detail || "error"; hz.textContent = ""; return; }
   el.textContent = `execution=${j.planner_execution_enabled} source=${j.source}`;
-  hz.textContent = j.horizon_start
-    ? `plan ${(j.plan_id || "").slice(0, 8)}… ${j.horizon_start} → ${j.horizon_end}`
-    : "brak plan_latest.json (uruchom: planner plan)";
+  if (!j.horizon_start) {
+    hz.textContent = "brak plan_latest.json (uruchom: planner plan)";
+    return;
+  }
+  let pol = "";
+  if (j.policy_hours_count != null) {
+    pol = ` · policy ${j.policy_hours_count}h${j.policy_degraded ? " degraded" : ""}`;
+    if (j.policy_valid_until) pol += ` do ${j.policy_valid_until.slice(0, 19)}`;
+  }
+  hz.textContent = `plan ${(j.plan_id || "").slice(0, 8)}… ${j.horizon_start} → ${j.horizon_end}${pol}`;
 }
 
 async function putPlanner(enabled) {
