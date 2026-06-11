@@ -107,7 +107,7 @@ function renderForecastBlock(forecast) {
   if (cn) cn.textContent = forecast.comparison_note || "";
   const nc = forecast.load_nowcast || {};
   document.getElementById("loadNowcast").textContent = nc.applied
-    ? `load nowcast: bias ${Number(nc.bias_w || 0).toFixed(0)} W; decay ${dv(nc.decay_hours, "—")} h`
+    ? `load nowcast: ×${Number(nc.factor || 1).toFixed(2)} (bias ${Number(nc.bias_w || 0).toFixed(0)} W); decay ${dv(nc.decay_hours, "—")} h`
     : (nc.reason ? "nowcast off — " + nc.reason : "");
 }
 
