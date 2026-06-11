@@ -12,6 +12,7 @@ from guardian_config import TELEMETRY_TZ
 from load_forecast import forecast_load_hours
 from planner.config import PLANNER_HORIZON_HOURS, PLANNER_LOAD_LOOKBACK_DAYS
 from planner.models import HourInputs
+from planner.pv_correction import apply_pv_correction
 from pv_forecast import fetch_hourly_pv_forecast
 
 log = logging.getLogger("planner")
@@ -30,6 +31,7 @@ def build_hour_inputs_for_slots(
     slots: list[tuple[str, int]],
     *,
     lookback_days: int | None = None,
+    now: datetime | None = None,
 ) -> tuple[list[HourInputs], dict[str, Any]]:
     """Prognozy load/PV + cennik dla listy slotów ``(date_iso, hour)``."""
     if not slots:
@@ -60,6 +62,11 @@ def build_hour_inputs_for_slots(
     for r in pv_pack.get("hours", []):
         pv_by_key[(str(r["date"]), int(r["hour"]))] = r
 
+    now_local = now or _local_now().replace(tzinfo=None)
+    pv_corrected, pv_sources, pv_correction_meta = apply_pv_correction(
+        slots, pv_by_key, now=now_local
+    )
+
     out: list[HourInputs] = []
     pricing_cache: dict[str, dict] = {}
 
@@ -69,8 +76,12 @@ def build_hour_inputs_for_slots(
         load_kwh = float(lr.get("load_kwh_p50") or 0.0)
         load_src = str(lr.get("source") or "unknown")
 
-        pr = pv_by_key.get(key, {})
-        pv_kwh, pv_src = _pv_kwh_from_row(pr) if pr else (0.0, "missing")
+        if key in pv_corrected:
+            pv_kwh = float(pv_corrected[key])
+            pv_src = pv_sources.get(key, "solcast_proxy")
+        else:
+            pr = pv_by_key.get(key, {})
+            pv_kwh, pv_src = _pv_kwh_from_row(pr) if pr else (0.0, "missing")
 
         if d_iso not in pricing_cache:
             pricing_cache[d_iso] = pricing_day_breakdown(date.fromisoformat(d_iso))
@@ -101,6 +112,7 @@ def build_hour_inputs_for_slots(
             k: pv_pack.get(k)
             for k in ("timezone", "source", "cached", "fetched_at", "error")
         },
+        "pv_correction": pv_correction_meta,
         "pricing_dates": list(pricing_cache.keys()),
     }
     return out, snapshot

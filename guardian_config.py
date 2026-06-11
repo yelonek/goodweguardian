@@ -164,6 +164,12 @@ LOAD_NOWCAST_WINDOW_MIN = _int_env("LOAD_NOWCAST_WINDOW_MIN", 45)
 LOAD_NOWCAST_DECAY_HOURS = _int_env("LOAD_NOWCAST_DECAY_HOURS", 4)
 LOAD_NOWCAST_MAX_DELTA_KWH = _float_env("LOAD_NOWCAST_MAX_DELTA_KWH", 1.0)
 
+# PV correction (k_intra): telemetria bieżącej godziny vs Solcast p50 na h i h+1
+PV_CORRECTION_ENABLED = _bool_env("PV_CORRECTION_ENABLED", True)
+PV_CORRECTION_EPS_KWH = _float_env("PV_CORRECTION_EPS_KWH", 0.1)
+PV_CORRECTION_K_MIN = _float_env("PV_CORRECTION_K_MIN", 0.65)
+PV_CORRECTION_K_MAX = _float_env("PV_CORRECTION_K_MAX", 1.35)
+
 
 def get_slot_id() -> str:
     """Zwraca eco_mode_1..4 dla slotu balansującego."""

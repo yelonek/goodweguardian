@@ -36,7 +36,7 @@ def build_rolling_plan(
         log.warning("no priced horizon slots — skip plan")
         return None
 
-    hour_inputs, snapshot = build_hour_inputs_for_slots(slots)
+    hour_inputs, snapshot = build_hour_inputs_for_slots(slots, now=now_local)
     soc = soc_start_pct
     if soc is None:
         soc = latest_soc_from_telemetry(now_local.date()) or 50.0
