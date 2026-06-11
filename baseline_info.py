@@ -25,8 +25,9 @@ def baseline_spec() -> dict:
                 "z ostatnich N dni; dzień docelowy nie wchodzi do próbek. "
                 "Preferencja próbek z tego samego typu dnia (weekday vs weekend); "
                 "przy małej liczbie próbek — wszystkie godziny z lookback; przy braku — zero. "
-                "Nowcast (opcjonalnie): bias mocy z ostatnich LOAD_NOWCAST_WINDOW_MIN min "
-                "względem baseline p50 bieżącej godziny; korekta zanika po LOAD_NOWCAST_DECAY_HOURS."
+                "Nowcast (opcjonalnie): factor = clip(recent_W/baseline_W, LOAD_NOWCAST_FACTOR_MIN..MAX) "
+                "z ostatnich LOAD_NOWCAST_WINDOW_MIN min vs p50 bieżącej godziny; "
+                "percentyle × effective_factor (zanik po LOAD_NOWCAST_DECAY_HOURS)."
             ),
             "actual_kwh_per_hour": (
                 "Średnia arytmetyczna consumption_w [W] we wszystkich rekordach telemetrii "
