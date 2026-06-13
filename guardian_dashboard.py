@@ -50,8 +50,9 @@ from load_forecast import (
 from pv_forecast import fetch_hourly_pv_forecast, fetch_hourly_pv_forecast_with_history
 from planner.plan_store import load_latest_plan, load_plan
 from planner.policy_output import (
+    exec_mode_label_pl,
     load_policy_artifact,
-    map_hour_to_policy,
+    map_hour_to_exec_mode,
     policy_label_pl,
     policy_rows_by_slot,
 )
@@ -909,7 +910,7 @@ def _combined_forecast_payload() -> dict[str, Any]:
 
         policy_row = policy_by_slot.get((d_iso, h))
         if policy_row is None and plan_h is not None:
-            policy_row = map_hour_to_policy(plan_h)
+            policy_row = map_hour_to_exec_mode(plan_h)
 
         rows.append(
             {
@@ -930,8 +931,16 @@ def _combined_forecast_payload() -> dict[str, Any]:
                 "pv_kwh_delta_mean": pv_delta_mean,
                 "net_kwh": net_kwh,
                 "soc_pct": soc_pct,
+                "exec_mode": policy_row.exec_mode if policy_row else None,
+                "exec_mode_label": (
+                    exec_mode_label_pl(policy_row.exec_mode) if policy_row else None
+                ),
                 "policy": policy_row.policy if policy_row else None,
-                "policy_label": policy_label_pl(policy_row.policy) if policy_row else None,
+                "policy_label": (
+                    exec_mode_label_pl(policy_row.exec_mode)
+                    if policy_row
+                    else None
+                ),
                 "policy_battery_delta_kwh": (
                     float(policy_row.params.battery_delta_kwh) if policy_row else None
                 ),
