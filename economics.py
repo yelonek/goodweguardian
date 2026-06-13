@@ -2,6 +2,14 @@
 
 from __future__ import annotations
 
+# Prosument: ujemna RCE nie oznacza dopłaty za eksport — stawka SELL ≥ 0.
+EXPORT_PLN_PER_KWH_FLOOR = 0.0
+
+
+def export_pln_per_kwh_effective(rce_pln_per_kwh: float) -> float:
+    """Stawka odkupu energii (SELL) używana w KPI i planerze."""
+    return max(EXPORT_PLN_PER_KWH_FLOOR, float(rce_pln_per_kwh))
+
 
 def cashflow_pln_for_hour(
     net_kwh: float,
@@ -11,11 +19,11 @@ def cashflow_pln_for_hour(
 ) -> float:
     """Zysk/strata w jednej godzinie (prosument: eksport = plus, import = minus).
 
-    ``net_kwh > 0`` — nadwyżka eksportu → ``+ net_kwh * rce``.
-    ``net_kwh < 0`` — nadwyżka importu → ``net_kwh * import`` (ujemne).
+    ``net_kwh > 0`` — nadwyżka eksportu → ``+ net_kwh × max(rce, 0)``.
+    ``net_kwh < 0`` — nadwyżka importu → ``net_kwh × import`` (ujemne).
     """
     if net_kwh > 0.0:
-        return net_kwh * rce_pln_per_kwh
+        return net_kwh * export_pln_per_kwh_effective(rce_pln_per_kwh)
     if net_kwh < 0.0:
         return net_kwh * import_pln_per_kwh
     return 0.0

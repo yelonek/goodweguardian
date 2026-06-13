@@ -29,6 +29,20 @@ def test_zero() -> None:
     )
 
 
+def test_negative_rce_export_floor_zero() -> None:
+    """Prosument: ujemna RCE nie daje ujemnego przychodu z eksportu."""
+    assert cashflow_pln_for_hour(
+        2.0, rce_pln_per_kwh=-0.15, import_pln_per_kwh=1.0
+    ) == pytest.approx(0.0)
+
+
+def test_export_pln_per_kwh_effective() -> None:
+    from economics import export_pln_per_kwh_effective
+
+    assert export_pln_per_kwh_effective(0.42) == pytest.approx(0.42)
+    assert export_pln_per_kwh_effective(-0.1) == pytest.approx(0.0)
+
+
 def test_matches_kpi_style_deposit_minus_bill() -> None:
     """Jak w ``_kpi_for_day``: depozyt += surplus*rce, bill += deficit*eff."""
     rce, imp = 0.4, 0.7

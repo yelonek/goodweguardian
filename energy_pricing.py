@@ -80,10 +80,12 @@ def fetch_hourly_rce_from_proxy(
 
 def adjust_rce_for_export_settlement(hourly_rce: list[float]) -> list[float]:
     """RCE z rynku (PSE/proxy) → stawka używana przy eksporcie (KPI, planer)."""
+    from economics import export_pln_per_kwh_effective
+
     m = float(RCE_EXPORT_MULTIPLIER)
     if m == 1.0:
-        return list(hourly_rce)
-    return [float(v) * m for v in hourly_rce]
+        return [export_pln_per_kwh_effective(v) for v in hourly_rce]
+    return [export_pln_per_kwh_effective(float(v) * m) for v in hourly_rce]
 
 
 def get_hourly_rce_pln_per_kwh(

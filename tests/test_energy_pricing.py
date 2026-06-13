@@ -51,6 +51,15 @@ def test_rce_export_multiplier(monkeypatch: pytest.MonkeyPatch) -> None:
     assert adjust_rce_for_export_settlement([0.4, 0.5]) == [0.4, 0.5]
 
 
+def test_rce_export_floor_negative(monkeypatch: pytest.MonkeyPatch) -> None:
+    import energy_pricing as ep
+    import guardian_config as gc
+
+    monkeypatch.setattr(gc, "RCE_EXPORT_MULTIPLIER", 1.0)
+    monkeypatch.setattr(ep, "RCE_EXPORT_MULTIPLIER", 1.0)
+    assert adjust_rce_for_export_settlement([-0.2, 0.3]) == pytest.approx([0.0, 0.3])
+
+
 def test_get_hourly_rce_applies_multiplier(monkeypatch: pytest.MonkeyPatch) -> None:
     import energy_pricing as ep
     import guardian_config as gc
