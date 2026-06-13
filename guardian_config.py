@@ -61,6 +61,13 @@ GRID_EXPORT_BIAS_W = _float_env("GRID_EXPORT_BIAS_W", 150.0)
 # Przy remaining<0 i brak mocy po obliczeniach: minimalne rozładowanie [%] (GoodWe: 0% bywa bezużyteczne). 0 = wyłącz.
 WATCHDOG_MIN_DISCHARGE_ASSIST_PCT = _int_env("WATCHDOG_MIN_DISCHARGE_ASSIST_PCT", 1)
 
+# Egzekucja planu (§13 PLANNING_SYSTEM.md)
+IMPORT_GRID_SOC_PCT = _int_env("IMPORT_GRID_SOC_PCT", 10)
+EXEC_MIN_ACTIVE_CHARGE_PCT = _int_env("EXEC_MIN_ACTIVE_CHARGE_PCT", 2)
+EXEC_MIN_ACTIVE_DISCHARGE_PCT = _int_env("EXEC_MIN_ACTIVE_DISCHARGE_PCT", 2)
+EXEC_EARLY_INTERVENTION_KW = _float_env("EXEC_EARLY_INTERVENTION_KW", 1.0)
+EXEC_STEADY_PCT = _int_env("EXEC_STEADY_PCT", 1)
+
 # SOC=100% “battery defense”: utrzymuj CHARGE 1% (blokuj discharge), dopóki bilans mocy nie jest „wystarczająco zły”.
 # Wyjście z obrony pełnej sterowane jest progiem mocy bilansu (moc_bilans [kW]), nie energią godzinową.
 SOC_FULL_DEFENSE_THRESHOLD_PCT = _float_env("SOC_FULL_DEFENSE_THRESHOLD_PCT", 99.5)

@@ -5,12 +5,20 @@ Konwencja znaku (ujednolicona z mocą sieci):
   − remaining_kWh = ΔE_export − ΔE_import w bieżącej godzinie [kWh].
   − Dodatnie: przewaga energii oddanej do sieci; ujemne: przewaga pobranej z sieci.
   − moc sieci (grid): dodatnie = do sieci (eksport), ujemne = z sieci (import).
-Cel domyślny: bilans ~0 na koniec godziny (Flappy Bird).
-Gdy Guardian egzekwuje plan: ``remaining_kwh`` w wejściu to odchyłka od ``target_net_kwh``
-(remaining_licznik − target_planu). Moc baterii: dodatnia = rozładowanie, ujemna = ładowanie.
+Cel domyślny (fallback bez planera): bilans ~0 na koniec godziny (Flappy Bird).
+Egzekucja planu: ``guardian_execution`` + tryb ``exec_mode`` (§13 PLANNING_SYSTEM.md).
+Moc baterii: dodatnia = rozładowanie, ujemna = ładowanie.
 """
 
 from dataclasses import dataclass
+
+from planner.models import ExecMode
+
+# Obrony SOC a exec_mode (§13 PLANNING_SYSTEM.md)
+_EXEC_SKIP_SOC_FULL: frozenset[ExecMode] = frozenset({"export_profit"})
+_EXEC_SOC_LOW_ACTIVE: frozenset[ExecMode] = frozenset(
+    {"export_pv_surplus", "export_profit", "neutral"}
+)
 
 
 @dataclass
@@ -63,6 +71,7 @@ class WatchdogDecision:
     duration_s: float
     mode: str
     reason: str
+    slot_soc_pct: int = 100
 
 
 def power_needed_kw(remaining_kwh: float, time_to_end_s: float) -> float:
@@ -106,6 +115,25 @@ def _neutral_decision(reason: str) -> WatchdogDecision:
         duration_s=0.0,
         mode="neutral",
         reason=reason,
+    )
+
+
+def _steady_decision(
+    *,
+    power_pct: int,
+    mode: str,
+    reason: str,
+    time_to_end_s: float,
+    slot_soc_pct: int = 100,
+) -> WatchdogDecision:
+    return WatchdogDecision(
+        write_slot=True,
+        enabled=True,
+        power_pct=power_pct,
+        duration_s=_slot_duration_s(time_to_end_s),
+        mode=mode,
+        reason=reason,
+        slot_soc_pct=slot_soc_pct,
     )
 
 
@@ -217,15 +245,25 @@ def _continuous_soak_decision(
     )
 
 
-def decide_watchdog(
+def decide_soc_defenses(
     inp: BalanceInputs,
     *,
     cfg: WatchdogConfig,
     minute_of_hour: int | None = None,
     hour_of_day: int | None = None,
     soc_full_defense_carryover: bool = False,
-) -> WatchdogDecision:
-    """Flappy Bird: bufor PV, korekta deficytu, soak na koniec godziny; obrony SOC bez zmian."""
+    exec_mode: ExecMode | None = None,
+) -> WatchdogDecision | None:
+    """
+    Obrony SOC / rezerwa nocna — warstwa nadrzędna; ``None`` = brak interwencji.
+
+    ``exec_mode=None`` (fallback bez planera): pełne obrony jak dotychczas.
+
+    Z planem:
+    - **Pełna bateria** — wyłączona w ``export_profit`` (celowe rozładowanie).
+    - **Niska bateria** — tylko w ``export_pv_surplus``, ``export_profit``, ``neutral``
+      (w ``import_grid`` / ``charge_grid`` slot już ładuje).
+    """
 
     low_soc_discharge_cap_active = (
         float(inp.soc_pct) <= float(cfg.soc_low_threshold_pct)
@@ -234,14 +272,7 @@ def decide_watchdog(
     )
 
     if inp.other_eco_slot_active and not low_soc_discharge_cap_active:
-        return WatchdogDecision(
-            write_slot=False,
-            enabled=False,
-            power_pct=0,
-            duration_s=0.0,
-            mode="neutral",
-            reason="other_eco_slot_active",
-        )
+        return _neutral_decision("other_eco_slot_active")
 
     if (
         hour_of_day is not None
@@ -261,45 +292,49 @@ def decide_watchdog(
 
     power_kw = power_needed_kw(inp.remaining_kwh, inp.time_to_end_s)
 
-    carryover_min = max(1, int(cfg.soc_full_defense_carryover_minutes))
-    carryover_window_s = float(carryover_min * 60)
-    in_soc_full_carryover_window = (
-        minute_of_hour is not None and int(minute_of_hour) < carryover_min
-    )
+    skip_soc_full = exec_mode is not None and exec_mode in _EXEC_SKIP_SOC_FULL
+    apply_soc_low = exec_mode is None or exec_mode in _EXEC_SOC_LOW_ACTIVE
 
-    if float(inp.soc_pct) >= float(cfg.soc_full_threshold_pct):
-        r = float(inp.remaining_kwh)
-        release_p = float(cfg.soc_full_defense_release_power_kw)
-        if (
-            in_soc_full_carryover_window
-            and r >= 0.0
-            and soc_full_defense_carryover
-        ):
-            duration_s = min(inp.time_to_end_s, max(60.0, carryover_window_s))
-            return WatchdogDecision(
-                write_slot=True,
-                enabled=True,
-                power_pct=int(cfg.soc_full_defense_charge_pct),
-                duration_s=duration_s,
-                mode="charge",
-                reason="soc_full_defense_carryover",
-            )
-        if (
-            r >= 0.0
-            or (r < 0.0 and power_kw < release_p)
-            or float(inp.time_to_end_s) <= 60.0
-        ):
-            duration_s = min(inp.time_to_end_s, max(60.0, inp.time_to_end_s))
-            return WatchdogDecision(
-                write_slot=True,
-                enabled=True,
-                power_pct=int(cfg.soc_full_defense_charge_pct),
-                duration_s=duration_s,
-                mode="charge",
-                reason="soc_full_defense_hold",
-            )
+    if not skip_soc_full:
+        carryover_min = max(1, int(cfg.soc_full_defense_carryover_minutes))
+        carryover_window_s = float(carryover_min * 60)
+        in_soc_full_carryover_window = (
+            minute_of_hour is not None and int(minute_of_hour) < carryover_min
+        )
 
-    if float(inp.soc_pct) <= float(cfg.soc_low_threshold_pct):
+        if float(inp.soc_pct) >= float(cfg.soc_full_threshold_pct):
+            r = float(inp.remaining_kwh)
+            release_p = float(cfg.soc_full_defense_release_power_kw)
+            if (
+                in_soc_full_carryover_window
+                and r >= 0.0
+                and soc_full_defense_carryover
+            ):
+                duration_s = min(inp.time_to_end_s, max(60.0, carryover_window_s))
+                return WatchdogDecision(
+                    write_slot=True,
+                    enabled=True,
+                    power_pct=int(cfg.soc_full_defense_charge_pct),
+                    duration_s=duration_s,
+                    mode="charge",
+                    reason="soc_full_defense_carryover",
+                )
+            if (
+                r >= 0.0
+                or (r < 0.0 and power_kw < release_p)
+                or float(inp.time_to_end_s) <= 60.0
+            ):
+                duration_s = min(inp.time_to_end_s, max(60.0, inp.time_to_end_s))
+                return WatchdogDecision(
+                    write_slot=True,
+                    enabled=True,
+                    power_pct=int(cfg.soc_full_defense_charge_pct),
+                    duration_s=duration_s,
+                    mode="charge",
+                    reason="soc_full_defense_hold",
+                )
+
+    if apply_soc_low and float(inp.soc_pct) <= float(cfg.soc_low_threshold_pct):
         low_soc_target_w = inp.low_soc_discharge_target_w
         if low_soc_discharge_cap_active:
             load_deficit_w = float(inp.consumption_w) - float(inp.pv_w)
@@ -348,6 +383,94 @@ def decide_watchdog(
                 mode="charge",
                 reason="soc_low_defense_hold",
             )
+
+    return None
+
+
+def decide_flappy_relative(
+    inp: BalanceInputs,
+    *,
+    cfg: WatchdogConfig,
+    target_net_kwh: float,
+    early_intervention_kw: float = 1.0,
+) -> WatchdogDecision:
+    """Flappy Bird względem ``target_net_kwh`` (tryb ``neutral`` planera)."""
+    net = float(inp.remaining_kwh)
+    target = float(target_net_kwh)
+    gap = net - target
+
+    if float(inp.consumption_w) > float(inp.pv_w) and net >= target:
+        return _neutral_decision("neutral_wait_above_target")
+
+    if net < target:
+        shortfall = target - net
+        required_kw = power_needed_kw(shortfall, inp.time_to_end_s)
+        pv_surplus_w = float(inp.pv_w) - float(inp.consumption_w)
+        if pv_surplus_w > 0.0 and required_kw < early_intervention_kw:
+            pct = max(1, int(cfg.flappy_buffer_discharge_pct))
+            return _steady_decision(
+                power_pct=pct,
+                mode="discharge",
+                reason="neutral_pv_first",
+                time_to_end_s=inp.time_to_end_s,
+            )
+        deficit_inp = BalanceInputs(
+            remaining_kwh=gap,
+            time_to_end_s=inp.time_to_end_s,
+            pv_w=inp.pv_w,
+            consumption_w=inp.consumption_w,
+            soc_pct=inp.soc_pct,
+            p_inverter_w=inp.p_inverter_w,
+            p_battery_w=inp.p_battery_w,
+            watts_per_percent=inp.watts_per_percent,
+            other_eco_slot_active=inp.other_eco_slot_active,
+            low_soc_discharge_target_w=inp.low_soc_discharge_target_w,
+        )
+        return _deficit_recovery_decision(deficit_inp, cfg)
+
+    soak = _end_hour_soak_decision(inp, cfg)
+    if soak is not None and net > target:
+        return soak
+
+    if float(inp.pv_w) > float(inp.consumption_w) and net > target + float(cfg.soak_trigger_kwh):
+        return _soak_charge_decision(
+            inp, cfg, target_kwh=target, reason="neutral_pv_soak"
+        )
+
+    if float(inp.pv_w) > float(inp.consumption_w) and net < target + float(cfg.soak_target_kwh):
+        pct = max(1, int(cfg.flappy_buffer_discharge_pct))
+        return _steady_decision(
+            power_pct=pct,
+            mode="discharge",
+            reason="neutral_buffer_build",
+            time_to_end_s=inp.time_to_end_s,
+        )
+
+    if net >= target:
+        return _neutral_decision("neutral_hold")
+
+    return _neutral_decision("neutral_idle")
+
+
+def decide_watchdog(
+    inp: BalanceInputs,
+    *,
+    cfg: WatchdogConfig,
+    minute_of_hour: int | None = None,
+    hour_of_day: int | None = None,
+    soc_full_defense_carryover: bool = False,
+) -> WatchdogDecision:
+    """Fallback bez planera: Flappy ~0 na liczniku."""
+
+    soc = decide_soc_defenses(
+        inp,
+        cfg=cfg,
+        minute_of_hour=minute_of_hour,
+        hour_of_day=hour_of_day,
+        soc_full_defense_carryover=soc_full_defense_carryover,
+    )
+    if soc is not None:
+        return soc
 
     if float(inp.remaining_kwh) < 0.0:
         return _deficit_recovery_decision(inp, cfg)
