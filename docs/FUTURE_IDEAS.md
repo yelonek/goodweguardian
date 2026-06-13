@@ -178,6 +178,51 @@ Rezerwa nocna w Guardianie = **airbag** przy deterministycznym planie p50. Stoch
 
 ---
 
+## Optimizer: brak modelu eco-slotów (`import_grid` / DC vs AC)
+
+**Kit na razie** — Guardian egzekwuje fizykę inwertera; **MILP** (`planner/optimizer.py`) tego **nie** odwzorowuje. Planer liczy ogólny bilans godzinowy, a `exec_mode` wybiera **po** optymalizacji z `(target_net_kwh, battery_delta_kwh)`.
+
+### Fizyka GoodWe (`import_grid`, §13)
+
+Przy **CHARGE 1%** i **celu slotu SOC = 10%**, gdy **SOC baterii > 10%**:
+
+| Strumień | Skąd |
+|----------|------|
+| **LOAD** | **sieć** (AC) |
+| **PV → bateria** | tylko DC („co łaska”) |
+| **Sieć → bateria** | **nie** (slot blokuje AC→magazyn) |
+
+Chcesz **ładować magazyn z sieci** → `charge_grid`, nie `import_grid`.
+
+### Co robi optimizer dziś
+
+Jeden równanie bilansu na godzinę (`imp − exp + dis − ch = load − pv`) — **bez**:
+
+- progu slotu SOC (10% vs globalne `soc_min`/`soc_max`),
+- rozdzielenia źródła `ch` (sieć vs PV),
+- trybu eco-slot per godzina **przed** solve.
+
+Optimizer **może** zaplanować `ch > pv` (ładowanie magazynu z importu) albo pokrycie LOAD z baterii — w `import_grid` to **niemożliwe**.
+
+### Kiedy plan ≈ OK vs rozjeżdża się
+
+| Sytuacja | Plan / mapper |
+|----------|----------------|
+| Noc, PV ≈ 0, `net < 0`, `battery_delta ≈ 0` | **`import_grid`** — sensowne |
+| Dzień, PV > 0, LOAD z sieci, całe PV do baterii | Fizyka: `imp ≈ load`, `ch = pv`, `net ≈ −load` — mapper dziś często **`charge_grid`** (`battery_delta > 0`) |
+| Optimizer: `ch > pv` | Jak **`charge_grid`** — w **`import_grid`** błędne |
+
+### Kierunki na później (gdy wrócimy do optimizera)
+
+1. **Ograniczenia per tryb** (albo pre-label godzin): w `import_grid` → `ch ≤ pv`, `imp ≥ load − ε`, zakaz `dis`.
+2. **Mapper:** `(net < 0, ch ≈ pv, imp ≈ load)` → `import_grid`, nie `charge_grid`.
+3. **SOC slot 10%** w trajektorii planera (osobno od `PLANNER_SOC_MIN_PCT`).
+4. Ewentualnie **osobne zmienne** `ch_pv` / `ch_grid` w MILP.
+
+**Status:** świadoma luka — **nie** naprawiamy teraz; Guardian i §13 wystarczają na produkcję.
+
+---
+
 ## Powiązane pliki (gdy będzie implementacja)
 
 | Obszar | Pliki |
@@ -187,8 +232,8 @@ Rezerwa nocna w Guardianie = **airbag** przy deterministycznym planie p50. Stoch
 | Wejścia planera | `planner/inputs.py` |
 | Telemetria | `data/telemetry/`, `planner/telemetry.py` |
 | Rezerwa nocna | `guardian_logic.py`, `guardian_watchdog_override.py` |
-| Optimizer | `planner/optimizer.py`, `planner/inputs.py` |
+| Optimizer / eco-slot | `planner/optimizer.py`, `planner/policy_output.py`, `guardian_execution.py` |
 
 ---
 
-*Ostatnia aktualizacja: stochastic planner (EV cała doba); lookback 28 d; klasyfikator shiftable.*
+*Ostatnia aktualizacja: luka MILP vs import_grid (DC/AC, slot SOC); kit optimizera.*
