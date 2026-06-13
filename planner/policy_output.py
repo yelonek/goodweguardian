@@ -63,6 +63,11 @@ def _pct_from_battery_delta(bd_kwh: float) -> int:
     return max(2, min(100, pct))
 
 
+def _export_pv_surplus_viable(export_pln: float) -> bool:
+    """Eksport nadwyżek PV ma sens tylko gdy RCE > 0 (po floor prosumenta)."""
+    return export_pln > 0.0
+
+
 def map_hour_to_exec_mode(
     hp: HourPlan,
     hin: HourInputs | None = None,
@@ -82,7 +87,7 @@ def map_hour_to_exec_mode(
     allow_grid = False
 
     if abs(bd) <= BATTERY_DELTA_EPS_KWH:
-        if net > NET_NEUTRAL_EPS_KWH:
+        if net > NET_NEUTRAL_EPS_KWH and _export_pv_surplus_viable(export_pln):
             exec_mode = "export_pv_surplus"
         elif net < -NET_NEUTRAL_EPS_KWH:
             exec_mode = "import_grid"
@@ -103,7 +108,7 @@ def map_hour_to_exec_mode(
         exec_mode = "export_profit"
         discharge_pct = _pct_from_battery_delta(bd)
         soc_floor_pct = float(hp.soc_start_pct)
-    elif net > NET_NEUTRAL_EPS_KWH:
+    elif net > NET_NEUTRAL_EPS_KWH and _export_pv_surplus_viable(export_pln):
         exec_mode = "export_pv_surplus"
     elif net < -NET_NEUTRAL_EPS_KWH:
         # Import z sieci dominuje (net ujemny), nie eksport zarobkowy.
