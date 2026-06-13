@@ -35,11 +35,10 @@ def battery_wear_pln_for_hour(
     *,
     cycle_cost_pln: float,
 ) -> float:
-    """Amortyzacja: ``cycle_cost_pln`` za pełny cykl 1 kWh ład + 1 kWh rozł — połowa na nogę."""
+    """Amortyzacja: ``cycle_cost_pln`` [PLN/kWh] tylko przy **rozładowaniu** (``charge_kwh`` ignorowane)."""
     if cycle_cost_pln <= 0.0:
         return 0.0
-    half = cycle_cost_pln / 2.0
-    return half * max(0.0, charge_kwh) + half * max(0.0, discharge_kwh)
+    return cycle_cost_pln * max(0.0, discharge_kwh)
 
 
 def total_cashflow_pln_for_horizon(

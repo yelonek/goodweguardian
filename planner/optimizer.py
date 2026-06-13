@@ -74,11 +74,11 @@ def _solve_milp(
     """
     MILP: max Σ (RCE·export − import·import − wear).
 
-    Wear: połowa kosztu cyklu na ch, połowa na dis (``PLANNER_BATTERY_CYCLE_COST_PLN``).
+    Wear: ``PLANNER_BATTERY_CYCLE_COST_PLN`` × kWh rozładowania (ład bez kary).
     Binarne z_h wymuszają wyłączność import/eksport (brak „mielenia” licznika).
     """
     cycle_cost = float(PLANNER_BATTERY_CYCLE_COST_PLN)
-    wear_half = cycle_cost / 2.0 if cycle_cost > 0.0 else 0.0
+    wear_per_dis_kwh = cycle_cost if cycle_cost > 0.0 else 0.0
     n_h = len(hours_in)
     n_vars, layout = _var_layout(n_h)
     hour_idx = layout["hour_idx"]
@@ -93,8 +93,8 @@ def _solve_milp(
         dis = hour_idx(h, layout["dis"])
         c[i] = hin.import_pln_per_kwh
         c[e] = -hin.export_pln_per_kwh
-        c[ch] += _SIMULTANEOUS_PENALTY + wear_half
-        c[dis] += _SIMULTANEOUS_PENALTY + wear_half
+        c[ch] += _SIMULTANEOUS_PENALTY
+        c[dis] += _SIMULTANEOUS_PENALTY + wear_per_dis_kwh
 
     eq_rows: list[np.ndarray] = []
     eq_rhs: list[float] = []

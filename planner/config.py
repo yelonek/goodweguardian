@@ -21,7 +21,7 @@ PLANNER_EXPORT_PROFIT_MIN_PLN = _float_env("PLANNER_EXPORT_PROFIT_MIN_PLN", 0.35
 # Pojemność magazynu [kWh] — do symulacji SOC w optymalizatorze
 PLANNER_BATTERY_KWH = _float_env("PLANNER_BATTERY_KWH", 10.0)
 PLANNER_BATTERY_ETA = _float_env("PLANNER_BATTERY_ETA", 0.92)
-# Amortyzacja: PLN za pełny cykl 1 kWh ładowania + 1 kWh rozładowania (połowa na ch, połowa na dis).
+# Amortyzacja: PLN za każdy kWh **rozładowania** magazynu (ład bez kary wear).
 PLANNER_BATTERY_CYCLE_COST_PLN = _float_env("PLANNER_BATTERY_CYCLE_COST_PLN", 0.10)
 PLANNER_SOC_MIN_PCT = _float_env("PLANNER_SOC_MIN_PCT", 10.0)
 PLANNER_SOC_MAX_PCT = _float_env("PLANNER_SOC_MAX_PCT", 100.0)
