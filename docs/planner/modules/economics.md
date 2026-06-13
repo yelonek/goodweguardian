@@ -4,7 +4,7 @@
 
 | `net_kwh` | Wzór |
 |-----------|------|
-| > 0 (eksport netto) | `net_kwh × rce_pln_kwh` |
+| > 0 (eksport netto) | `net_kwh × max(rce_pln_kwh, 0)` |
 | < 0 (import netto) | `net_kwh × import_pln_per_kwh` |
 | = 0 | `0` |
 

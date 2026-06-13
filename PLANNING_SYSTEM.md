@@ -12,7 +12,7 @@ Planer **co 10 min** → `state/planner_output.json` (**policy** + parametry). G
 
 1. **Architektura:** planer **co 10 min**; Guardian **co minutę**.
 
-2. **Cel ekonomiczny:** max sumy cashflow PLN; `net_kWh > 0` → **`+ net_kWh × RCE`**; `net_kWh < 0` → **`net_kWh × import_pln_per_kwh`**.
+2. **Cel ekonomiczny:** max sumy cashflow PLN; `net_kWh > 0` → **`+ net_kWh × max(RCE, 0)`**; `net_kWh < 0` → **`net_kWh × import_pln_per_kwh`**.
 
 3. **Dane do optimizera:** `pv_plan[h]` jak w pkt 6; `load_plan[h]` jak wyżej. Jedna optymalizacja **max Σ_h cashflow_h**; **rolling** co cykl.
 
