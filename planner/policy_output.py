@@ -89,10 +89,15 @@ def map_hour_to_exec_mode(
         else:
             exec_mode = "neutral"
     elif bd > BATTERY_DELTA_EPS_KWH:
-        exec_mode = "charge_grid"
-        allow_grid = net < -NET_NEUTRAL_EPS_KWH
-        charge_pct = _pct_from_battery_delta(bd)
-        target_soc_pct = float(hp.soc_end_pct)
+        if net < -NET_NEUTRAL_EPS_KWH:
+            # Świadome ładowanie magazynu z sieci (tanio) + ewent. PV.
+            exec_mode = "charge_grid"
+            allow_grid = True
+            charge_pct = _pct_from_battery_delta(bd)
+            target_soc_pct = float(hp.soc_end_pct)
+        else:
+            # Nadwyżka PV → bateria, net ≈ 0 — Flappy soak (§13.5), nie charge_grid.
+            exec_mode = "neutral"
     elif net > NET_NEUTRAL_EPS_KWH and export_pln >= PLANNER_EXPORT_PROFIT_MIN_PLN:
         # Celowy eksport z baterii (dodatni net na liczniku).
         exec_mode = "export_profit"

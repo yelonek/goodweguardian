@@ -210,7 +210,7 @@ Optimizer **może** zaplanować `ch > pv` (ładowanie magazynu z importu) albo p
 |----------|----------------|
 | Noc, PV ≈ 0, `net < 0`, `battery_delta ≈ 0` | **`import_grid`** — sensowne |
 | Dzień, PV > 0, LOAD z sieci, całe PV do baterii | Fizyka: `imp ≈ load`, `ch = pv`, `net ≈ −load` — mapper dziś często **`charge_grid`** (`battery_delta > 0`) |
-| Optimizer: `ch > pv` | Jak **`charge_grid`** — w **`import_grid`** błędne |
+| Optimizer: `bd > 0`, `net ≈ 0` | Mapper dawał **`charge_grid`** | **`neutral`** (Flappy soak z PV); `charge_grid` tylko gdy **`net < −ε`** (import do magazynu) |
 
 ### Kierunki na później (gdy wrócimy do optimizera)
 

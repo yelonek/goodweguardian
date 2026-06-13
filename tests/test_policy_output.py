@@ -56,7 +56,7 @@ def _hin(*, pv: float = 5.0, load: float = 2.0, export_pln: float = 0.4) -> Hour
         (0.0, 0.0, 0.4, "neutral"),
         (3.0, 0.0, 0.4, "export_pv_surplus"),
         (-2.0, 0.0, 0.4, "import_grid"),
-        (0.0, 0.5, 0.4, "charge_grid"),
+        (0.0, 0.5, 0.4, "neutral"),
         (-1.0, 0.5, 0.4, "charge_grid"),
         (2.0, -0.8, 0.5, "export_profit"),
         (0.0, -0.6, 0.4, "neutral"),
@@ -78,7 +78,7 @@ def test_map_hour_eps_boundaries() -> None:
     eps_n = NET_NEUTRAL_EPS_KWH
     assert map_hour_to_exec_mode(_hp(net=eps_n + 0.01, bd=0.0)).exec_mode == "export_pv_surplus"
     assert map_hour_to_exec_mode(_hp(net=-eps_n - 0.01, bd=0.0)).exec_mode == "import_grid"
-    assert map_hour_to_exec_mode(_hp(net=0.0, bd=eps_b + 0.01)).exec_mode == "charge_grid"
+    assert map_hour_to_exec_mode(_hp(net=0.0, bd=eps_b + 0.01)).exec_mode == "neutral"
     assert map_hour_to_exec_mode(_hp(net=0.0, bd=-eps_b - 0.01)).exec_mode == "neutral"
 
 
