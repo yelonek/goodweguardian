@@ -94,15 +94,18 @@ def map_hour_to_exec_mode(
         charge_pct = _pct_from_battery_delta(bd)
         target_soc_pct = float(hp.soc_end_pct)
     elif net > NET_NEUTRAL_EPS_KWH and export_pln >= PLANNER_EXPORT_PROFIT_MIN_PLN:
+        # Celowy eksport z baterii (dodatni net na liczniku).
         exec_mode = "export_profit"
         discharge_pct = _pct_from_battery_delta(bd)
         soc_floor_pct = float(hp.soc_start_pct)
     elif net > NET_NEUTRAL_EPS_KWH:
         exec_mode = "export_pv_surplus"
+    elif net < -NET_NEUTRAL_EPS_KWH:
+        # Import z sieci dominuje (net ujemny), nie eksport zarobkowy.
+        exec_mode = "import_grid"
     else:
-        exec_mode = "export_profit"
-        discharge_pct = max(2, _pct_from_battery_delta(bd) // 2)
-        soc_floor_pct = float(hp.soc_start_pct)
+        # net ≈ 0, rozładowanie pokrywa load — bilans licznika neutralny (Flappy).
+        exec_mode = "neutral"
 
     return HourPolicyRow(
         date=hp.date,
@@ -207,7 +210,7 @@ def _legacy_policy_to_exec_mode(policy: str) -> ExecMode:
         "hold_neutral": "neutral",
         "charge": "charge_grid",
         "discharge_export": "export_profit",
-        "discharge_serve": "export_profit",
+        "discharge_serve": "neutral",
     }
     return mapping.get(policy, "neutral")
 
