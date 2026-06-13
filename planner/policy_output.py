@@ -1,4 +1,4 @@
-"""Mapowanie HourPlan → policy + zapis ``state/planner_output.json``."""
+"""Mapowanie HourPlan → exec_mode + zapis ``state/planner_output.json``."""
 
 from __future__ import annotations
 
@@ -7,12 +7,15 @@ import logging
 from datetime import UTC, datetime, timedelta
 
 from planner.config import (
+    PLANNER_EXPORT_PROFIT_MIN_PLN,
     PLANNER_OUTPUT_PATH,
     PLANNER_POLICY_VALID_MINUTES,
     ensure_planner_dirs,
+    max_battery_kwh_per_hour,
 )
 from planner.models import (
     DailyPlan,
+    ExecMode,
     HourInputs,
     HourPlan,
     HourPolicyParams,
@@ -26,6 +29,15 @@ log = logging.getLogger("planner")
 BATTERY_DELTA_EPS_KWH = 0.05
 NET_NEUTRAL_EPS_KWH = 0.05
 
+EXEC_MODE_LABELS_PL: dict[ExecMode, str] = {
+    "export_profit": "eksport zarobkowy",
+    "export_pv_surplus": "eksport PV",
+    "neutral": "neutralny",
+    "import_grid": "import z sieci",
+    "charge_grid": "ładowanie z sieci",
+}
+
+# Legacy dashboard / stare pliki JSON
 POLICY_LABELS_PL: dict[PlannerPolicyName, str] = {
     "hold_neutral": "neutral",
     "hold_export": "eksport PV",
@@ -35,43 +47,68 @@ POLICY_LABELS_PL: dict[PlannerPolicyName, str] = {
     "discharge_serve": "rozł.→dom",
 }
 
+_EXEC_TO_LEGACY_POLICY: dict[ExecMode, PlannerPolicyName] = {
+    "export_profit": "discharge_export",
+    "export_pv_surplus": "hold_export",
+    "neutral": "hold_neutral",
+    "import_grid": "hold_import",
+    "charge_grid": "charge",
+}
 
-def map_hour_to_policy(
+
+def _pct_from_battery_delta(bd_kwh: float) -> int:
+    """Szacunek % mocy z planowanej zmiany baterii w godzinie."""
+    cap = max_battery_kwh_per_hour()
+    pct = int(round(abs(bd_kwh) / cap * 100.0))
+    return max(2, min(100, pct))
+
+
+def map_hour_to_exec_mode(
     hp: HourPlan,
     hin: HourInputs | None = None,
 ) -> HourPolicyRow:
-    """
-    Deterministyczne mapowanie wyniku optymalizatora na jedną z 6 policy.
-
-    Używa ``battery_delta_kwh`` (kierunek baterii) i ``target_net_kwh`` (cel licznika).
-    """
+    """Deterministyczne mapowanie wyniku optymalizatora na ``exec_mode`` + parametry."""
     bd = float(hp.battery_delta_kwh)
     net = float(hp.target_net_kwh)
     pv = float(hin.pv_kwh) if hin is not None else None
     load = float(hin.load_kwh) if hin is not None else None
+    export_pln = float(hin.export_pln_per_kwh) if hin is not None else 0.0
+
+    exec_mode: ExecMode
+    discharge_pct: int | None = None
+    charge_pct: int | None = None
+    soc_floor_pct: float | None = None
+    target_soc_pct: float | None = None
+    allow_grid = False
 
     if abs(bd) <= BATTERY_DELTA_EPS_KWH:
         if net > NET_NEUTRAL_EPS_KWH:
-            policy: PlannerPolicyName = "hold_export"
+            exec_mode = "export_pv_surplus"
         elif net < -NET_NEUTRAL_EPS_KWH:
-            policy = "hold_import"
+            exec_mode = "import_grid"
         else:
-            policy = "hold_neutral"
-        allow_grid = False
+            exec_mode = "neutral"
     elif bd > BATTERY_DELTA_EPS_KWH:
-        policy = "charge"
+        exec_mode = "charge_grid"
         allow_grid = net < -NET_NEUTRAL_EPS_KWH
+        charge_pct = _pct_from_battery_delta(bd)
+        target_soc_pct = float(hp.soc_end_pct)
+    elif net > NET_NEUTRAL_EPS_KWH and export_pln >= PLANNER_EXPORT_PROFIT_MIN_PLN:
+        exec_mode = "export_profit"
+        discharge_pct = _pct_from_battery_delta(bd)
+        soc_floor_pct = float(hp.soc_start_pct)
     elif net > NET_NEUTRAL_EPS_KWH:
-        policy = "discharge_export"
-        allow_grid = False
+        exec_mode = "export_pv_surplus"
     else:
-        policy = "discharge_serve"
-        allow_grid = False
+        exec_mode = "export_profit"
+        discharge_pct = max(2, _pct_from_battery_delta(bd) // 2)
+        soc_floor_pct = float(hp.soc_start_pct)
 
     return HourPolicyRow(
         date=hp.date,
         hour=hp.hour,
-        policy=policy,
+        exec_mode=exec_mode,
+        policy=_EXEC_TO_LEGACY_POLICY.get(exec_mode),
         params=HourPolicyParams(
             target_net_kwh=net,
             battery_delta_kwh=bd,
@@ -79,8 +116,24 @@ def map_hour_to_policy(
             pv_plan_kwh=pv,
             load_plan_kwh=load,
             allow_grid_charge=allow_grid,
+            discharge_pct=discharge_pct,
+            charge_pct=charge_pct,
+            soc_floor_pct=soc_floor_pct,
+            target_soc_pct=target_soc_pct,
         ),
     )
+
+
+def map_hour_to_policy(
+    hp: HourPlan,
+    hin: HourInputs | None = None,
+) -> HourPolicyRow:
+    """Alias zachowawczy — zwraca wiersz z ``exec_mode``."""
+    return map_hour_to_exec_mode(hp, hin)
+
+
+def exec_mode_label_pl(mode: ExecMode) -> str:
+    return EXEC_MODE_LABELS_PL.get(mode, mode)
 
 
 def policy_label_pl(policy: PlannerPolicyName) -> str:
@@ -101,7 +154,7 @@ def build_policy_artifact(
     """Buduje artefakt policy dla całego horyzontu planu."""
     by_slot = _inputs_by_slot(hour_inputs)
     rows = [
-        map_hour_to_policy(hp, by_slot.get((hp.date, hp.hour)))
+        map_hour_to_exec_mode(hp, by_slot.get((hp.date, hp.hour)))
         for hp in plan.hours
     ]
     computed = datetime.fromisoformat(plan.generated_at.replace("Z", "+00:00"))
@@ -140,12 +193,32 @@ def load_policy_artifact() -> PlannerPolicyArtifact | None:
     if not PLANNER_OUTPUT_PATH.exists():
         return None
     try:
-        return PlannerPolicyArtifact.model_validate_json(
-            PLANNER_OUTPUT_PATH.read_text(encoding="utf-8")
-        )
+        raw = json.loads(PLANNER_OUTPUT_PATH.read_text(encoding="utf-8"))
+        return _coerce_policy_artifact(raw)
     except Exception as e:
         log.warning("policy artifact read failed: %s", e)
         return None
+
+
+def _legacy_policy_to_exec_mode(policy: str) -> ExecMode:
+    mapping: dict[str, ExecMode] = {
+        "hold_export": "export_pv_surplus",
+        "hold_import": "import_grid",
+        "hold_neutral": "neutral",
+        "charge": "charge_grid",
+        "discharge_export": "export_profit",
+        "discharge_serve": "export_profit",
+    }
+    return mapping.get(policy, "neutral")
+
+
+def _coerce_policy_artifact(raw: dict) -> PlannerPolicyArtifact:
+    """Migracja starych artefaktów (tylko ``policy``) → ``exec_mode``."""
+    hours = raw.get("hours") or []
+    for row in hours:
+        if isinstance(row, dict) and "exec_mode" not in row and row.get("policy"):
+            row["exec_mode"] = _legacy_policy_to_exec_mode(str(row["policy"]))
+    return PlannerPolicyArtifact.model_validate(raw)
 
 
 def policy_rows_by_slot(
@@ -180,5 +253,5 @@ def policy_for_hour(
                     if hi.date == local_date and hi.hour == hour:
                         hin = hi
                         break
-            return map_hour_to_policy(hp, hin)
+            return map_hour_to_exec_mode(hp, hin)
     return None

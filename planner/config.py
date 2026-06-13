@@ -15,6 +15,8 @@ PLANNER_AUDITS_DIR = PLANNER_DIR / "audits"
 PLANNER_LATEST_PLAN_PATH = PLANNER_PLANS_DIR / "plan_latest.json"
 PLANNER_OUTPUT_PATH = STATE_DIR / "planner_output.json"
 PLANNER_POLICY_VALID_MINUTES = _int_env("PLANNER_POLICY_VALID_MINUTES", 10)
+# Eksport zarobkowy: minimalna cena RCE [PLN/kWh] do trybu ``export_profit``.
+PLANNER_EXPORT_PROFIT_MIN_PLN = _float_env("PLANNER_EXPORT_PROFIT_MIN_PLN", 0.35)
 
 # Pojemność magazynu [kWh] — do symulacji SOC w optymalizatorze
 PLANNER_BATTERY_KWH = _float_env("PLANNER_BATTERY_KWH", 10.0)

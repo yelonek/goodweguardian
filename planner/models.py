@@ -123,9 +123,17 @@ PlannerPolicyName = Literal[
     "discharge_serve",
 ]
 
+ExecMode = Literal[
+    "export_profit",
+    "export_pv_surplus",
+    "neutral",
+    "import_grid",
+    "charge_grid",
+]
+
 
 class HourPolicyParams(BaseModel):
-    """Parametry policy dla jednej godziny (kontekst dla Guardiana / dashboardu)."""
+    """Parametry egzekucji dla jednej godziny (Guardian + dashboard)."""
 
     target_net_kwh: float
     battery_delta_kwh: float
@@ -133,21 +141,26 @@ class HourPolicyParams(BaseModel):
     pv_plan_kwh: float | None = None
     load_plan_kwh: float | None = None
     allow_grid_charge: bool = False
+    discharge_pct: int | None = None
+    charge_pct: int | None = None
+    soc_floor_pct: float | None = None
+    target_soc_pct: float | None = None
 
 
 class HourPolicyRow(BaseModel):
-    """Policy na godzinę — wynik mapowania HourPlan → intencja sterowania."""
+    """Wiersz planu na godzinę — ``exec_mode`` + parametry dla Guardiana."""
 
     date: str
     hour: int = Field(ge=0, le=23)
-    policy: PlannerPolicyName
+    exec_mode: ExecMode
     params: HourPolicyParams
+    policy: PlannerPolicyName | None = None
 
 
 class PlannerPolicyArtifact(BaseModel):
     """Artefakt dla Guardiana / dashboardu — ``state/planner_output.json``."""
 
-    schema_version: int = 1
+    schema_version: int = 2
     plan_id: str
     computed_at: str
     valid_until: str
