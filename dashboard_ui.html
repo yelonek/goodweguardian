@@ -43,6 +43,15 @@
     table.forecast td.delta-pos { color: #0d8050; }
     table.forecast td.delta-neg { color: #b32d2d; }
     table.forecast td.delta-ok { opacity: 0.85; }
+    table.kpi-merged td, table.kpi-merged th { text-align: right; font-variant-numeric: tabular-nums; }
+    table.kpi-merged td:first-child, table.kpi-merged th:first-child { text-align: left; }
+    table.kpi-merged .grp-kpi { background: rgba(255, 200, 80, 0.10); }
+    table.kpi-merged .grp-audit { background: rgba(200, 160, 255, 0.12); }
+    table.kpi-merged tr.now td { background: rgba(255, 215, 0, 0.18); font-weight: 700; }
+    table.kpi-merged tr.past td { opacity: 0.55; }
+    table.kpi-merged td.delta-pos { color: #0d8050; }
+    table.kpi-merged td.delta-neg { color: #b32d2d; }
+    table.kpi-merged td.delta-ok { opacity: 0.85; }
     .settings-block { margin-bottom: 28px; }
     .settings-block h3 { margin: 0 0 10px; font-size: 1rem; }
     /* Eco slots — mobile-first */
@@ -202,12 +211,37 @@
 
     <section id="page-kpi" class="page">
       <div class="page-hdr">
-        <h2>KPI dziś</h2>
+        <h2>KPI</h2>
+        <label class="muted" style="margin-right:6px;">Data</label>
+        <input type="date" id="kpiDay" />
         <button type="button" id="btnRefreshKpi">Odśwież</button>
         <span class="muted" id="kpiStatus"></span>
       </div>
       <div class="grid4" id="kpiCards"></div>
+      <div class="grid4" id="kpiAuditCards" style="margin-top:8px;"></div>
+      <div class="muted" id="kpiAuditMeta" style="margin-top:6px;"></div>
       <div class="muted" id="kpiWarnings" style="margin-top:8px;"></div>
+      <table class="kpi-merged" style="margin-top:12px;">
+        <thead>
+          <tr>
+            <th rowspan="2">h</th>
+            <th colspan="3" class="grp-kpi">KPI (liczniki)</th>
+            <th colspan="6" class="grp-audit">Audyt</th>
+          </tr>
+          <tr>
+            <th class="grp-kpi">net kWh</th>
+            <th class="grp-kpi">depozyt</th>
+            <th class="grp-kpi">rachunek</th>
+            <th class="grp-audit">net kWh</th>
+            <th class="grp-audit">load</th>
+            <th class="grp-audit">PV</th>
+            <th class="grp-audit">CF fakty</th>
+            <th class="grp-audit">CF opt</th>
+            <th class="grp-audit">gap</th>
+          </tr>
+        </thead>
+        <tbody id="kpiMergedRows"></tbody>
+      </table>
     </section>
 
     <section id="page-settings" class="page">
@@ -231,6 +265,7 @@
           <div class="muted" id="plannerHorizon" style="font-size:12px; margin-top:6px;"></div>
           <div class="muted" style="font-size:12px; margin-top:8px;">
             Rolling plan liczy się zawsze (<code>uv run python -m planner plan</code>, cron co ~10 min).
+            Dzienny audyt: <code>scripts/daily_audit.sh</code> (cron 00:30, wczorajsza doba).
             Policy (6 intencji) zapisuje się w <code>state/planner_output.json</code> i widać je w Prognozie.
             Przełącznik egzekucji (<code>state/planner_override.json</code>) — na razie bez podpięcia do watchdog.
           </div>

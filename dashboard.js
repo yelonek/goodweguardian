@@ -136,7 +136,21 @@ async function loadForecast(force) {
   }
 }
 
-function renderKpiBlock(kpi) {
+function kpiSelectedDay() {
+  const el = document.getElementById("kpiDay");
+  return el && el.value ? el.value : new Date().toISOString().slice(0, 10);
+}
+
+function initKpiDayPicker() {
+  const el = document.getElementById("kpiDay");
+  if (!el) return;
+  const today = new Date().toISOString().slice(0, 10);
+  el.max = today;
+  if (!el.value) el.value = today;
+}
+
+function renderKpiBlock(payload) {
+  const kpi = payload.kpi || payload;
   const totals = kpi.totals || {};
   document.getElementById("kpiCards").innerHTML = [
     ["deposit_add_pln_day", Number(totals.deposit_add_pln_day || 0).toFixed(2)],
@@ -150,6 +164,53 @@ function renderKpiBlock(kpi) {
   const warns = kpi.warnings || [];
   document.getElementById("kpiWarnings").textContent = warns.length
     ? `KPI warnings (${warns.length}): ${warns.slice(0, 5).join(" · ")}` : "";
+
+  const audit = payload.audit;
+  const auditCards = document.getElementById("kpiAuditCards");
+  const auditMeta = document.getElementById("kpiAuditMeta");
+  if (!audit) {
+    auditCards.innerHTML = "";
+    auditMeta.textContent = payload.audit_source === "missing"
+      ? "Brak audytu (brak telemetrii dla wybranej doby)."
+      : "";
+    return;
+  }
+  auditCards.innerHTML = [
+    ["actual_total_cashflow_pln", Number(audit.actual_total_cashflow_pln || 0).toFixed(2)],
+    ["perfect_foresight_cashflow_pln", audit.perfect_foresight_cashflow_pln == null ? "—" : Number(audit.perfect_foresight_cashflow_pln).toFixed(2)],
+    ["uplift_vs_actual_pln", audit.uplift_vs_actual_pln == null ? "—" : Number(audit.uplift_vs_actual_pln).toFixed(2)],
+  ].map(([k, v]) => card(k, v)).join("");
+  const src = payload.audit_source ? ` [${payload.audit_source}]` : "";
+  auditMeta.textContent = [
+    audit.summary_pl || "",
+    audit.audited_at ? `audited_at: ${audit.audited_at}${src}` : src.trim(),
+  ].filter(Boolean).join(" · ");
+}
+
+function renderKpiMergedTable(payload) {
+  const fcell = (v, d) => (v == null) ? `<td class="nodata">—</td>` : `<td>${Number(v).toFixed(d)}</td>`;
+  const fcellDelta = (v, d, eps) => {
+    if (v == null) return `<td class="nodata">—</td>`;
+    const n = Number(v);
+    let cls = "delta-ok";
+    if (n > eps) cls = "delta-pos";
+    else if (n < -eps) cls = "delta-neg";
+    return `<td class="${cls}">${(n >= 0 ? "+" : "") + n.toFixed(d)}</td>`;
+  };
+  const day = payload.date || kpiSelectedDay();
+  const today = new Date().toISOString().slice(0, 10);
+  const nowHour = new Date().getHours();
+  document.getElementById("kpiMergedRows").innerHTML = (payload.merged_hours || []).map((r) => {
+    const cls = [];
+    if (day === today && r.hour === nowHour) cls.push("now");
+    else if (day < today || (day === today && r.hour < nowHour)) cls.push("past");
+    const trClass = cls.length ? ` class="${cls.join(" ")}"` : "";
+    return `<tr${trClass}><td>${String(r.hour).padStart(2, "0")}:00</td>
+      ${fcell(r.kpi_net_kwh, 3)}${fcell(r.kpi_deposit_pln, 2)}${fcell(r.kpi_bill_pln, 2)}
+      ${fcell(r.audit_net_kwh, 3)}${fcell(r.load_kwh, 3)}${fcell(r.pv_kwh, 3)}
+      ${fcell(r.actual_cashflow_pln, 2)}${fcell(r.optimal_cashflow_pln, 2)}${fcellDelta(r.gap_vs_optimal_pln, 2, 0.02)}
+    </tr>`;
+  }).join("");
 }
 
 async function loadKpi(force) {
@@ -157,7 +218,10 @@ async function loadKpi(force) {
   const st = document.getElementById("kpiStatus");
   st.textContent = "ładowanie…";
   try {
-    renderKpiBlock(await fetchJson("/api/kpi/today", 30000));
+    const day = kpiSelectedDay();
+    const payload = await fetchJson(`/api/kpi/day?day=${encodeURIComponent(day)}`, 60000);
+    renderKpiBlock(payload);
+    renderKpiMergedTable(payload);
     pageLoaded.kpi = true;
     st.textContent = "OK";
     setUpdated(true);
@@ -573,6 +637,7 @@ window.addEventListener("hashchange", () => navigate(parsePageFromHash(), false)
 document.getElementById("btnRefreshHistory").addEventListener("click", () => { pageLoaded.history = false; loadHistory(true); });
 document.getElementById("btnRefreshForecast").addEventListener("click", () => { pageLoaded.forecast = false; loadForecast(true); });
 document.getElementById("btnRefreshKpi").addEventListener("click", () => { pageLoaded.kpi = false; loadKpi(true); });
+document.getElementById("kpiDay").addEventListener("change", () => { pageLoaded.kpi = false; loadKpi(true); });
 document.getElementById("saveKey").addEventListener("click", () => {
   localStorage.setItem("guardianApiKey", document.getElementById("apiKey").value.trim());
   refreshControl().catch(console.error);
@@ -592,5 +657,6 @@ const ecoPanels = document.getElementById("ecoSlotsPanels");
 ecoPanels.addEventListener("click", handleEcoSaveEvent);
 
 document.getElementById("apiKey").value = getKey();
+initKpiDayPicker();
 if (!location.hash) location.hash = "overview";
 navigate(parsePageFromHash(), true);
