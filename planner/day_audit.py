@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
+from pathlib import Path
 
 from economics import cashflow_pln_for_hour, total_cashflow_pln_for_horizon
 from energy_pricing import pricing_day_breakdown
@@ -112,7 +113,48 @@ def build_day_audit(local_date: date) -> DayAudit:
     )
 
 
+def _audit_path(local_date: date) -> Path:
+    return PLANNER_AUDITS_DIR / f"audit_{local_date.isoformat()}.json"
+
+
+def load_day_audit(local_date: date) -> DayAudit | None:
+    """Wczytaj zapisany snapshot audytu lub ``None`` gdy brak pliku / błąd parsowania."""
+    path = _audit_path(local_date)
+    if not path.exists():
+        return None
+    try:
+        return DayAudit.model_validate_json(path.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return None
+
+
+def get_day_audit(
+    local_date: date,
+    *,
+    recompute_if_missing: bool = True,
+    save_if_recomputed: bool = False,
+) -> tuple[DayAudit | None, str]:
+    """
+    Saved-first odczyt audytu.
+
+    Returns:
+        (audit, source) gdzie ``source`` ∈ ``saved`` | ``recomputed`` | ``missing``.
+    """
+    saved = load_day_audit(local_date)
+    if saved is not None:
+        return saved, "saved"
+    if not recompute_if_missing:
+        return None, "missing"
+    actuals = hourly_actuals(local_date)
+    if not actuals:
+        return None, "missing"
+    audit = build_day_audit(local_date)
+    if save_if_recomputed:
+        save_day_audit(audit)
+    return audit, "recomputed"
+
+
 def save_day_audit(audit: DayAudit) -> None:
     ensure_planner_dirs()
-    path = PLANNER_AUDITS_DIR / f"audit_{audit.local_date}.json"
+    path = _audit_path(date.fromisoformat(audit.local_date))
     path.write_text(audit.model_dump_json(indent=2), encoding="utf-8")
