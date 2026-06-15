@@ -15,6 +15,7 @@ Norma docelowa produktu: [PLANNING_SYSTEM.md](../../PLANNING_SYSTEM.md) §12 ora
 | Prognoza PV (Solcast) | **Zaimplementowane** — istniejący `pv_forecast.py` |
 | Ceny RCE + G12 | **Zaimplementowane** — `energy_pricing.py` |
 | Audyt (JSONL) | **Zaimplementowane** — nie było w docs docelowych |
+| Day audit (KPI) | **Zaimplementowane** — `day_audit.py`, snapshot + dashboard |
 | Review / reconcile | **Zaimplementowane** — CLI + `DayReview` |
 | Korekta PV (`k_intra`, h + h+1) | **Zaimplementowane** — `planner/pv_correction.py` |
 | `plan_series`, sloty load | **Brak** |
@@ -85,7 +86,7 @@ Guardian (`hourly_balance_run.py`) **nie czyta** planu — sterowanie bez zmian 
 | `battery.py` | SOC, η, limity mocy; `battery_delta = pv − load − net` |
 | `optimizer.py` | DP: maks. Σ cashflow, akcja = `target_net_kwh` (siatka 0,25 kWh) |
 | `plan_store.py` | Odczyt/zapis `plan_*.json` |
-| `audit.py` | Append-only JSONL |
+| `day_audit.py` | Dzienny audyt: fakty vs perfect foresight; snapshot JSON |
 | `telemetry.py` | Agregaty godzinowe z `data/telemetry/*.jsonl` |
 | `reconcile.py` | Plan vs fakty + counterfactual na 1 h |
 | `review.py` | Retrospektywa doby + lista rekomendacji |
@@ -99,12 +100,24 @@ Testy: `tests/test_planner.py`, `tests/test_economics.py`.
 ## CLI
 
 ```bash
-uv run python -m planner plan [--date YYYY-MM-DD] [--soc PCT]
-uv run python -m planner reconcile [--date YYYY-MM-DD]
-uv run python -m planner review [--date YYYY-MM-DD]
+uv run python -m planner plan [--soc PCT]
+uv run python -m planner audit [--date YYYY-MM-DD]
 ```
 
-Katalogi wynikowe (w `.gitignore` przez `data/`): `data/planner/plans/`, `audit/`, `reviews/`.
+**Harmonogram (cron zewnętrzny):**
+
+```bash
+# rolling plan co ~10 min
+*/10 * * * * cd /path/to/goodweguardian && uv run python -m planner plan
+
+# dzienny audyt wczorajszej doby (00:30)
+30 0 * * * /path/to/goodweguardian/scripts/daily_audit.sh
+```
+
+Snapshot audytu: `data/planner/audits/audit_YYYY-MM-DD.json`.  
+Dashboard KPI: `GET /api/kpi/day?day=YYYY-MM-DD` (saved-first dla przeszłości; dziś — recompute).
+
+Katalogi wynikowe (w `.gitignore` przez `data/`): `data/planner/plans/`, `audit/`, `audits/`, `reviews/`.
 
 ---
 
