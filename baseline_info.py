@@ -71,6 +71,12 @@ def baseline_spec() -> dict:
                 "net < 0 → rachunek: |net| × effective import."
             ),
             "api": "GET /api/kpi/today",
+            "api_day": "GET /api/kpi/day?day=YYYY-MM-DD",
+            "audit": (
+                "Połączenie z audytem planera (DayAudit): saved-first z "
+                "data/planner/audits/audit_{date}.json; brak pliku → recompute. "
+                "Dziś: zawsze recompute na żądanie."
+            ),
         },
         "how_to_update_reference_metrics": (
             "1) Uruchom: uv run python load_forecast.py --lookback 28 --max-days 30 "

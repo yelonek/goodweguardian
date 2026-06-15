@@ -49,6 +49,8 @@ from load_forecast import (
 )
 from pv_forecast import fetch_hourly_pv_forecast, fetch_hourly_pv_forecast_with_history
 from planner.plan_store import load_latest_plan, load_plan
+from planner.day_audit import build_day_audit, get_day_audit
+from planner.models import DayAudit
 from planner.policy_output import (
     exec_mode_label_pl,
     load_policy_artifact,
@@ -496,6 +498,68 @@ def _kpi_for_day(local_date: date) -> dict[str, Any]:
     }
 
 
+def _merge_kpi_audit_hours(
+    kpi: dict[str, Any],
+    audit: DayAudit | None,
+) -> list[dict[str, Any]]:
+    kpi_by_hour = {int(h["hour"]): h for h in kpi.get("hours", [])}
+    audit_by_hour = {int(r.hour): r for r in audit.hours} if audit else {}
+    merged: list[dict[str, Any]] = []
+    for hour in range(24):
+        kh = kpi_by_hour.get(hour, {})
+        ah = audit_by_hour.get(hour)
+        row: dict[str, Any] = {
+            "hour": hour,
+            "kpi_net_kwh": kh.get("net_kwh"),
+            "kpi_deposit_pln": kh.get("deposit_add_pln"),
+            "kpi_bill_pln": kh.get("electricity_bill_add_pln"),
+            "interval_complete": kh.get("interval_complete"),
+            "audit_net_kwh": None,
+            "load_kwh": None,
+            "pv_kwh": None,
+            "actual_cashflow_pln": None,
+            "optimal_net_kwh": None,
+            "optimal_cashflow_pln": None,
+            "gap_vs_optimal_pln": None,
+        }
+        if ah is not None:
+            row.update(
+                {
+                    "audit_net_kwh": ah.actual_net_kwh,
+                    "load_kwh": ah.actual_load_kwh,
+                    "pv_kwh": ah.actual_pv_kwh,
+                    "actual_cashflow_pln": ah.actual_cashflow_pln,
+                    "optimal_net_kwh": ah.optimal_net_kwh,
+                    "optimal_cashflow_pln": ah.optimal_cashflow_pln,
+                    "gap_vs_optimal_pln": ah.gap_vs_optimal_pln,
+                }
+            )
+        merged.append(row)
+    return merged
+
+
+def _audit_for_kpi_day(local_date: date) -> tuple[DayAudit | None, str]:
+    """Dziś: zawsze recompute (bez zapisu). Przeszłość: saved-first."""
+    if local_date == date.today():
+        if not hourly_actuals(local_date):
+            return None, "missing"
+        return build_day_audit(local_date), "recomputed"
+    audit, source = get_day_audit(local_date, recompute_if_missing=True)
+    return audit, source
+
+
+def _kpi_day_payload(local_date: date) -> dict[str, Any]:
+    kpi = _kpi_for_day(local_date)
+    audit, audit_source = _audit_for_kpi_day(local_date)
+    return {
+        "date": local_date.isoformat(),
+        "kpi": kpi,
+        "audit": audit.model_dump() if audit is not None else None,
+        "audit_source": audit_source,
+        "merged_hours": _merge_kpi_audit_hours(kpi, audit),
+    }
+
+
 _DASHBOARD_UI_PATH = Path(__file__).resolve().parent / "dashboard_ui.html"
 _DASHBOARD_JS_PATH = Path(__file__).resolve().parent / "dashboard.js"
 
@@ -623,21 +687,33 @@ def api_load_forecast_backtest(
 
 
 _KPI_CACHE_TTL_S = 60.0
-_kpi_cache: tuple[date, float, dict[str, Any]] | None = None
+_kpi_day_cache: dict[date, tuple[float, dict[str, Any]]] = {}
+
+
+def _get_kpi_day_cached(local_date: date) -> dict[str, Any]:
+    global _kpi_day_cache
+    mono = time.monotonic()
+    cached = _kpi_day_cache.get(local_date)
+    if cached is not None:
+        at, payload = cached
+        if (mono - at) < _KPI_CACHE_TTL_S:
+            return payload
+    payload = _kpi_day_payload(local_date)
+    _kpi_day_cache[local_date] = (mono, payload)
+    return payload
 
 
 def _get_kpi_today_cached() -> dict[str, Any]:
-    global _kpi_cache
-    today = date.today()
-    mono = time.monotonic()
-    cached = _kpi_cache
-    if cached is not None:
-        d, at, payload = cached
-        if d == today and (mono - at) < _KPI_CACHE_TTL_S:
-            return payload
-    payload = _kpi_for_day(today)
-    _kpi_cache = (today, mono, payload)
-    return payload
+    return _kpi_for_day(date.today())
+
+
+@app.get("/api/kpi/day")
+async def api_kpi_day(
+    day: str | None = Query(default=None, description="YYYY-MM-DD (domyślnie dziś)"),
+) -> JSONResponse:
+    local_date = date.fromisoformat(day) if day else date.today()
+    payload = await _run_heavy(lambda: _get_kpi_day_cached(local_date))
+    return JSONResponse(payload)
 
 
 @app.get("/api/kpi/today")
