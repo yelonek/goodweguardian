@@ -83,6 +83,20 @@ def build_hour_inputs_for_slots(
             pr = pv_by_key.get(key, {})
             pv_kwh, pv_src = _pv_kwh_from_row(pr) if pr else (0.0, "missing")
 
+        pr = pv_by_key.get(key, {})
+        pv_p50_raw = float(pr.get("pv_kw") or 0.0) if pr else pv_kwh
+        pv_p10_raw = float(pr.get("pv_kw_p10") if pr and pr.get("pv_kw_p10") is not None else pv_p50_raw)
+        pv_p90_raw = float(pr.get("pv_kw_p90") if pr and pr.get("pv_kw_p90") is not None else pv_p50_raw)
+        if pv_p50_raw > 1e-9 and key in pv_corrected:
+            k_scale = pv_kwh / pv_p50_raw
+            pv_p10 = max(0.0, pv_p10_raw * k_scale)
+            pv_p90 = max(0.0, pv_p90_raw * k_scale)
+        else:
+            pv_p10 = max(0.0, pv_p10_raw)
+            pv_p90 = max(0.0, pv_p90_raw)
+
+        load_p75 = float(lr.get("load_kwh_p75") if lr.get("load_kwh_p75") is not None else load_kwh)
+
         if d_iso not in pricing_cache:
             pricing_cache[d_iso] = pricing_day_breakdown(date.fromisoformat(d_iso))
         pb = pricing_cache[d_iso]
@@ -100,6 +114,9 @@ def build_hour_inputs_for_slots(
                 export_pln_per_kwh=rce,
                 load_source=load_src,
                 pv_source=pv_src,
+                pv_kwh_p10=pv_p10,
+                pv_kwh_p90=pv_p90,
+                load_kwh_p75=load_p75,
             )
         )
 
