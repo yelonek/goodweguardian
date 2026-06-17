@@ -8,7 +8,7 @@ from datetime import UTC, date, datetime
 
 from guardian_config import TELEMETRY_TZ
 from planner.audit import append_audit, new_event
-from planner.config import ensure_planner_dirs
+from planner.config import ensure_planner_dirs, planner_risk_optimizer_enabled
 from planner.day_audit import build_day_audit, save_day_audit
 from planner.inputs import build_hour_inputs_for_slots, latest_soc_from_telemetry
 from planner.models import DailyPlan
@@ -18,6 +18,25 @@ from planner.policy_output import build_policy_artifact, save_policy_artifact
 from planner.pricing_horizon import local_now_naive, priced_horizon_slots, slot_to_local_iso
 
 log = logging.getLogger("planner")
+
+
+def _cvar_lambda_audit_payload() -> dict:
+    from planner.config import cvar_lambda_mode
+    from planner.cvar_calibrate import load_calibration_cache
+
+    mode = cvar_lambda_mode()
+    payload: dict = {"mode": mode}
+    if mode == "auto":
+        cached = load_calibration_cache()
+        if cached:
+            payload["lambda"] = cached.lambda_value
+            payload["calibrated_at"] = cached.calibrated_at
+            payload["days_used"] = cached.days_used
+    elif mode == "fixed":
+        from planner.config import fixed_cvar_lambda_value
+
+        payload["lambda"] = fixed_cvar_lambda_value()
+    return payload
 
 
 def build_rolling_plan(
@@ -44,6 +63,7 @@ def build_rolling_plan(
         soc = latest_soc_from_telemetry(now_local.date()) or 50.0
 
     opt = optimize_horizon(hour_inputs, soc_start_pct=soc)
+    optimizer_name = "lp_battery_cvar_v1" if planner_risk_optimizer_enabled() else "lp_battery_v1"
     plan_id = str(uuid.uuid4())
     generated = datetime.now(UTC)
     anchor_date = now_local.date().isoformat()
@@ -57,7 +77,7 @@ def build_rolling_plan(
         horizon_end=slot_to_local_iso(slots[-1]),
         soc_start_pct=soc,
         expected_total_cashflow_pln=opt.total_cashflow_pln,
-        optimizer="lp_battery_v1",
+        optimizer=optimizer_name,
         inputs_snapshot=snapshot,
         hours=opt.hours,
     )
@@ -77,9 +97,31 @@ def build_rolling_plan(
                 "hours_count": len(opt.hours),
                 "horizon_start": plan.horizon_start,
                 "horizon_end": plan.horizon_end,
+                "optimizer": optimizer_name,
+                **(
+                    {
+                        "cvar": {
+                            **_cvar_lambda_audit_payload(),
+                            **(opt.risk_meta or {}),
+                        }
+                    }
+                    if planner_risk_optimizer_enabled()
+                    else {}
+                ),
             },
         )
     )
+    if planner_risk_optimizer_enabled() and opt.risk_meta:
+        cvar = _cvar_lambda_audit_payload()
+        log.info(
+            "plan %s CVaR: λ=%s E=%.2f penalty=%.2f objective=%.2f scenarios=%s",
+            plan_id[:8],
+            cvar.get("lambda", opt.risk_meta.get("cvar_lambda")),
+            opt.risk_meta.get("expected_cashflow_pln", 0.0),
+            opt.risk_meta.get("cvar_penalty_pln", 0.0),
+            opt.total_cashflow_pln,
+            opt.risk_meta.get("scenario_cashflow_pln"),
+        )
     log.info(
         "plan %s %s→%s: expected %.2f PLN (%d h, soc %.1f%%)",
         plan_id[:8],
