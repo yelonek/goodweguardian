@@ -9,6 +9,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from guardian_logic import BalanceInputs
 
 
+@pytest.fixture(autouse=True)
+def _planner_cvar_off_in_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Testy planera domyślnie bez CVaR (niezależnie od .env produkcyjnego)."""
+    import planner.config as cfg
+
+    monkeypatch.setattr(cfg, "_CVAR_LAMBDA_RAW", "0")
+
+
 @pytest.fixture
 def default_inputs() -> BalanceInputs:
     """Domyślne wejścia – można nadpisać w testach."""
