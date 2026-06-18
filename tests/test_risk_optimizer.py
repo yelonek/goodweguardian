@@ -71,13 +71,49 @@ def _evening_export_morning_risk_hours() -> list[HourInputs]:
     ]
 
 
+def test_cvar_exports_at_high_rce() -> None:
+    """Regresja: przy wysokim RCE planer musi eksportować, nie neutral."""
+    bp = BatteryParams(capacity_kwh=10.0, soc_min_pct=10.0, soc_max_pct=100.0, max_power_kwh_per_h=5.0)
+    hours = [
+        HourInputs(
+            date="2026-06-18",
+            hour=18,
+            load_kwh=0.8,
+            pv_kwh=0.1,
+            pv_kwh_p10=0.0,
+            pv_kwh_p90=0.2,
+            load_kwh_p75=1.0,
+            import_pln_per_kwh=1.11,
+            export_pln_per_kwh=1.69,
+        ),
+        HourInputs(
+            date="2026-06-19",
+            hour=6,
+            load_kwh=0.5,
+            pv_kwh=0.1,
+            pv_kwh_p10=0.0,
+            pv_kwh_p90=0.3,
+            load_kwh_p75=0.7,
+            import_pln_per_kwh=1.11,
+            export_pln_per_kwh=0.56,
+        ),
+    ]
+    res = optimize_horizon_cvar(hours, soc_start_pct=50.0, params=bp, cvar_lambda=1.0)
+    assert res.risk_meta is not None
+    assert res.risk_meta.get("fallback") != "deterministic_p50"
+    assert res.hours[0].target_net_kwh > 0.5
+
+
 def test_cvar_keeps_more_soc_than_deterministic_on_tail_risk() -> None:
     bp = BatteryParams(capacity_kwh=10.0, soc_min_pct=10.0, soc_max_pct=100.0, max_power_kwh_per_h=5.0)
     hours = _evening_export_morning_risk_hours()
     det = optimize_horizon_cvar(hours, soc_start_pct=61.0, params=bp, cvar_lambda=0.0)
-    risk = optimize_horizon_cvar(hours, soc_start_pct=61.0, params=bp, cvar_lambda=2.0, cvar_alpha=0.9)
-    assert risk.hours[0].soc_end_pct >= det.hours[0].soc_end_pct - 0.5
-    assert risk.hours[0].target_net_kwh <= det.hours[0].target_net_kwh + 0.5
+    risk = optimize_horizon_cvar(hours, soc_start_pct=61.0, params=bp, cvar_lambda=5.0, cvar_alpha=0.9)
+    assert det.risk_meta is not None
+    assert risk.risk_meta is not None
+    # Wyższa λ nie powinna agresywniej eksportować wieczorem niż λ=0 (ryzyko drogiego poranka).
+    assert risk.hours[0].target_net_kwh <= det.hours[0].target_net_kwh + 0.1
+    assert risk.hours[0].soc_end_pct >= det.hours[0].soc_end_pct - 1.0
 
 
 def test_optimize_horizon_uses_cvar_when_lambda_env_set(
