@@ -9,7 +9,7 @@ import numpy as np
 from scipy.optimize import Bounds, LinearConstraint, milp
 
 from economics import battery_wear_pln_for_hour, cashflow_pln_for_hour
-from planner.battery import BatteryParams, battery_delta_from_net, soc_kwh
+from planner.battery import BatteryParams, battery_delta_from_net, max_power_for_hour, soc_kwh
 from planner.config import (
     PLANNER_BATTERY_CYCLE_COST_PLN,
     PLANNER_CVAR_ALPHA,
@@ -227,7 +227,6 @@ def _solve_risk_milp(
 
     soc_min = soc_kwh(params.soc_min_pct, params)
     soc_max = soc_kwh(params.soc_max_pct, params)
-    p_max = params.max_power_kwh_per_h
 
     lb = np.zeros(n_vars)
     ub = np.full(n_vars, np.inf)
@@ -235,8 +234,9 @@ def _solve_risk_milp(
         lb[soc_idx(h)] = soc_min
         ub[soc_idx(h)] = soc_max
     for h in range(n_h):
-        ub[ch_idx(h)] = p_max
-        ub[dis_idx(h)] = p_max
+        p_h = max_power_for_hour(hours_in[h], params)
+        ub[ch_idx(h)] = p_h
+        ub[dis_idx(h)] = p_h
     for s in range(n_s):
         for h in range(n_h):
             lb[z_idx(s, h)] = 0.0

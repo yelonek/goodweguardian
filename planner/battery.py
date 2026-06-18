@@ -11,6 +11,7 @@ from planner.config import (
     PLANNER_SOC_MIN_PCT,
     max_battery_kwh_per_hour,
 )
+from planner.models import HourInputs
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,12 @@ class BatteryParams:
             object.__setattr__(
                 self, "max_power_kwh_per_h", max_battery_kwh_per_hour()
             )
+
+
+def max_power_for_hour(hin: HourInputs, params: BatteryParams) -> float:
+    """Maks. energia ładowania/rozładowania w slocie [kWh/h-slot]."""
+    frac = hin.hour_fraction if hin.hour_fraction > 0 else 1.0
+    return params.max_power_kwh_per_h * min(1.0, max(1e-6, frac))
 
 
 def soc_kwh(soc_pct: float, params: BatteryParams) -> float:

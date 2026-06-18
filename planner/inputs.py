@@ -12,6 +12,7 @@ from guardian_config import TELEMETRY_TZ
 from load_forecast import forecast_load_hours
 from planner.config import PLANNER_HORIZON_HOURS, PLANNER_LOAD_LOOKBACK_DAYS
 from planner.models import HourInputs
+from planner.hour_remainder import scale_hour_inputs_for_remainder
 from planner.pv_correction import apply_pv_correction
 from pv_forecast import fetch_hourly_pv_forecast
 
@@ -104,19 +105,22 @@ def build_hour_inputs_for_slots(
         imp = float(ph["import_pln_per_kwh"])
         rce = float(ph["rce_pln_kwh"])
 
+        hin = HourInputs(
+            date=d_iso,
+            hour=h,
+            load_kwh=load_kwh,
+            pv_kwh=pv_kwh,
+            import_pln_per_kwh=imp,
+            export_pln_per_kwh=rce,
+            load_source=load_src,
+            pv_source=pv_src,
+            pv_kwh_p10=pv_p10,
+            pv_kwh_p90=pv_p90,
+            load_kwh_p75=load_p75,
+        )
         out.append(
-            HourInputs(
-                date=d_iso,
-                hour=h,
-                load_kwh=load_kwh,
-                pv_kwh=pv_kwh,
-                import_pln_per_kwh=imp,
-                export_pln_per_kwh=rce,
-                load_source=load_src,
-                pv_source=pv_src,
-                pv_kwh_p10=pv_p10,
-                pv_kwh_p90=pv_p90,
-                load_kwh_p75=load_p75,
+            scale_hour_inputs_for_remainder(
+                hin, now=now_local, pv_correction_meta=pv_correction_meta
             )
         )
 

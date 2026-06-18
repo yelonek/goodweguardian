@@ -13,6 +13,7 @@ from planner.battery import (
     BatteryParams,
     apply_battery_step,
     battery_delta_from_net,
+    max_power_for_hour,
     soc_kwh,
 )
 from planner.config import PLANNER_BATTERY_CYCLE_COST_PLN, planner_risk_optimizer_enabled
@@ -150,7 +151,6 @@ def _solve_milp(
 
     soc_min = soc_kwh(params.soc_min_pct, params)
     soc_max = soc_kwh(params.soc_max_pct, params)
-    p_max = params.max_power_kwh_per_h
 
     lb = np.zeros(n_vars)
     ub = np.full(n_vars, np.inf)
@@ -158,8 +158,9 @@ def _solve_milp(
         lb[h] = soc_min
         ub[h] = soc_max
     for h in range(n_h):
-        ub[hour_idx(h, layout["ch"])] = p_max
-        ub[hour_idx(h, layout["dis"])] = p_max
+        p_h = max_power_for_hour(hours_in[h], params)
+        ub[hour_idx(h, layout["ch"])] = p_h
+        ub[hour_idx(h, layout["dis"])] = p_h
         lb[z_idx(h)] = 0.0
         ub[z_idx(h)] = 1.0
 
