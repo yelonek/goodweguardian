@@ -92,6 +92,32 @@ def test_exec_mode_labels_pl() -> None:
     assert exec_mode_label_pl("import_grid") == "import z sieci"
 
 
+def test_export_profit_soc_floor_uses_end_not_start() -> None:
+    """Pełna bateria na starcie h nie może ustawiać podłogi SOC na 100%."""
+    row = map_hour_to_exec_mode(
+        HourPlan(
+            date="2026-06-18",
+            hour=20,
+            target_net_kwh=5.0,
+            expected_cashflow_pln=8.0,
+            soc_start_pct=100.0,
+            soc_end_pct=43.0,
+            battery_delta_kwh=-5.2,
+        ),
+        HourInputs(
+            date="2026-06-18",
+            hour=20,
+            load_kwh=0.5,
+            pv_kwh=0.1,
+            import_pln_per_kwh=1.11,
+            export_pln_per_kwh=1.69,
+        ),
+    )
+    assert row.exec_mode == "export_profit"
+    assert row.params.discharge_pct == 100
+    assert row.params.soc_floor_pct == 43.0
+
+
 def test_build_and_save_policy_artifact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     out = tmp_path / "planner_output.json"
     monkeypatch.setattr("planner.policy_output.PLANNER_OUTPUT_PATH", out)
