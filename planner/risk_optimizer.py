@@ -15,7 +15,7 @@ from planner.config import (
     PLANNER_CVAR_ALPHA,
 )
 from planner.models import HourInputs, HourPlan
-from planner.optimizer import OptimizeResult, _big_m, _fallback_neutral, _soc_pct
+from planner.optimizer import OptimizeResult, _big_m, _soc_pct, _solve_milp
 from planner.scenarios import PlanningScenario, base_scenario_index, build_planning_scenarios
 
 log = logging.getLogger("planner")
@@ -41,19 +41,19 @@ def _risk_var_layout(
 ) -> tuple[int, dict]:
     """
     Zmienne:
-    - soc[s,0..H]
+    - soc[0..H]  (tylko scenariusz bazowy — wspólne ch/dis nie pozwalają na osobne SOC)
     - ch[0..H-1], dis[0..H-1]  (wspólne)
-    - imp[s,h], exp[s,h], z[s,h]  (per scenariusz)
+    - imp[s,h], exp[s,h], z[s,h]  (per scenariusz — bilans sieci)
     - zeta, u[s]  (CVaR)
     """
-    n_soc = n_scenarios * (n_hours + 1)
+    n_soc = n_hours + 1
     n_shared = 2 * n_hours  # ch, dis — wspólne
     n_grid = n_scenarios * 2 * n_hours
     n_z = n_scenarios * n_hours
     n_cvar = 1 + n_scenarios
 
-    def soc_idx(s: int, h: int) -> int:
-        return s * (n_hours + 1) + h
+    def soc_idx(h: int) -> int:
+        return h
 
     shared_base = n_soc
 
@@ -107,7 +107,6 @@ def _solve_risk_milp(
     params: BatteryParams,
     cvar_lambda: float,
     cvar_alpha: float,
-    soc_bound_scenario: int | None = None,
 ) -> tuple[np.ndarray, RiskOptimizeMeta] | None:
     """
     max  E[cashflow] − λ·CVaR_α(−cashflow_dzienny) − wear
@@ -155,24 +154,24 @@ def _solve_risk_milp(
     eq_rhs: list[float] = []
 
     soc0 = soc_kwh(soc_start_pct, params)
-    for s in range(n_s):
-        row = np.zeros(n_vars)
-        row[soc_idx(s, 0)] = 1.0
-        eq_rows.append(row)
-        eq_rhs.append(soc0)
+    row = np.zeros(n_vars)
+    row[soc_idx(0)] = 1.0
+    eq_rows.append(row)
+    eq_rhs.append(soc0)
 
     eta = params.eta
+    for h in range(n_h):
+        row = np.zeros(n_vars)
+        row[soc_idx(h)] = -1.0
+        row[soc_idx(h + 1)] = 1.0
+        row[ch_idx(h)] = -eta
+        row[dis_idx(h)] = 1.0 / eta
+        eq_rows.append(row)
+        eq_rhs.append(0.0)
+
     for s in range(n_s):
         sc = scenarios[s]
         for h in range(n_h):
-            row = np.zeros(n_vars)
-            row[soc_idx(s, h)] = -1.0
-            row[soc_idx(s, h + 1)] = 1.0
-            row[ch_idx(h)] = -eta
-            row[dis_idx(h)] = 1.0 / eta
-            eq_rows.append(row)
-            eq_rhs.append(0.0)
-
             row = np.zeros(n_vars)
             row[dis_idx(h)] = 1.0
             row[imp_idx(s, h)] = 1.0
@@ -183,22 +182,31 @@ def _solve_risk_milp(
 
     eq_constraint = LinearConstraint(np.vstack(eq_rows), eq_rhs, eq_rhs)
 
-    ineq_rows: list[np.ndarray] = []
-    ineq_lb: list[float] = []
+    # imp_h <= M·(1 − z_h),  exp_h <= M·z_h  (jak w deterministycznym MILP)
+    exclusivity_rows: list[np.ndarray] = []
+    exclusivity_ub: list[float] = []
     for h in range(n_h):
         for s in range(n_s):
             row = np.zeros(n_vars)
             row[imp_idx(s, h)] = 1.0
             row[z_idx(s, h)] = big_m
-            ineq_rows.append(row)
-            ineq_lb.append(big_m)
+            exclusivity_rows.append(row)
+            exclusivity_ub.append(big_m)
 
             row = np.zeros(n_vars)
             row[exp_idx(s, h)] = 1.0
             row[z_idx(s, h)] = -big_m
-            ineq_rows.append(row)
-            ineq_lb.append(0.0)
+            exclusivity_rows.append(row)
+            exclusivity_ub.append(0.0)
 
+    exclusivity_constraint = LinearConstraint(
+        np.vstack(exclusivity_rows),
+        -np.full(len(exclusivity_ub), np.inf),
+        np.array(exclusivity_ub),
+    )
+
+    cvar_rows: list[np.ndarray] = []
+    cvar_lb: list[float] = []
     for s in range(n_s):
         row = np.zeros(n_vars)
         row[u_idx(s)] = 1.0
@@ -208,30 +216,24 @@ def _solve_risk_milp(
             row[imp_idx(s, h)] -= hin.import_pln_per_kwh
         for h in range(n_h):
             row[dis_idx(h)] -= wear_per_dis
-        ineq_rows.append(row)
-        ineq_lb.append(0.0)
+        cvar_rows.append(row)
+        cvar_lb.append(0.0)
 
-    ineq_constraint = LinearConstraint(
-        np.vstack(ineq_rows),
-        np.array(ineq_lb),
-        np.full(len(ineq_lb), np.inf),
+    cvar_constraint = LinearConstraint(
+        np.vstack(cvar_rows),
+        np.array(cvar_lb),
+        np.full(len(cvar_lb), np.inf),
     )
 
     soc_min = soc_kwh(params.soc_min_pct, params)
     soc_max = soc_kwh(params.soc_max_pct, params)
     p_max = params.max_power_kwh_per_h
-    s_soc = soc_bound_scenario if soc_bound_scenario is not None else base_scenario_index(scenarios)
 
     lb = np.zeros(n_vars)
     ub = np.full(n_vars, np.inf)
-    for s in range(n_s):
-        for h in range(n_h + 1):
-            if s == s_soc:
-                lb[soc_idx(s, h)] = soc_min
-                ub[soc_idx(s, h)] = soc_max
-            else:
-                lb[soc_idx(s, h)] = 0.0
-                ub[soc_idx(s, h)] = soc_max
+    for h in range(n_h + 1):
+        lb[soc_idx(h)] = soc_min
+        ub[soc_idx(h)] = soc_max
     for h in range(n_h):
         ub[ch_idx(h)] = p_max
         ub[dis_idx(h)] = p_max
@@ -249,7 +251,7 @@ def _solve_risk_milp(
         c=c,
         integrality=integrality,
         bounds=Bounds(lb, ub),
-        constraints=[eq_constraint, ineq_constraint],
+        constraints=[eq_constraint, exclusivity_constraint, cvar_constraint],
     )
     if not res.success:
         log.warning("risk MILP failed: %s", res.message)
@@ -291,6 +293,71 @@ def _solve_risk_milp(
         scenario_cashflow_pln=scenario_cf,
     )
     return x, meta
+
+
+def _optimize_from_deterministic_milp(
+    hours_in: list[HourInputs],
+    *,
+    soc_start_pct: float,
+    params: BatteryParams,
+    reason: str,
+) -> OptimizeResult:
+    """Fallback: deterministyczny MILP (p50) gdy risk MILP nie ma rozwiązania."""
+    from economics import battery_wear_pln_for_hour, cashflow_pln_for_hour
+    from planner.optimizer import _var_layout
+
+    cycle_cost = float(PLANNER_BATTERY_CYCLE_COST_PLN)
+    solved = _solve_milp(hours_in, soc_start_pct=soc_start_pct, params=params)
+    if solved is None:
+        log.error("risk optimizer: deterministic MILP też failed po %s — brak planu", reason)
+        from planner.optimizer import _fallback_neutral
+
+        return _fallback_neutral(hours_in, soc_start_pct, params)
+
+    log.warning("risk optimizer: %s — fallback deterministyczny MILP (p50)", reason)
+    x, total_cf = solved
+    n_h = len(hours_in)
+    _, layout = _var_layout(n_h)
+    hour_idx = layout["hour_idx"]
+
+    plans: list[HourPlan] = []
+    traj: list[float] = [_soc_pct(float(x[0]), params)]
+
+    for h, hin in enumerate(hours_in):
+        soc_start = _soc_pct(float(x[h]), params)
+        imp = float(x[hour_idx(h, layout["imp"])])
+        exp = float(x[hour_idx(h, layout["exp"])])
+        ch = float(x[hour_idx(h, layout["ch"])])
+        dis = float(x[hour_idx(h, layout["dis"])])
+        net = exp - imp
+        bd = battery_delta_from_net(pv_kwh=hin.pv_kwh, load_kwh=hin.load_kwh, net_kwh=net)
+        soc_end = _soc_pct(float(x[h + 1]), params)
+        grid_cf = cashflow_pln_for_hour(
+            net,
+            rce_pln_per_kwh=hin.export_pln_per_kwh,
+            import_pln_per_kwh=hin.import_pln_per_kwh,
+        )
+        wear = battery_wear_pln_for_hour(ch, dis, cycle_cost_pln=cycle_cost)
+        plans.append(
+            HourPlan(
+                date=hin.date,
+                hour=hin.hour,
+                target_net_kwh=net,
+                expected_cashflow_pln=grid_cf - wear,
+                battery_wear_cost_pln=wear,
+                soc_start_pct=soc_start,
+                soc_end_pct=soc_end,
+                battery_delta_kwh=bd,
+            )
+        )
+        traj.append(soc_end)
+
+    return OptimizeResult(
+        hours=plans,
+        total_cashflow_pln=total_cf,
+        soc_trajectory_pct=traj,
+        risk_meta={"risk_milp_failed": True, "fallback": "deterministic_p50"},
+    )
 
 
 def _risk_meta_dict(meta: RiskOptimizeMeta) -> dict:
@@ -344,8 +411,12 @@ def optimize_horizon_cvar(
         cvar_alpha=alpha,
     )
     if solved is None:
-        log.warning("risk optimizer: fallback neutralny")
-        return _fallback_neutral(hours_in, soc_start_pct, bp)
+        return _optimize_from_deterministic_milp(
+            hours_in,
+            soc_start_pct=soc_start_pct,
+            params=bp,
+            reason="risk MILP infeasible/unbounded",
+        )
 
     x, meta = solved
     n_h = len(hours_in)
@@ -359,17 +430,17 @@ def optimize_horizon_cvar(
     s_base = base_scenario_index(scenarios)
 
     plans: list[HourPlan] = []
-    traj: list[float] = [_soc_pct(float(x[soc_idx(s_base, 0)]), bp)]
+    traj: list[float] = [_soc_pct(float(x[soc_idx(0)]), bp)]
 
     for h, hin in enumerate(hours_in):
-        soc_start = _soc_pct(float(x[soc_idx(s_base, h)]), bp)
+        soc_start = _soc_pct(float(x[soc_idx(h)]), bp)
         imp = float(x[imp_idx(s_base, h)])
         exp = float(x[exp_idx(s_base, h)])
         ch = float(x[ch_idx(h)])
         dis = float(x[dis_idx(h)])
         net = exp - imp
         bd = battery_delta_from_net(pv_kwh=hin.pv_kwh, load_kwh=hin.load_kwh, net_kwh=net)
-        soc_end = _soc_pct(float(x[soc_idx(s_base, h + 1)]), bp)
+        soc_end = _soc_pct(float(x[soc_idx(h + 1)]), bp)
         grid_cf = cashflow_pln_for_hour(
             net,
             rce_pln_per_kwh=hin.export_pln_per_kwh,
