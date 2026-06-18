@@ -10,6 +10,7 @@ from planner.config import (
     PLANNER_EXPORT_PROFIT_MIN_PLN,
     PLANNER_OUTPUT_PATH,
     PLANNER_POLICY_VALID_MINUTES,
+    PLANNER_SOC_MIN_PCT,
     ensure_planner_dirs,
     max_battery_kwh_per_hour,
 )
@@ -107,7 +108,8 @@ def map_hour_to_exec_mode(
         # Celowy eksport z baterii (dodatni net na liczniku).
         exec_mode = "export_profit"
         discharge_pct = _pct_from_battery_delta(bd)
-        soc_floor_pct = float(hp.soc_start_pct)
+        # Podłoga = planowany SOC na koniec h (nie start — przy pełnej baterii start=100% blokowałby eksport).
+        soc_floor_pct = max(float(PLANNER_SOC_MIN_PCT), float(hp.soc_end_pct))
     elif net > NET_NEUTRAL_EPS_KWH and _export_pv_surplus_viable(export_pln):
         exec_mode = "export_pv_surplus"
     elif net < -NET_NEUTRAL_EPS_KWH:
