@@ -3,19 +3,25 @@
 from __future__ import annotations
 
 from guardian_config import (
+    BATTERY_CAPACITY_KWH,
     EXEC_EARLY_INTERVENTION_KW,
     EXEC_MIN_ACTIVE_CHARGE_PCT,
     EXEC_MIN_ACTIVE_DISCHARGE_PCT,
     EXEC_STEADY_PCT,
+    EXPORT_PROFIT_PACE_MARGIN,
     IMPORT_GRID_SOC_PCT,
+    SOC_LOW_DISCHARGE_FALLBACK_W,
+    SOC_LOW_DISCHARGE_MAX_W,
 )
 from guardian_logic import (
     BalanceInputs,
     WatchdogConfig,
     WatchdogDecision,
+    _battery_pct_from_w,
     _deficit_recovery_decision,
     _neutral_decision,
     _steady_decision,
+    compute_export_profit_pace_w,
     decide_flappy_relative,
     decide_soc_defenses,
 )
@@ -29,18 +35,19 @@ def _params_pct(params: HourPolicyParams, field: str, *, minimum: int, default: 
     return max(minimum, min(100, int(raw)))
 
 
+def _export_profit_taper_max_w() -> float:
+    cap = float(SOC_LOW_DISCHARGE_MAX_W)
+    if cap > 0.0:
+        return cap
+    return max(0.0, float(SOC_LOW_DISCHARGE_FALLBACK_W))
+
+
 def _exec_export_profit(
     inp: BalanceInputs,
     params: HourPolicyParams,
     cfg: WatchdogConfig,
 ) -> WatchdogDecision:
     floor = float(params.soc_floor_pct if params.soc_floor_pct is not None else cfg.soc_low_threshold_pct)
-    pct = _params_pct(
-        params,
-        "discharge_pct",
-        minimum=EXEC_MIN_ACTIVE_DISCHARGE_PCT,
-        default=EXEC_MIN_ACTIVE_DISCHARGE_PCT,
-    )
     if float(inp.soc_pct) <= floor + 0.5:
         return _steady_decision(
             power_pct=EXEC_STEADY_PCT,
@@ -48,10 +55,39 @@ def _exec_export_profit(
             reason="export_profit_soc_floor",
             time_to_end_s=inp.time_to_end_s,
         )
+
+    plan_pct = _params_pct(
+        params,
+        "discharge_pct",
+        minimum=EXEC_MIN_ACTIVE_DISCHARGE_PCT,
+        default=EXEC_MIN_ACTIVE_DISCHARGE_PCT,
+    )
+    target_w = compute_export_profit_pace_w(
+        inp,
+        floor_pct=floor,
+        capacity_kwh=BATTERY_CAPACITY_KWH,
+        pace_margin=EXPORT_PROFIT_PACE_MARGIN,
+        taper_threshold_pct=float(cfg.soc_low_threshold_pct),
+        taper_max_w=_export_profit_taper_max_w(),
+        plan_discharge_pct=plan_pct,
+        min_discharge_pct=EXEC_MIN_ACTIVE_DISCHARGE_PCT,
+    )
+    if target_w <= 0.0:
+        return _steady_decision(
+            power_pct=EXEC_STEADY_PCT,
+            mode="discharge",
+            reason="export_profit_soc_floor",
+            time_to_end_s=inp.time_to_end_s,
+        )
+
+    pct = max(
+        EXEC_MIN_ACTIVE_DISCHARGE_PCT,
+        min(plan_pct, _battery_pct_from_w(target_w, inp.watts_per_percent)),
+    )
     return _steady_decision(
         power_pct=pct,
         mode="discharge",
-        reason="export_profit",
+        reason="export_profit_pace",
         time_to_end_s=inp.time_to_end_s,
     )
 

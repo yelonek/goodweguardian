@@ -67,6 +67,10 @@ EXEC_MIN_ACTIVE_CHARGE_PCT = _int_env("EXEC_MIN_ACTIVE_CHARGE_PCT", 2)
 EXEC_MIN_ACTIVE_DISCHARGE_PCT = _int_env("EXEC_MIN_ACTIVE_DISCHARGE_PCT", 2)
 EXEC_EARLY_INTERVENTION_KW = _float_env("EXEC_EARLY_INTERVENTION_KW", 1.0)
 EXEC_STEADY_PCT = _int_env("EXEC_STEADY_PCT", 1)
+# Pojemność magazynu [kWh] — pacing export_profit (ta sama env co planer).
+BATTERY_CAPACITY_KWH = _float_env("PLANNER_BATTERY_KWH", 10.0)
+# Mnożnik zapasu przy E_remain/t (η, szum SOC, opóźnienie eco-slotu).
+EXPORT_PROFIT_PACE_MARGIN = _float_env("EXPORT_PROFIT_PACE_MARGIN", 1.1)
 
 # SOC=100% “battery defense”: utrzymuj CHARGE 1% (blokuj discharge), dopóki bilans mocy nie jest „wystarczająco zły”.
 # Wyjście z obrony pełnej sterowane jest progiem mocy bilansu (moc_bilans [kW]), nie energią godzinową.

@@ -17,7 +17,7 @@ from planner.models import ExecMode
 # Obrony SOC a exec_mode (§13 PLANNING_SYSTEM.md)
 _EXEC_SKIP_SOC_FULL: frozenset[ExecMode] = frozenset({"export_profit"})
 _EXEC_SOC_LOW_ACTIVE: frozenset[ExecMode] = frozenset(
-    {"export_pv_surplus", "export_profit", "neutral"}
+    {"export_pv_surplus", "neutral"}
 )
 
 
@@ -135,6 +135,42 @@ def _steady_decision(
         reason=reason,
         slot_soc_pct=slot_soc_pct,
     )
+
+
+def compute_export_profit_pace_w(
+    inp: BalanceInputs,
+    *,
+    floor_pct: float,
+    capacity_kwh: float,
+    pace_margin: float,
+    taper_threshold_pct: float,
+    taper_max_w: float,
+    plan_discharge_pct: int,
+    min_discharge_pct: int,
+) -> float:
+    """
+    Moc rozładowania [W] dla ``export_profit``: E_remain/t × margin, cap plan/taper/inwerter.
+
+    ``E_remain`` = energia w magazynie powyżej ``floor_pct`` (kWh).
+    """
+    e_remain_kwh = max(0.0, (float(inp.soc_pct) - float(floor_pct)) / 100.0 * capacity_kwh)
+    if e_remain_kwh <= 1e-9:
+        return 0.0
+
+    pace_kw = power_needed_kw(e_remain_kwh, inp.time_to_end_s) * pace_margin
+    target_w = pace_kw * 1000.0
+
+    if float(inp.soc_pct) <= float(taper_threshold_pct) and taper_max_w > 0.0:
+        target_w = min(target_w, taper_max_w)
+
+    cap_w = _discharge_cap_w(inp.p_inverter_w, inp.pv_w, inp.p_battery_w)
+    plan_max_w = plan_discharge_pct * inp.watts_per_percent
+    target_w = min(target_w, cap_w, float(inp.p_battery_w), plan_max_w)
+
+    min_w = min_discharge_pct * inp.watts_per_percent
+    if target_w > 0.0 and target_w < min_w:
+        target_w = min_w
+    return max(0.0, target_w)
 
 
 def _battery_pct_from_w(target_battery_w: float, watts_per_percent: float) -> int:
@@ -261,8 +297,8 @@ def decide_soc_defenses(
 
     Z planem:
     - **Pełna bateria** — wyłączona w ``export_profit`` (celowe rozładowanie).
-    - **Niska bateria** — tylko w ``export_pv_surplus``, ``export_profit``, ``neutral``
-      (w ``import_grid`` / ``charge_grid`` slot już ładuje).
+    - **Niska bateria** — tylko w ``export_pv_surplus``, ``neutral``
+      (``export_profit`` używa pacingu + taperu w ``guardian_execution``).
     """
 
     low_soc_discharge_cap_active = (
