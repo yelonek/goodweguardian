@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 import pytest
 
 from economics import cashflow_pln_for_hour
 from planner.battery import BatteryParams, battery_delta_from_net
+from planner.hour_remainder import hour_remaining_fraction, scale_hour_inputs_for_remainder
 from planner.models import HourInputs
 from planner.optimizer import optimize_horizon
 from planner.audit import append_audit, new_event, read_audit_events
 from planner.config import ensure_planner_dirs
 import planner.audit as audit_mod
+import planner.optimizer as opt_mod
 
 
 def test_battery_delta_sign() -> None:
@@ -142,3 +145,100 @@ def test_audit_roundtrip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     assert len(got) == 1
     assert got[0].kind == "plan_created"
     assert got[0].payload["x"] == 1
+
+
+def test_hour_remaining_fraction_at_fifty_minutes() -> None:
+    now = datetime(2026, 6, 14, 20, 50, 0)
+    frac = hour_remaining_fraction(now, date="2026-06-14", hour=20)
+    assert frac == pytest.approx(10 / 60, rel=0.01)
+    assert hour_remaining_fraction(now, date="2026-06-14", hour=21) == 1.0
+
+
+def test_scale_hour_inputs_for_remainder() -> None:
+    now = datetime(2026, 6, 14, 20, 50, 0)
+    hin = HourInputs(
+        date="2026-06-14",
+        hour=20,
+        load_kwh=0.6,
+        pv_kwh=0.12,
+        pv_kwh_p10=0.05,
+        pv_kwh_p90=0.2,
+        load_kwh_p75=0.7,
+        import_pln_per_kwh=1.11,
+        export_pln_per_kwh=1.69,
+    )
+    scaled = scale_hour_inputs_for_remainder(
+        hin,
+        now=now,
+        pv_correction_meta={"a_so_far_kwh": 0.02},
+    )
+    assert scaled.hour_fraction == pytest.approx(10 / 60, rel=0.01)
+    assert scaled.load_kwh == pytest.approx(0.6 * 10 / 60)
+    assert scaled.load_kwh_p75 == pytest.approx(0.7 * 10 / 60)
+    assert scaled.pv_kwh == pytest.approx(0.10)
+    assert scaled.pv_kwh_p10 == pytest.approx(0.03)
+    assert scaled.pv_kwh_p90 == pytest.approx(0.18)
+
+
+def test_partial_current_hour_limits_soc_drop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regresja 20:50: nie planuj końca h20 na ~10% SOC przy starcie ~59%."""
+    monkeypatch.setattr(opt_mod, "planner_risk_optimizer_enabled", lambda: False)
+    bp = BatteryParams(capacity_kwh=10.0, soc_min_pct=10.0, soc_max_pct=100.0, max_power_kwh_per_h=5.0)
+    frac = 10 / 60
+    hours = [
+        HourInputs(
+            date="2026-06-14",
+            hour=20,
+            load_kwh=0.5 * frac,
+            pv_kwh=0.0,
+            import_pln_per_kwh=1.11,
+            export_pln_per_kwh=1.69,
+            hour_fraction=frac,
+        ),
+        HourInputs(
+            date="2026-06-14",
+            hour=21,
+            load_kwh=0.5,
+            pv_kwh=0.0,
+            import_pln_per_kwh=1.11,
+            export_pln_per_kwh=1.69,
+        ),
+    ]
+    res = optimize_horizon(hours, soc_start_pct=59.0, params=bp)
+    # max ~0.83 kWh discharge w reszcie h20 → SOC nie spada o ~50 pp jak przy pełnej h
+    assert res.hours[0].soc_end_pct > 45.0
+    assert res.hours[1].target_net_kwh > 0.3
+
+
+def test_partial_hour_keeps_more_soc_than_full_hour(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(opt_mod, "planner_risk_optimizer_enabled", lambda: False)
+    bp = BatteryParams(capacity_kwh=10.0, soc_min_pct=10.0, soc_max_pct=100.0, max_power_kwh_per_h=5.0)
+    base = dict(
+        date="2026-06-14",
+        hour=20,
+        load_kwh=0.5,
+        pv_kwh=0.0,
+        import_pln_per_kwh=1.11,
+        export_pln_per_kwh=1.69,
+    )
+    full = optimize_horizon(
+        [HourInputs(**base, hour_fraction=1.0)],
+        soc_start_pct=59.0,
+        params=bp,
+    )
+    partial = optimize_horizon(
+        [
+            HourInputs(
+                date=base["date"],
+                hour=base["hour"],
+                load_kwh=0.5 * (10 / 60),
+                pv_kwh=base["pv_kwh"],
+                import_pln_per_kwh=base["import_pln_per_kwh"],
+                export_pln_per_kwh=base["export_pln_per_kwh"],
+                hour_fraction=10 / 60,
+            )
+        ],
+        soc_start_pct=59.0,
+        params=bp,
+    )
+    assert partial.hours[0].soc_end_pct > full.hours[0].soc_end_pct
