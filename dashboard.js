@@ -29,6 +29,13 @@ function setUpdated(ok) {
   document.getElementById("updatedAt").textContent = ok ? new Date().toLocaleTimeString() : "błąd";
 }
 
+/** Bieżąca data/godzina w strefie przeglądarki (≈ Europe/Warsaw u Ciebie). */
+function localNowParts() {
+  const d = new Date();
+  const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  return { date, hour: d.getHours() };
+}
+
 async function loadOverview(force) {
   if (!force && pageLoaded.overview) return;
   try {
@@ -53,7 +60,7 @@ async function loadOverview(force) {
 async function loadHistory(force) {
   if (!force && pageLoaded.history) return;
   const st = document.getElementById("historyStatus");
-  st.textContent = "ładowanie…";
+  if (!pageLoaded.history) st.textContent = "ładowanie…";
   try {
     const hist = await fetchJson("/api/history?limit=200", 15000);
     document.getElementById("hist").innerHTML = (hist.rows || []).map((r) => {
@@ -91,8 +98,7 @@ function renderForecastBlock(forecast) {
     else if (n < -eps) cls = "delta-neg";
     return `<td class="${cls}">${(n >= 0 ? "+" : "") + n.toFixed(d)}</td>`;
   };
-  const nowDate = (forecast.now || "").slice(0, 10);
-  const nowHour = Number((forecast.now || "T00").slice(11, 13));
+  const { date: nowDate, hour: nowHour } = localNowParts();
   let prevDate = null;
   document.getElementById("forecastRows").innerHTML = (forecast.rows || []).map((r) => {
     const cls = [];
@@ -122,7 +128,7 @@ function renderForecastBlock(forecast) {
 async function loadForecast(force) {
   if (!force && pageLoaded.forecast) return;
   const st = document.getElementById("forecastStatus");
-  st.textContent = "ładowanie…";
+  if (!pageLoaded.forecast) st.textContent = "ładowanie…";
   try {
     const forecast = await fetchJson("/api/forecast/combined", 60000);
     renderForecastBlock(forecast);
@@ -216,7 +222,7 @@ function renderKpiMergedTable(payload) {
 async function loadKpi(force) {
   if (!force && pageLoaded.kpi) return;
   const st = document.getElementById("kpiStatus");
-  st.textContent = "ładowanie…";
+  if (!pageLoaded.kpi) st.textContent = "ładowanie…";
   try {
     const day = kpiSelectedDay();
     const payload = await fetchJson(`/api/kpi/day?day=${encodeURIComponent(day)}`, 60000);
@@ -260,16 +266,19 @@ function renderWatchdogSoc(wds) {
 }
 
 async function loadSettings(force) {
-  try {
-    const wds = await fetchJson("/api/guardian/watchdog-soc", 10000);
-    window._lastWds = wds;
-    renderWatchdogSoc(wds);
-    if (getKey()) {
-      refreshControl().catch(console.error);
-      refreshPlanner().catch(console.error);
+  const isPoll = force && pageLoaded.settings;
+  if (!isPoll) {
+    try {
+      const wds = await fetchJson("/api/guardian/watchdog-soc", 10000);
+      window._lastWds = wds;
+      renderWatchdogSoc(wds);
+    } catch (e) {
+      console.error(e);
     }
-  } catch (e) {
-    console.error(e);
+  }
+  if (getKey()) {
+    refreshControl().catch(console.error);
+    refreshPlanner().catch(console.error);
   }
   if (!force && pageLoaded.ecoslots) return;
   await refreshEcoslots(false);
@@ -513,8 +522,11 @@ function handleEcoSaveEvent(e) {
 }
 
 async function refreshEcoslots(live = false) {
+  if (!live && document.activeElement && document.activeElement.closest(".eco-slot-card")) {
+    return;
+  }
   const st = document.getElementById("ecoSlotsStatus");
-  st.textContent = live ? "odczyt z inwertera…" : "ładowanie snapshot…";
+  if (!pageLoaded.ecoslots || live) st.textContent = live ? "odczyt z inwertera…" : "ładowanie snapshot…";
   try {
     const url = live ? "/api/ecoslots?refresh=1" : "/api/ecoslots";
     const j = await fetchJson(url, live ? 20000 : 5000);
@@ -604,6 +616,24 @@ const PAGE_LOADERS = {
   settings: loadSettings,
 };
 
+/** Interwał auto-odświeżania aktywnej zakładki [ms]. */
+const PAGE_POLL_MS = {
+  overview: 15000,
+  history: 30000,
+  forecast: 60000,
+  kpi: 60000,
+  settings: 20000,
+};
+
+function startPagePolling(page) {
+  const ms = PAGE_POLL_MS[page];
+  if (!ms) return;
+  pollTimer = setInterval(() => {
+    const loader = PAGE_LOADERS[page];
+    if (loader) loader(true);
+  }, ms);
+}
+
 function navigate(page, force) {
   if (!PAGE_LOADERS[page]) page = "overview";
   if (currentPage === page && !force) return;
@@ -615,9 +645,7 @@ function navigate(page, force) {
   });
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
   PAGE_LOADERS[page](!!force);
-  if (page === "overview") {
-    pollTimer = setInterval(() => loadOverview(true), 15000);
-  }
+  startPagePolling(page);
 }
 
 function parsePageFromHash() {
@@ -634,9 +662,6 @@ document.getElementById("mainNav").addEventListener("click", (e) => {
 
 window.addEventListener("hashchange", () => navigate(parsePageFromHash(), false));
 
-document.getElementById("btnRefreshHistory").addEventListener("click", () => { pageLoaded.history = false; loadHistory(true); });
-document.getElementById("btnRefreshForecast").addEventListener("click", () => { pageLoaded.forecast = false; loadForecast(true); });
-document.getElementById("btnRefreshKpi").addEventListener("click", () => { pageLoaded.kpi = false; loadKpi(true); });
 document.getElementById("kpiDay").addEventListener("change", () => { pageLoaded.kpi = false; loadKpi(true); });
 document.getElementById("saveKey").addEventListener("click", () => {
   localStorage.setItem("guardianApiKey", document.getElementById("apiKey").value.trim());
@@ -651,7 +676,6 @@ document.getElementById("enablePlanner").addEventListener("click", () => putPlan
 document.getElementById("disablePlanner").addEventListener("click", () => putPlanner(false));
 document.getElementById("saveWatchdog").addEventListener("click", () => saveWatchdog().catch(console.error));
 document.getElementById("resetWatchdog").addEventListener("click", () => resetWatchdog().catch(console.error));
-document.getElementById("refreshEcoslots").addEventListener("click", () => refreshEcoslots(true).catch(console.error));
 
 const ecoPanels = document.getElementById("ecoSlotsPanels");
 ecoPanels.addEventListener("click", handleEcoSaveEvent);

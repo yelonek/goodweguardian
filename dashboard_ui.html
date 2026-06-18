@@ -89,7 +89,7 @@
     }
     .eco-enabled input[type="checkbox"] { width: 1.35rem; height: 1.35rem; flex-shrink: 0; }
     .eco-enabled span { font-size: 15px; font-weight: 600; }
-    .btn-touch, .btn-eco-save, #refreshEcoslots {
+    .btn-touch, .btn-eco-save {
       min-height: 48px;
       padding: 12px 18px;
       font-size: 16px;
@@ -104,12 +104,10 @@
       z-index: 1;
     }
     .btn-eco-save { width: 100%; font-weight: 700; margin-top: 4px; }
-    #refreshEcoslots { width: 100%; }
     .eco-days-custom { margin-top: 8px; }
     .btn-eco-save.is-saving { opacity: 0.65; pointer-events: none; }
     @media (min-width: 640px) {
       .eco-slots-toolbar { flex-direction: row; align-items: center; flex-wrap: wrap; }
-      #refreshEcoslots { width: auto; }
       .btn-eco-save { width: auto; min-width: 180px; }
       .eco-slot-card { max-width: 520px; }
     }
@@ -145,7 +143,6 @@
     <section id="page-history" class="page">
       <div class="page-hdr">
         <h2>Historia</h2>
-        <button type="button" id="btnRefreshHistory">Odśwież</button>
         <span class="muted" id="historyStatus"></span>
       </div>
       <table>
@@ -169,7 +166,6 @@
     <section id="page-forecast" class="page">
       <div class="page-hdr">
         <h2>Prognoza (dziś + jutro)</h2>
-        <button type="button" id="btnRefreshForecast">Odśwież</button>
         <span class="muted" id="forecastStatus"></span>
       </div>
       <div class="muted" id="forecastMeta"></div>
@@ -214,7 +210,6 @@
         <h2>KPI</h2>
         <label class="muted" style="margin-right:6px;">Data</label>
         <input type="date" id="kpiDay" />
-        <button type="button" id="btnRefreshKpi">Odśwież</button>
         <span class="muted" id="kpiStatus"></span>
       </div>
       <div class="grid4" id="kpiCards"></div>
@@ -315,7 +310,6 @@
           <code id="ecoBalancingSlot">—</code> — zarezerwowany dla Guardiana.
         </div>
         <div class="eco-slots-toolbar">
-          <button type="button" id="refreshEcoslots" class="btn-touch">Odśwież z inwertera</button>
           <span class="muted" id="ecoSlotsStatus">—</span>
         </div>
         <div id="ecoSlotsPanels"></div>
