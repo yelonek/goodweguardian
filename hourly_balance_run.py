@@ -42,7 +42,6 @@ from guardian_config import (
     SOC_LOW_DEFENSE_CHARGE_PCT,
     SOC_LOW_DEFENSE_RELEASE_REMAINING_KWH,
     SOC_LOW_DISCHARGE_AVG_MINUTES,
-    SOC_LOW_DISCHARGE_FALLBACK_W,
     SOC_LOW_DISCHARGE_MAX_W,
     TELEMETRY_ENABLED,
     TELEMETRY_TZ,
@@ -331,8 +330,6 @@ async def run_one_cycle() -> None:
     if soc_pct <= ws.soc_low_defense_threshold_pct:
         avg_window_min = int(SOC_LOW_DISCHARGE_AVG_MINUTES)
         recent_avg_w = recent_consumption_average_w(now, avg_window_min)
-        if recent_avg_w is None and float(SOC_LOW_DISCHARGE_FALLBACK_W) > 0.0:
-            recent_avg_w = float(SOC_LOW_DISCHARGE_FALLBACK_W)
         if recent_avg_w is not None and recent_avg_w > 0.0:
             max_w = float(SOC_LOW_DISCHARGE_MAX_W)
             low_soc_discharge_target_w = min(recent_avg_w, max_w) if max_w > 0.0 else recent_avg_w

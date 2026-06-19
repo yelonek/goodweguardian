@@ -90,10 +90,8 @@ SOC_FULL_DEFENSE_MAX_SLOT_MIN = _int_env("SOC_FULL_DEFENSE_MAX_SLOT_MIN", 15)
 # SOC niski: ogranicz discharge do średniego zużycia domu z ostatnich N minut.
 # To nie jest nocna rezerwa SOC: działa niezależnie od godziny i bilansu, żeby skoki obciążenia szły z sieci.
 SOC_LOW_DEFENSE_THRESHOLD_PCT = _float_env("SOC_LOW_DEFENSE_THRESHOLD_PCT", 22.0)
-# Okno średniej kroczącej zużycia domu [min]. 0 = wyłącz nowy limit i użyj legacy CHARGE poniżej.
+# Okno średniej kroczącej zużycia domu [min]. 0 = wyłącz limit i użyj legacy CHARGE poniżej.
 SOC_LOW_DISCHARGE_AVG_MINUTES = _int_env("SOC_LOW_DISCHARGE_AVG_MINUTES", 60)
-# Gdy brak historii telemetrii, użyj spokojnego fallbacku [W]. 0 = brak fallbacku.
-SOC_LOW_DISCHARGE_FALLBACK_W = _float_env("SOC_LOW_DISCHARGE_FALLBACK_W", 300.0)
 # Opcjonalny sufit limitu discharge [W]. 0 = bez dodatkowego sufitu poza P_BATTERY.
 SOC_LOW_DISCHARGE_MAX_W = _float_env("SOC_LOW_DISCHARGE_MAX_W", 0.0)
 # Legacy fallback: CHARGE 1% (blok rozładowania) dopóki remaining_kwh > celu godziny.
