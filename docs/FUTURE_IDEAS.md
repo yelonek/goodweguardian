@@ -4,6 +4,32 @@ Notatnik roboczy — **nie norma produktowa**. Szczegóły wdrożenia dopiero po
 
 ---
 
+## Mapa pomysłów (podsumowanie)
+
+Trzy niezależne warstwy — wspólne źródło: telemetria + cennik (G12, RCE).
+
+```text
+Historia (TWC)              Przyszłość (deklaracja)           Raport (dashboard)
+─────────────────           ───────────────────────           ──────────────────
+load_base = total − EV  →   load_plan = base + ev_slot    →   piramida PV × RCE
+       ↓                            ↓                      →   dzień/tydz./mies. + cashflow
+   lepsze p50                 planer + rekomendacja godzin
+```
+
+| # | Pomysł | Warstwa | Dla kogo | Status |
+|---|--------|---------|----------|--------|
+| 1 | **`load_base`** — odjąć EV od prognozy loadu (+ korekta dzienna) | `load_forecast.py` | planer | **następny krok** (TWC w telemetrii ✓) |
+| 2 | **Piramida PV × RCE** — skumulowane progi &lt;10…&lt;60 gr | dashboard / KPI | **użytkownik** | pomysł — **nie** planer, **nie** Guardian |
+| 2b | **Zużycie dzień/tydz./mies.** — dom vs EV + cashflow | dashboard / KPI | **użytkownik** | pomysł (UX; po agregacji `load_base`) |
+| 3 | **Rekomendacja godzin EV** — „N kWh dziś” → sloty | dashboard + planer | użytkownik + planer | pomysł (po `load_base`) |
+| 4 | **`load_plan = base + ev`** w optimizerze | `planner/` | planer | pomysł (po #3) |
+
+**Kolejność wdrożenia:** 1 → 2 i 2b równolegle (KPI, bez planera) → 3 → 4.
+
+**Zasada EV:** ładowanie oportunistyczne tylko gdy **tanio import** *i* **dużo PV** — patrz sekcja LOAD oportunistyczny. TWC daje twardy pomiar historii; deklaracja użytkownika — intencję na przyszłość.
+
+---
+
 ## Guardian: usunąć rezerwę nocną SOC
 
 **Kiedy:** dopiero gdy planer będzie **bardziej ostrożny** (lepsze prognozy + konserwatywniejsze decyzje). Na dziś zostaje.
@@ -65,11 +91,207 @@ Przy **łączeniu** rekordu telemetrii `(local_date, local_hour)` można więc o
 ### Kierunki do przemyślenia (model)
 
 1. **Reguła klasyfikacji historycznej:** `opportunistic = (load_kwh > base_threshold) AND (import_pln ≤ p25_strefy OR tania_godzina) AND (pv_kwh ≥ próg)` — progi do kalibracji.
-2. **Wykrywanie EV / dużych pików** — osobna etykieta (moc × czas, import mimo PV, powtarzalność w soboty).
+2. **Wykrywanie EV** — **TWC** (`Δ E_twc` &gt; ε) zamiast heurystyki „pik >> mediana”; fallback heurystyczny tylko bez danych TWC w historii.
 3. **Filtrowanie p50:** próbki z `opportunistic=True` wypadają z mediany lub dostają wagę 0.x.
 4. **Model:** `load_base[h]` (prognoza bez przenoszenia) + `load_shiftable` tylko gdy **planowana** godzina jutro też tania + dużo PV (optimizer decyduje, nie historia 1:1).
 
-**Status:** pomysł — wymaga specyfikacji progów i czy klasyfikacja idzie offline (batch po telemetrii) czy online co dzień przed `forecast_load_hours`.
+**Status:** pomysł — heurystyka tanio+PV nadal do rozważenia dla *innych* odbiorników; **EV rozstrzyga TWC** + `load_base` (sekcja niżej).
+
+---
+
+## Load forecast: `load_base` (odjęcie EV)
+
+**Cel:** prognoza p50 opisuje **dom bez przypadkowych sesji ładowania**, nie sumę `consumption_w` z inwertera.
+
+**Problem:** mediana z ostatnich 28 dni wciąga piki EV (np. sobota, tanio + PV) — planer przeszacowuje load (patrz sekcja wyżej).
+
+### Wzór (agregacja godzinowa)
+
+```text
+load_total_kwh[h]  = avg(consumption_w) / 1000          # jak dziś
+ev_charge_kwh[h]   = Δ E_twc w godzinie H               # z telemetrii TWC
+load_base_kwh[h]   = max(0, load_total − ev_charge)     # próbka do mediany
+```
+
+Percentyle **p25 / p50 / p75** liczyć z `load_base`, nie z `load_total`.
+
+### Lookback: **nie** wyrzucać całych dni z ładowaniem
+
+Przy poprawnym `load_base[h]` per godzina **nie ma** powodu usuwać „dni ładowania” z lookbacku.
+
+Przykład: sobota, EV 10–14. Godziny 10–14 → próbka bazy (bez EV); godziny 7, 20 itd. → normalne próbki dla slotów 7, 20. Mediana slotu 7:00 **nie jest skażona** — EV było w innych godzinach. Wykluczenie całego dnia **usuwa też dobre próbki**.
+
+| Sytuacja | Lookback |
+|----------|----------|
+| Godzinowe `load_base` z TWC | **Zostaw dzień** — próbki = `load_base[h]` |
+| Brak TWC / nie da się odjąć EV w godzinie | fallback `load_total[h]` (jak dziś) lub pomiń tylko tę godzinę |
+| Błędne rozsmarowanie `ev_day/24` | **nie** — EV odejmować tylko w godzinach z Δ TWC |
+
+Wykluczenie **całego** dnia — wyłącznie gdy **żadnej** wiarygodnej godziny `load_base` nie da się zbudować (rzadki edge case w historii przed TWC).
+
+### Implementacja
+
+- Agregacja `delta_twc_kwh` / licznik `E_twc_kwh` per godzina (jak Δ `E_pv_kwh` w dashboardzie).
+- Zmiana `_hourly_kwh_from_file` / cache w `load_forecast.py`.
+- Historia sprzed wdrożenia TWC: brak `E_twc_kwh` → fallback do `load_total` (zachowanie jak dziś).
+- Testy: backtest coverage; dzień z ładowaniem EV **nie podbija** p50 slotów bez ładowania (przy godzinowym `load_base`).
+
+**Status:** **następny priorytet** po telemetrii TWC.
+
+### Korekta prognozy z `load_base_day` (druga warstwa)
+
+Godzinowa mediana mówi **kształt** doby; suma dzienna mówi **poziom** — to uzupełnia, nie zastępuje `load_base[h]`.
+
+```text
+load_base_day = Σ_h load_base_kwh[h]   # = load_total_day − ev_day
+```
+
+**Nie** służy do filtrowania lookbacku (patrz wyżej). Służy do:
+
+| Mechanizm | Opis | Priorytet |
+|-----------|------|-----------|
+| **Nowcast na bazie** | `base_so_far = Σ load_base` (godziny zakończone); `factor = base_so_far / Σ p50_base`; skala pozostałych slotów — zamiast surowego `consumption_w` (miesza EV) | po `load_base[h]` |
+| **Kształt × poziom** | `shape[h] = p50[h] / Σ p50`; `level_day` = mediana `load_base_day` (ten sam typ dnia); `forecast[h] = shape[h] × level_day` | jeśli backtest pokaże błąd poziomu (sezon) |
+| **Sanity sumy dobowej** | `Σ forecast[h]` w pasie z historii `load_base_day` (p25–p75) | opcjonalnie |
+| **Plan z deklaracją EV** | `load_plan[h] = forecast_base[h] + ev_scheduled[h]` — korekta dzienna tylko na **bazie**, EV osobno | po rekomendacji EV |
+
+Kolejność wdrożenia korekt: (1) `load_base[h]` w medianie → (2) nowcast na `base_so_far` → (3) shape×level po backteście → (4) deklaracja EV w planie.
+
+**Pułapki:** nie odejmować EV drugi raz na poziomie dnia, jeśli próbki są już `load_base[h]`; intraday korekta tylko z godzin `complete`.
+
+---
+
+## EV: rekomendacja godzin ładowania
+
+**Cel:** użytkownik podaje **ile kWh chce naładować dziś** → system proponuje **godziny**; planer widzi `load_plan[h] = load_base_p50[h] + ev_charge[h]`.
+
+### Zachowanie użytkownika (założenie)
+
+Ładuję tylko gdy **warto**: niska cena importu (G12 noc / 13–15) **oraz** dużo PV. Bez deklaracji — planer zakłada tylko `load_base` (bez EV).
+
+### MVP (bez pełnego MILP)
+
+1. Formularz w dashboardzie: `ev_target_kwh` na dziś (opcjonalnie max moc ładowarki, np. 11 kW).
+2. Ranking godzin horyzontu wg kosztu / korzyści: `import_pln[h]`, prognoza `pv_kwh[h]`, ewent. `rce[h]` (koszt „nie wyeksportowania” PV).
+3. Greedy: pakuj `ev_target_kwh` w najlepsze sloty (limit kWh/h = moc × 1 h).
+4. Wyjście: lista godzin + suma w planie; **rekomendacja** — TWC jest read-only, użytkownik włącza ładowanie w aplikacji Tesli / ręcznie.
+
+### Pełna integracja (później)
+
+- Zmienne `ev_h` w `scenario_optimizer` lub post-processing slotów.
+- Spójność z SOC, export_profit, wear baterii.
+
+**Status:** pomysł — **po** `load_base` w prognozie.
+
+---
+
+## Dashboard: piramida PV wg RCE (tylko UX)
+
+**Cel:** informacja **dla użytkownika** — ile energii **wyprodukowało PV** w godzinach o danej (niskiej) cenie eksportu RCE. **Nie** wpływa na planer, Guardiana ani `load_forecast`.
+
+### Intuicja
+
+Gdy RCE jest niskie (np. &lt; 30 gr), eksport do sieci ma małą wartość — lepiej zużyć PV lokalnie (dom, EV). Warstwa **&lt; 60 gr** porównuje się z **taryfą dzienną ~59 gr** (druga strefa G12): PV w tych godzinach „tańsze” niż późniejszy import.
+
+### Definicja — skumulowane progi
+
+Dla wybranego dnia, dla każdego progu **RCE &lt; X gr** (X ∈ {10, 20, 30, 40, 50, 60}):
+
+```text
+pv_cum_kwh[< X gr] = Σ_h  pv_kwh[h]   gdzie   rce[h] < X/100 PLN
+```
+
+Progi **skumulowane** (połączone): &lt;20 gr zawiera &lt;10 gr itd. — łatwo dodać nowy próg na końcu (np. &lt;70 gr) bez przebudowy UI.
+
+**Nie** chodzi o: import G12, load domu, autokonsumpcję vs eksport — tylko **produkcja PV × cena RCE w tej godzinie**.
+
+### Źródła danych (już w repo)
+
+| Sygnał | Skąd |
+|--------|------|
+| `pv_kwh[h]` | Δ `E_pv_kwh` z telemetrii (`guardian_dashboard` — ten sam wzorzec) |
+| `rce[h]` | `pricing_day_breakdown` / cache `data/pricing/rce_{date}.json` |
+
+### Prezentacja (propozycja)
+
+Tabela lub stos (piramida) — od węższych progów do szerszych:
+
+| Warstwa | kWh PV (przykład) |
+|---------|-------------------|
+| RCE &lt; 10 gr | … |
+| RCE &lt; 20 gr | … |
+| … | … |
+| RCE &lt; 60 gr | … *(ok. taryfa dzienna 59 gr)* |
+
+Opcjonalnie: osobna linia **RCE ≥ 60 gr** (eksport blisko opłacalny vs import).
+
+**Status:** pomysł — moduł KPI + fragment dashboardu; można równolegle z `load_base`.
+
+---
+
+## Dashboard: zużycie dom vs EV + cashflow (dzień / tydzień / miesiąc)
+
+**Cel:** czytelne podsumowanie **dla użytkownika** — ile energii zużył **dom** (bez EV), ile poszło na **ładowanie**, oraz **cashflow** z istniejącego KPI net billing. **Nie** wpływa na planer ani Guardiana.
+
+### Dlaczego to nie jest redundantne
+
+| Co już jest | Czego brakuje |
+|-------------|----------------|
+| KPI dzienny: bilans **sieci** (Δimp/Δexp), depozyt/rachunek PLN | **Brutto zużycia domu** [kWh] — inwerter `consumption_w`, nie liczniki importu |
+| Load **godzinowy** (telemetria, prognoza p50) | Jedna liczba **na dzień**: dom / EV / razem |
+| Prognoza = oczekiwanie | Raport = **fakt** wczoraj / ten tydzień / ten miesiąc |
+
+Relacja do **shiftable:** `ev_day / load_total_day` — obserwowany udział loadu przenośnego; `load_base_day` — trend poziomu doby (UX i ewent. `level_day` w prognozie; **nie** do wyrzucania dni z lookbacku).
+
+### Definicja — dzień kalendarzowy (00:00–00:00, `TELEMETRY_TZ`)
+
+```text
+load_total_day   = Σ_h  load_total_kwh[h]          # avg(consumption_w)/1000 per godzina
+ev_day           = E_twc_kwh(koniec D) − E_twc_kwh(początek D)   # licznik lifetime TWC
+load_base_day    = load_total_day − ev_day         # ≥ 0; dom bez auta
+```
+
+Równoważnie: `load_base_day = Σ_h load_base_kwh[h]` po agregacji godzinowej z TWC.
+
+Dni bez pełnej telemetrii TWC: `ev_day` = null → pokazać tylko `load_total_day` (jak dziś) z adnotacją.
+
+### Cashflow (już w `_kpi_for_day`)
+
+Na ten sam dzień **obok** kWh:
+
+| Pole | Znaczenie |
+|------|-----------|
+| `deposit_add_pln_day` | nadwyżka eksportu × RCE |
+| `electricity_bill_pln_day` | nadwyżka importu × taryfa G12 |
+| `net_cashflow_pln_day` | depozyt − rachunek |
+
+Źródło: `guardian_dashboard._kpi_for_day` — **bez zmiany definicji**; nowe KPI zużycia to **osobny blok** obok finansów.
+
+### Agregaty tygodnia i miesiąca
+
+Sumy po dniach kompletnych (wszystkie 24 h telemetrii + TWC gdy włączone):
+
+```text
+week:  Σ load_base_day, Σ ev_day, Σ load_total_day, Σ net_cashflow_pln_day
+month: j.w. dla zakresu kalendarzowego
+```
+
+Opcjonalnie w UI:
+- **średnia / mediana** `load_base_day` — „typowy dzień domu” (wszystkie dni z kompletną telemetrią; dni z EV nadal liczą się po odjęciu `ev_day`);
+- liczba **dni z ładowaniem** (`ev_day > ε`);
+- **PV** wyprodukowane w okresie (suma Δ `E_pv`) — obok zużycia.
+
+### Prezentacja (propozycja)
+
+**Dzień:** karty `Dom · EV · Razem` [kWh] + `Cashflow` [PLN].
+
+**Tydzień / miesiąc:** tabela lub wykres słupkowy — kWh (dom / EV) + linia cashflow skumulowany; ewent. porównanie z poprzednim okresem.
+
+API: rozszerzenie `GET /api/kpi/day` + `GET /api/kpi/period?from=&to=` (lub week/month).
+
+**Status:** pomysł — UX wysokiego priorytetu; implementacja po agregacji godzinowej `load_base` (wspólny kod z `load_forecast`). Te same agregaty co warstwa korekty prognozy (`load_base_day`).
+
+**Uwaga:** raport dzienny to **UX**; korekta prognozy czyta te same liczby — patrz sekcja **Load forecast: korekta z `load_base_day`**.
 
 ---
 
@@ -253,9 +475,14 @@ Opcjonalnie przy agregacji godzinowej: `ev_charging = delta_twc_kwh > ε`.
 ### Konfiguracja
 
 - `TESLA_WC_HOST` (lub `TESLA_WC_IP`) — IP / hostname w LAN; puste = moduł wyłączony, pola telemetrii `null`.
-- Jeden GET `lifetime` co cykl Guardiana (~1 min) — lekki, bez ryzyka z `vitals`.
+- `TESLA_WC_TIMEOUT_S` — timeout HTTP (domyślnie 5 s).
 
-### Docelowy wpływ na load forecast (nie wdrożone od razu)
+### Zbieranie danych
+
+- **Ten sam cykl** co inwerter (`hourly_balance_run.py`, ~1 min) — **nie** osobny cron (unikamy równoległego zapisu do JSONL).
+- Jeden GET `/api/1/lifetime` na cykl.
+
+### Docelowy wpływ na load forecast
 
 ```text
 load_total_kwh  = avg(consumption_w) / 1000     # jak dziś
@@ -263,9 +490,11 @@ ev_charge_kwh   = Δ E_twc w godzinie
 load_base_kwh   = load_total_kwh − ev_charge_kwh  # do mediany p50
 ```
 
-Powiązanie z sekcją **LOAD oportunistyczny:** twardy pomiar EV zamiast heurystyki „pik >> mediana”; `shiftable_fraction ↑` gdy `ev_charge_kwh > 0`.
+Szczegóły: sekcja **Load forecast: `load_base`**.
 
-**Status:** moduł `tesla_wall_charger.py` + zapis w telemetrii — **wdrożone**; filtrowanie p50 / `load_base` — **kolejny krok**.
+Powiązanie z **LOAD oportunistyczny:** twardy pomiar EV; rekomendacja godzin — sekcja **EV: rekomendacja godzin ładowania**.
+
+**Status:** moduł `tesla_wall_charger.py` + zapis w telemetrii — **wdrożone**; `load_base` w `load_forecast.py` — **kolejny krok**.
 
 ---
 
@@ -273,13 +502,16 @@ Powiązanie z sekcją **LOAD oportunistyczny:** twardy pomiar EV zamiast heuryst
 
 | Obszar | Pliki |
 |--------|--------|
-| Load forecast | `load_forecast.py`, `docs/planner/modules/load_forecast.md` |
+| Load forecast / `load_base` | `load_forecast.py`, `docs/planner/modules/load_forecast.md` |
+| Piramida PV × RCE (UX) | `guardian_dashboard.py` (KPI), `energy_pricing.py`, telemetria PV |
+| Zużycie dom/EV + okresy | `guardian_dashboard.py` (`_kpi_for_day`, agregaty), telemetria, TWC |
+| Rekomendacja EV | dashboard (formularz), `planner/inputs.py`, ewent. `planner/scenario_optimizer.py` |
 | Ceny historyczne | `energy_pricing.py`, `pse_rce.py` (`data/pricing/rce_*.json`), `tariff_g12.py` |
 | Wejścia planera | `planner/inputs.py` |
-| Telemetria | `data/telemetry/`, `planner/telemetry.py`, `tesla_wall_charger.py` |
+| Telemetria / TWC | `data/telemetry/`, `planner/telemetry.py`, `tesla_wall_charger.py`, `hourly_balance_run.py` |
 | Rezerwa nocna | `guardian_logic.py`, `guardian_watchdog_override.py` |
 | Optimizer / eco-slot | `planner/optimizer.py`, `planner/policy_output.py`, `guardian_execution.py` |
 
 ---
 
-*Ostatnia aktualizacja: telemetria TWC Gen3 (`lifetime` / `energy_wh`); moduł `tesla_wall_charger`.*
+*Ostatnia aktualizacja: load_base — lookback z dniami EV (godzinowo, bez wyrzucania dni); korekta prognozy z load_base_day; raport zużycia + cashflow.*
