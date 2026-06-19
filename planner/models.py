@@ -28,7 +28,7 @@ class HourInputs(BaseModel):
 
 
 class HourPlan(BaseModel):
-    """Plan na godzinę: docelowy bilans netto na liczniku (eksport − import)."""
+    """Plan na godzinę: docelowy bilans netto na liczniku o :00 (eksport − import)."""
 
     date: str
     hour: int = Field(ge=0, le=23)

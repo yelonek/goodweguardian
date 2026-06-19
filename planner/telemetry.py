@@ -26,6 +26,19 @@ def read_telemetry_day(local_date: date) -> list[dict]:
     return rows
 
 
+def net_kwh_so_far_for_hour(local_date: date, hour: int) -> float | None:
+    """Bieżący bilans godzinowy (Δexp−Δimp od :00) z ostatniej próbki telemetrii w slocie."""
+    rows = read_telemetry_day(local_date)
+    bucket = [r for r in rows if int(r.get("local_hour", -1)) == hour]
+    if not bucket:
+        return None
+    last = max(bucket, key=lambda x: (int(x.get("local_minute", 0)), x.get("ts_utc", "")))
+    try:
+        return float(last["remaining_kwh"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def hourly_actuals(local_date: date) -> dict[int, dict]:
     """
     Agregaty per godzina z telemetrii minutowej.

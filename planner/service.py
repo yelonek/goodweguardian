@@ -10,6 +10,7 @@ from guardian_config import TELEMETRY_TZ
 from planner.audit import append_audit, new_event
 from planner.config import ensure_planner_dirs, planner_scenario_optimizer_enabled
 from planner.day_audit import build_day_audit, save_day_audit
+from planner.hour_plan_export import normalize_hour_plans_for_policy
 from planner.inputs import build_hour_inputs_for_slots, latest_soc_from_telemetry
 from planner.models import DailyPlan
 from planner.optimizer import optimize_horizon
@@ -44,6 +45,9 @@ def build_rolling_plan(
         soc = latest_soc_from_telemetry(now_local.date()) or 50.0
 
     opt = optimize_horizon(hour_inputs, soc_start_pct=soc)
+    export_hours = normalize_hour_plans_for_policy(
+        hour_inputs, opt.hours, now=now_local
+    )
     optimizer_name = (
         "lp_battery_scenarios_v1" if planner_scenario_optimizer_enabled() else "lp_battery_v1"
     )
@@ -62,7 +66,7 @@ def build_rolling_plan(
         expected_total_cashflow_pln=opt.total_cashflow_pln,
         optimizer=optimizer_name,
         inputs_snapshot=snapshot,
-        hours=opt.hours,
+        hours=export_hours,
     )
     save_plan(plan)
     pv_meta = snapshot.get("pv_forecast_meta") or {}
