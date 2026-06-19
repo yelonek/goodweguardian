@@ -19,7 +19,7 @@ class HourInputs(BaseModel):
     export_pln_per_kwh: float
     load_source: str = ""
     pv_source: str = ""
-    # Pasma niepewności (optimizer CVaR); brak → używane pv_kwh / load_kwh.
+    # Pasma niepewności (optimizer wieloscenariuszowy); brak → używane pv_kwh / load_kwh.
     pv_kwh_p10: float | None = None
     pv_kwh_p90: float | None = None
     load_kwh_p75: float | None = None
@@ -69,7 +69,7 @@ class AuditEvent(BaseModel):
         "day_audited",
         "hour_reconciled",
         "day_reviewed",
-        "cvar_calibrated",
+        "cvar_calibrated",  # legacy — tylko odczyt starych wpisów audytu
     ]
     plan_id: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)

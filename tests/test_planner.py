@@ -182,7 +182,7 @@ def test_scale_hour_inputs_for_remainder() -> None:
 
 def test_partial_current_hour_limits_soc_drop(monkeypatch: pytest.MonkeyPatch) -> None:
     """Regresja 20:50: nie planuj końca h20 na ~10% SOC przy starcie ~59%."""
-    monkeypatch.setattr(opt_mod, "planner_risk_optimizer_enabled", lambda: False)
+    monkeypatch.setattr(opt_mod, "planner_scenario_optimizer_enabled", lambda: False)
     bp = BatteryParams(capacity_kwh=10.0, soc_min_pct=10.0, soc_max_pct=100.0, max_power_kwh_per_h=5.0)
     frac = 10 / 60
     hours = [
@@ -211,7 +211,7 @@ def test_partial_current_hour_limits_soc_drop(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_partial_hour_keeps_more_soc_than_full_hour(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(opt_mod, "planner_risk_optimizer_enabled", lambda: False)
+    monkeypatch.setattr(opt_mod, "planner_scenario_optimizer_enabled", lambda: False)
     bp = BatteryParams(capacity_kwh=10.0, soc_min_pct=10.0, soc_max_pct=100.0, max_power_kwh_per_h=5.0)
     base = dict(
         date="2026-06-14",

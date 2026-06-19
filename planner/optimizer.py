@@ -16,7 +16,7 @@ from planner.battery import (
     max_power_for_hour,
     soc_kwh,
 )
-from planner.config import PLANNER_BATTERY_CYCLE_COST_PLN, planner_risk_optimizer_enabled
+from planner.config import PLANNER_BATTERY_CYCLE_COST_PLN, planner_scenario_optimizer_enabled
 from planner.models import HourInputs, HourPlan
 
 log = logging.getLogger("planner")
@@ -30,7 +30,7 @@ class OptimizeResult:
     hours: list[HourPlan]
     total_cashflow_pln: float
     soc_trajectory_pct: list[float]
-    risk_meta: dict | None = None
+    scenario_meta: dict | None = None
 
 
 def _big_m(hours_in: list[HourInputs], params: BatteryParams) -> float:
@@ -204,10 +204,10 @@ def optimize_horizon(
     if not hours_in:
         return OptimizeResult(hours=[], total_cashflow_pln=0.0, soc_trajectory_pct=[soc_start_pct])
 
-    if planner_risk_optimizer_enabled():
-        from planner.risk_optimizer import optimize_horizon_cvar
+    if planner_scenario_optimizer_enabled():
+        from planner.scenario_optimizer import optimize_horizon_scenarios
 
-        return optimize_horizon_cvar(hours_in, soc_start_pct=soc_start_pct, params=bp)
+        return optimize_horizon_scenarios(hours_in, soc_start_pct=soc_start_pct, params=bp)
 
     solved = _solve_milp(hours_in, soc_start_pct=soc_start_pct, params=bp)
     if solved is None:

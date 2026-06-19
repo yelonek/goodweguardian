@@ -10,11 +10,11 @@ from guardian_logic import BalanceInputs
 
 
 @pytest.fixture(autouse=True)
-def _planner_cvar_off_in_tests(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Testy planera domyślnie bez CVaR (niezależnie od .env produkcyjnego)."""
+def _planner_scenario_off_in_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Testy planera domyślnie deterministyczne p50 (niezależnie od .env produkcyjnego)."""
     import planner.config as cfg
 
-    monkeypatch.setattr(cfg, "_CVAR_LAMBDA_RAW", "0")
+    monkeypatch.setattr(cfg, "_SCENARIO_OPTIMIZER_RAW", "off")
 
 
 @pytest.fixture

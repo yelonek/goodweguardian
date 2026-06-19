@@ -140,21 +140,21 @@ Skrócenie lookback **nie priorytet**; sensowniejsze docelowo: klasyfikator shif
 
 **Cel:** nie tylko floor SOC rano (skrót), lecz **każda godzina horyzontu** oceniana z perspektywy niepewności — bez wcześniejszego ładowania do pełna „na wszelki wypadek” (p90 musi też wchodzić do celu).
 
-### Model (docelowy)
+### Model
 
-- **Decyzja (wspólna):** `ch_h`, `dis_h` — jedna fizyczna bateria.
-- **Scenariusze** `s` z pełnymi profilami na **cały** horyzont, np.:
+- **Per scenariusz:** `ch_s,h`, `dis_s,h`, `soc_s,h`, `imp_s,h`, `exp_s,h`.
+- **Scenariusze** `s` z pełnymi profilami na **cały** horyzont:
   - optymistyczny: PV p90, load p50
   - bazowy: PV p50, load p50
   - pesymistyczny: PV p10, load p75
-- Dla stałej decyzji baterii import/eksport w scenariuszu `s` wynika z bilansu (residual po PV, load, ch, dis).
+- Plan wykonawczy (Guardian): scenariusz **bazowy** (p50); rolling replan co 10 min.
 - **Cel:**
 
 ```text
-max  Σ_s  π_s × Σ_h  cashflow_s(h)  −  wear(ch, dis)
+max  Σ_s  π_s × Σ_h  cashflow_s(h)  −  wear(ch_s, dis_s)
 ```
 
-Opcjonalnie: `max E[cashflow] − λ × CVaR_α(−cashflow_dzienny)` — jedna gałka ostrożności **globalnie**, nie per godzina rana.
+Wagi `π_s` (np. 0,15 / 0,70 / 0,15) oceniają ryzyko przez ważoną średnią cashflow.
 
 ### Balans (żeby nie być totalnym pesymistą)
 
@@ -174,7 +174,7 @@ Rezerwa nocna w Guardianie = **airbag** przy deterministycznym planie p50. Stoch
 2. `optimize_horizon_scenarios(...)` — ten sam MILP, bilans/cashflow × S scenariuszy w funkcji celu.
 3. Backtest wag `π_s` na `reconcile` / `day_review`.
 
-**Status:** pomysł normatywny na przyszłość — **nie** zaimplementowane.
+**Status:** wdrożone w `planner/scenario_optimizer.py` (`PLANNER_SCENARIO_OPTIMIZER=1` domyślnie; `off` = p50).
 
 ---
 

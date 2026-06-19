@@ -28,56 +28,16 @@ PLANNER_SOC_MAX_PCT = _float_env("PLANNER_SOC_MAX_PCT", 100.0)
 PLANNER_HORIZON_HOURS = _int_env("PLANNER_HORIZON_HOURS", 24)
 PLANNER_LOAD_LOOKBACK_DAYS = _int_env("PLANNER_LOAD_LOOKBACK_DAYS", 28)
 
-# CVaR: ``auto`` = kalibracja z telemetrii; liczba > 0 = stałe λ; 0 = wyłączone (p50).
-_CVAR_LAMBDA_RAW = (os.environ.get("PLANNER_CVAR_LAMBDA") or "0").strip().lower()
-PLANNER_CVAR_ALPHA = _float_env("PLANNER_CVAR_ALPHA", 0.90)
+# Wieloscenariuszowy MILP (p10/p50/p90); ``off`` = deterministyczny p50.
+_SCENARIO_OPTIMIZER_RAW = (os.environ.get("PLANNER_SCENARIO_OPTIMIZER") or "1").strip().lower()
 PLANNER_SCENARIO_WEIGHT_PESSIMISTIC = _float_env("PLANNER_SCENARIO_WEIGHT_PESSIMISTIC", 0.15)
 PLANNER_SCENARIO_WEIGHT_BASE = _float_env("PLANNER_SCENARIO_WEIGHT_BASE", 0.70)
 PLANNER_SCENARIO_WEIGHT_OPTIMISTIC = _float_env("PLANNER_SCENARIO_WEIGHT_OPTIMISTIC", 0.15)
 
-PLANNER_CVAR_CALIBRATE_LOOKBACK_DAYS = _int_env("PLANNER_CVAR_CALIBRATE_LOOKBACK_DAYS", 28)
-PLANNER_CVAR_CALIBRATE_CACHE_HOURS = _int_env("PLANNER_CVAR_CALIBRATE_CACHE_HOURS", 24)
-PLANNER_CVAR_CALIBRATE_MIN_DAYS = _int_env("PLANNER_CVAR_CALIBRATE_MIN_DAYS", 5)
-PLANNER_CVAR_CALIBRATE_MIN_DAY_HOURS = _int_env("PLANNER_CVAR_CALIBRATE_MIN_DAY_HOURS", 18)
-PLANNER_CVAR_CALIBRATE_DEFAULT_LAMBDA = _float_env("PLANNER_CVAR_CALIBRATE_DEFAULT_LAMBDA", 1.0)
 
+def planner_scenario_optimizer_enabled() -> bool:
+    return _SCENARIO_OPTIMIZER_RAW not in ("0", "off", "false", "no", "deterministic")
 
-def _parse_cvar_grid() -> list[float]:
-    raw = os.environ.get("PLANNER_CVAR_CALIBRATE_GRID", "0,0.25,0.5,1,1.5,2,3,5")
-    out: list[float] = []
-    for part in raw.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        try:
-            out.append(float(part))
-        except ValueError:
-            continue
-    return out or [0.0, 0.5, 1.0, 2.0]
-
-
-PLANNER_CVAR_CALIBRATE_GRID = _parse_cvar_grid()
-
-
-def cvar_lambda_mode() -> str:
-    """``off`` | ``fixed`` | ``auto``."""
-    if _CVAR_LAMBDA_RAW == "auto":
-        return "auto"
-    try:
-        return "off" if float(_CVAR_LAMBDA_RAW) <= 0.0 else "fixed"
-    except ValueError:
-        return "off"
-
-
-def fixed_cvar_lambda_value() -> float:
-    try:
-        return max(0.0, float(_CVAR_LAMBDA_RAW))
-    except ValueError:
-        return 0.0
-
-
-def planner_risk_optimizer_enabled() -> bool:
-    return cvar_lambda_mode() in ("fixed", "auto")
 
 # Maks. moc ładowania/rozładowania magazynu w godzinie [kWh]
 def max_battery_kwh_per_hour() -> float:
