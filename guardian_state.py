@@ -38,17 +38,46 @@ def load_state(now: datetime) -> tuple[float, float] | None:
     return float(exp), float(imp)
 
 
-def save_state(now: datetime, E_exp_start: float, E_imp_start: float) -> None:
+def save_state(
+    now: datetime,
+    E_exp_start: float,
+    E_imp_start: float,
+    *,
+    E_twc_start: float | None = None,
+) -> None:
     """Zapisuje stan na start bieżącej godziny (wywołanie przy minuty==0)."""
     path = _state_path(now)
     path.parent.mkdir(parents=True, exist_ok=True)
     hour_key = now.strftime("%Y-%m-%dT%H")
-    data = {
+    data: dict[str, object] = {
         "hour": hour_key,
         "E_exp_start": E_exp_start,
         "E_imp_start": E_imp_start,
     }
+    if E_twc_start is not None:
+        data["E_twc_start"] = E_twc_start
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def load_twc_start(now: datetime) -> float | None:
+    """Baza E_twc_kwh z pliku stanu godziny, jeśli zapisana."""
+    path = _state_path(now)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    hour_key = now.strftime("%Y-%m-%dT%H")
+    if data.get("hour") != hour_key:
+        return None
+    val = data.get("E_twc_start")
+    if val is None:
+        return None
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return None
 
 
 _CARRYOVER_PATH = STATE_DIR / "watchdog_carryover.json"

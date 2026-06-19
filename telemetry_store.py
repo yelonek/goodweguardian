@@ -49,6 +49,8 @@ class CycleTelemetryRecord(BaseModel):
     plan_target_net_kwh: float | None = None
     exec_mode: str | None = None
     plan_id: str | None = None
+    E_twc_kwh: float | None = None
+    delta_twc_kwh: float | None = None
 
 
 def append_cycle_record(record: CycleTelemetryRecord) -> None:

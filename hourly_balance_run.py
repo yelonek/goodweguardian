@@ -71,6 +71,7 @@ from guardian_log import (
 from guardian_state import (
     load_soc_full_defense_carryover,
     load_state,
+    load_twc_start,
     save_soc_full_defense_carryover,
     save_state,
 )
@@ -92,6 +93,12 @@ from telemetry_store import (
     hour_start_counters_from_telemetry,
     build_ts_and_calendar,
     recent_consumption_average_w,
+)
+from tesla_wall_charger import (
+    compute_delta_twc_kwh,
+    fetch_lifetime_energy_kwh,
+    hour_start_twc_kwh_from_telemetry,
+    twc_enabled,
 )
 
 
@@ -218,9 +225,13 @@ async def run_one_cycle() -> None:
     soc_pct = _get_float(runtime, BATTERY_SOC)
     battery_w = _get_float(runtime, BATTERY_POWER)
 
+    E_twc_kwh: float | None = None
+    if twc_enabled():
+        E_twc_kwh = fetch_lifetime_energy_kwh()
+
     # Zapis stanu na :00
     if now.minute == 0:
-        save_state(now, E_exp, E_imp)
+        save_state(now, E_exp, E_imp, E_twc_start=E_twc_kwh)
 
     state = load_state(now)
     log = logging.getLogger("guardian")
@@ -239,9 +250,33 @@ async def run_one_cycle() -> None:
             log.warning(
                 "Brak stanu i telemetrii dla godziny — baza = bieżące liczniki (bilans od teraz)"
             )
-        save_state(now, E_exp_start, E_imp_start)
+        save_state(now, E_exp_start, E_imp_start, E_twc_start=E_twc_kwh)
     else:
         E_exp_start, E_imp_start = state
+
+    delta_twc_kwh: float | None = None
+    if E_twc_kwh is not None:
+        E_twc_start = load_twc_start(now)
+        if E_twc_start is None:
+            recovered_twc = hour_start_twc_kwh_from_telemetry(now)
+            if recovered_twc is not None:
+                E_twc_start = recovered_twc
+                log.info(
+                    "Baza TWC z telemetrii (start w środku godziny): E_twc=%.6f kWh",
+                    E_twc_start,
+                )
+            else:
+                E_twc_start = E_twc_kwh
+            save_state(
+                now,
+                E_exp_start,
+                E_imp_start,
+                E_twc_start=E_twc_start,
+            )
+        delta_twc_kwh = compute_delta_twc_kwh(
+            E_twc_kwh,
+            hour_start_kwh=E_twc_start,
+        )
 
     delta_imp = E_imp - E_imp_start
     delta_exp = E_exp - E_exp_start
@@ -464,6 +499,8 @@ async def run_one_cycle() -> None:
                     cmd_enabled=cmd_active,
                     cmd_pct=decision.power_pct if cmd_active else 0,
                     cmd_duration_s=float(decision.duration_s if cmd_active else 0.0),
+                    E_twc_kwh=E_twc_kwh,
+                    delta_twc_kwh=delta_twc_kwh,
                 )
             )
         except Exception:
