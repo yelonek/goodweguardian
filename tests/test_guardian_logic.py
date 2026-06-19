@@ -475,7 +475,7 @@ class TestWatchdogPolicy:
         assert d.mode == "discharge"
         assert d.reason == "soc_low_discharge_cap"
 
-    def test_soc_low_discharge_cap_allows_charging_when_pv_surplus(
+    def test_soc_low_pv_surplus_routes_pv_to_grid_without_battery_discharge(
         self, default_inputs: BalanceInputs
     ) -> None:
         default_inputs.soc_pct = 15.0
@@ -486,8 +486,9 @@ class TestWatchdogPolicy:
         default_inputs.low_soc_discharge_target_w = 500.0
         cfg = WatchdogConfig(soc_low_threshold_pct=20.0)
         d = decide_watchdog(default_inputs, cfg=cfg)
-        assert d.write_slot is False
-        assert d.mode == "neutral"
+        assert d.write_slot is True
+        assert d.power_pct == 1
+        assert d.mode == "discharge"
         assert d.reason == "soc_low_pv_surplus_no_discharge"
 
     def test_soc_low_pv_surplus_prioritizes_negative_hour_balance(

@@ -386,12 +386,16 @@ def decide_soc_defenses(
                         mode="discharge",
                         reason="soc_low_pv_surplus_balance_priority",
                     )
+                # DISCHARGE 1% jak export_pv_surplus: PV na sieć bez rozładowania baterii.
+                # write_slot=False zostawia inwerter bez ecoslota → GoodWe ładuje z nadwyżki PV.
+                target_pct = max(1, int(cfg.min_discharge_assist_pct))
+                duration_s = min(inp.time_to_end_s, max(60.0, inp.time_to_end_s))
                 return WatchdogDecision(
-                    write_slot=False,
-                    enabled=False,
-                    power_pct=0,
-                    duration_s=0.0,
-                    mode="neutral",
+                    write_slot=True,
+                    enabled=True,
+                    power_pct=target_pct,
+                    duration_s=duration_s,
+                    mode="discharge",
                     reason="soc_low_pv_surplus_no_discharge",
                 )
             target_w = min(float(low_soc_target_w), load_deficit_w, float(inp.p_battery_w))
