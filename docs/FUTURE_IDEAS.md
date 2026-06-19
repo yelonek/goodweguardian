@@ -223,6 +223,52 @@ Optimizer **może** zaplanować `ch > pv` (ładowanie magazynu z importu) albo p
 
 ---
 
+## Telemetria: Tesla Wall Connector Gen 3 (`energy_wh`)
+
+**Cel:** rozdzielić LOAD domu od ładowania EV — inwerter GoodWe widzi tylko sumę `consumption_w`; bez osobnego licznika EV wysoki LOAD w historii (np. sobota, tanio + PV) zafałszowuje medianę p50.
+
+**Źródło:** lokalne HTTP API ładowarki — **tylko** `GET /api/1/lifetime`, pole `energy_wh` (Wh, monotoniczny licznik lifetime). **Bez** `/api/1/vitals` — do historii i tagu `ev_charge` wystarczą przyrosty `energy_wh`; częsty polling `vitals` bywa niestabilny (timeout po godzinach).
+
+**Przykład odpowiedzi:**
+
+```json
+{
+  "energy_wh": 12125146,
+  "charge_starts": 3044,
+  "charging_time_s": 6409212
+}
+```
+
+Pozostałe pola `lifetime` (`charge_starts`, `charging_time_s`, `uptime_s`) **nie** są potrzebne do estymacji loadu.
+
+### Pola w telemetrii (cykl minutowy)
+
+| Pole | Znaczenie |
+|------|-----------|
+| `E_twc_kwh` | `energy_wh / 1000` |
+| `delta_twc_kwh` | przyrost od startu lokalnej godziny (jak `delta_imp_kwh`) |
+
+Opcjonalnie przy agregacji godzinowej: `ev_charging = delta_twc_kwh > ε`.
+
+### Konfiguracja
+
+- `TESLA_WC_HOST` (lub `TESLA_WC_IP`) — IP / hostname w LAN; puste = moduł wyłączony, pola telemetrii `null`.
+- Jeden GET `lifetime` co cykl Guardiana (~1 min) — lekki, bez ryzyka z `vitals`.
+
+### Docelowy wpływ na load forecast (nie wdrożone od razu)
+
+```text
+load_total_kwh  = avg(consumption_w) / 1000     # jak dziś
+ev_charge_kwh   = Δ E_twc w godzinie
+load_base_kwh   = load_total_kwh − ev_charge_kwh  # do mediany p50
+```
+
+Powiązanie z sekcją **LOAD oportunistyczny:** twardy pomiar EV zamiast heurystyki „pik >> mediana”; `shiftable_fraction ↑` gdy `ev_charge_kwh > 0`.
+
+**Status:** moduł `tesla_wall_charger.py` + zapis w telemetrii — **wdrożone**; filtrowanie p50 / `load_base` — **kolejny krok**.
+
+---
+
 ## Powiązane pliki (gdy będzie implementacja)
 
 | Obszar | Pliki |
@@ -230,10 +276,10 @@ Optimizer **może** zaplanować `ch > pv` (ładowanie magazynu z importu) albo p
 | Load forecast | `load_forecast.py`, `docs/planner/modules/load_forecast.md` |
 | Ceny historyczne | `energy_pricing.py`, `pse_rce.py` (`data/pricing/rce_*.json`), `tariff_g12.py` |
 | Wejścia planera | `planner/inputs.py` |
-| Telemetria | `data/telemetry/`, `planner/telemetry.py` |
+| Telemetria | `data/telemetry/`, `planner/telemetry.py`, `tesla_wall_charger.py` |
 | Rezerwa nocna | `guardian_logic.py`, `guardian_watchdog_override.py` |
 | Optimizer / eco-slot | `planner/optimizer.py`, `planner/policy_output.py`, `guardian_execution.py` |
 
 ---
 
-*Ostatnia aktualizacja: luka MILP vs import_grid (DC/AC, slot SOC); kit optimizera.*
+*Ostatnia aktualizacja: telemetria TWC Gen3 (`lifetime` / `energy_wh`); moduł `tesla_wall_charger`.*
