@@ -169,6 +169,12 @@ SOLCAST_PROXY_BASE_URL = (
 )
 PROXY_HTTP_TIMEOUT_S = _float_env("PROXY_HTTP_TIMEOUT_S", 10.0)
 
+# Tesla Wall Connector Gen 3 — lokalne API /api/1/lifetime (puste = wyłączone)
+TESLA_WC_HOST = (
+    os.environ.get("TESLA_WC_HOST") or os.environ.get("TESLA_WC_IP") or ""
+).strip()
+TESLA_WC_TIMEOUT_S = _float_env("TESLA_WC_TIMEOUT_S", 5.0)
+
 # Load forecast: korekta krótkoterminowa (factor = recent/baseline p50 bieżącej godz.)
 LOAD_NOWCAST_ENABLED = _bool_env("LOAD_NOWCAST_ENABLED", True)
 LOAD_NOWCAST_WINDOW_MIN = _int_env("LOAD_NOWCAST_WINDOW_MIN", 45)
