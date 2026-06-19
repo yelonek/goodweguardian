@@ -137,49 +137,57 @@ def _steady_decision(
     )
 
 
-def resolve_low_soc_taper_max_w(
-    inp: BalanceInputs,
-    *,
-    threshold_pct: float,
-    hard_cap_w: float = 0.0,
-) -> float:
-    """
-    Sufit mocy rozładowania poniżej progu SOC [W]; 0 = brak dodatkowego sufitu.
-
-    Preferuje ``low_soc_discharge_target_w`` (średnia ``consumption_w`` z telemetrii);
-    gdy brak historii — bieżące ``consumption_w``.
-    """
-    if float(inp.soc_pct) > float(threshold_pct):
-        return 0.0
+def load_cover_discharge_w(inp: BalanceInputs) -> float:
+    """Minimum rozładowania [W] na pokrycie domu — średnia telemetrii lub bieżące consumption."""
     limit = inp.low_soc_discharge_target_w
     if limit is None and float(inp.consumption_w) > 0.0:
         limit = float(inp.consumption_w)
     if limit is None or limit <= 0.0:
         return 0.0
-    if hard_cap_w > 0.0:
-        limit = min(float(limit), hard_cap_w)
     return float(limit)
+
+
+def export_profit_low_soc_taper_max_w(
+    inp: BalanceInputs,
+    *,
+    threshold_pct: float,
+    full_max_w: float,
+    lfp_cap_w: float,
+) -> float:
+    """
+    Sufit mocy ``export_profit`` poniżej progu SOC [W]; 0 = bez taperu (SOC powyżej progu).
+
+    Ogranicza prąd rozładowania LFP (napięcie/BMS), ale nie mniej niż pokrycie loadu.
+    ``lfp_cap_w`` — górny limit mocy przy niskim SOC; nadal jedziemy do ``soc_floor`` z planu.
+    """
+    if float(inp.soc_pct) > float(threshold_pct):
+        return 0.0
+    cap = min(float(full_max_w), float(lfp_cap_w)) if lfp_cap_w > 0.0 else float(full_max_w)
+    load_w = load_cover_discharge_w(inp)
+    if load_w > 0.0:
+        cap = min(float(full_max_w), max(cap, load_w))
+    return max(0.0, cap)
 
 
 def compute_export_profit_pace_w(
     inp: BalanceInputs,
     *,
-    taper_threshold_pct: float,
-    taper_max_w: float,
     plan_discharge_pct: int,
     min_discharge_pct: int,
+    taper_max_w: float = 0.0,
 ) -> float:
     """
     Moc rozładowania [W] dla ``export_profit``.
 
-    Powyżej ``taper_threshold_pct``: maks. dozwolona moc (plan, bateria, inwerter).
-    Poniżej progu: dodatkowy sufit ``taper_max_w`` (średnie zużycie domu).
+    Powyżej progu niskiego SOC: max (plan, bateria, inwerter).
+    Poniżej: ``taper_max_w`` z ``export_profit_low_soc_taper_max_w`` (LFP / pokrycie loadu).
+    Podłoga energii = ``soc_floor_pct`` (osobna gałąź w ``_exec_export_profit``).
     """
     cap_w = _discharge_cap_w(inp.p_inverter_w, inp.pv_w, inp.p_battery_w)
     plan_max_w = plan_discharge_pct * inp.watts_per_percent
     target_w = min(cap_w, float(inp.p_battery_w), plan_max_w)
 
-    if float(inp.soc_pct) <= float(taper_threshold_pct) and taper_max_w > 0.0:
+    if taper_max_w > 0.0:
         target_w = min(target_w, taper_max_w)
 
     min_w = min_discharge_pct * inp.watts_per_percent
@@ -312,8 +320,8 @@ def decide_soc_defenses(
 
     Z planem:
     - **Pełna bateria** — wyłączona w ``export_profit`` (celowe rozładowanie).
-    - **Niska bateria** — tylko w ``export_pv_surplus``, ``neutral``
-      (``export_profit`` używa pacingu + taperu w ``guardian_execution``).
+    - **Niska bateria** — tylko w ``export_pv_surplus``, ``neutral`` (limit loadu);
+      ``export_profit``: max powyżej progu, poniżej — taper LFP do ``soc_floor``.
     """
 
     low_soc_discharge_cap_active = (

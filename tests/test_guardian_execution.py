@@ -104,38 +104,39 @@ def test_export_profit_at_full_soc_not_blocked_by_full_defense() -> None:
 
 
 def test_export_profit_skips_low_soc_defense() -> None:
-    """Poniżej 22% export_profit używa pacingu, nie soc_low_discharge_cap."""
+    """Poniżej progu: taper LFP, nie soc_low_discharge_cap."""
     d = decide_plan_execution(
         _inp(
             soc_pct=18.0,
-            time_to_end_s=2400.0,
             pv_w=100.0,
             consumption_w=1000.0,
-            low_soc_discharge_target_w=420.0,
+            p_inverter_w=8200.0,
+            p_battery_w=5200.0,
+            watts_per_percent=72.0,
+            low_soc_discharge_target_w=520.0,
         ),
         _row("export_profit", soc_floor_pct=10.0, discharge_pct=100),
         cfg=WatchdogConfig(soc_low_threshold_pct=22.0),
     )
     assert d.reason == "export_profit_pace"
     assert d.reason != "soc_low_discharge_cap"
-    assert d.power_pct == 6
+    assert d.power_pct == 14  # min(1000 W, full) ≈ 1000 / 72
 
 
-def test_export_profit_taper_uses_consumption_when_no_average() -> None:
-    """Bez średniej z telemetrii — taper z bieżącego consumption_w."""
+def test_export_profit_full_power_above_threshold() -> None:
     d = decide_plan_execution(
         _inp(
-            soc_pct=18.0,
-            time_to_end_s=2400.0,
-            pv_w=100.0,
-            consumption_w=500.0,
-            low_soc_discharge_target_w=None,
+            soc_pct=25.0,
+            p_inverter_w=8200.0,
+            p_battery_w=5200.0,
+            watts_per_percent=72.0,
+            low_soc_discharge_target_w=520.0,
         ),
-        _row("export_profit", soc_floor_pct=10.0, discharge_pct=100),
-        cfg=WatchdogConfig(soc_low_threshold_pct=22.0),
+        _row("export_profit", soc_floor_pct=10.0, discharge_pct=46),
+        cfg=WatchdogConfig(soc_low_threshold_pct=20.0),
     )
     assert d.reason == "export_profit_pace"
-    assert d.power_pct == 7
+    assert d.power_pct == 46
 
 
 def test_export_profit_pace_caps_at_plan_discharge_pct() -> None:

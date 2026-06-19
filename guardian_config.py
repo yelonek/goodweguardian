@@ -100,6 +100,10 @@ SOC_LOW_DEFENSE_RELEASE_REMAINING_KWH = _float_env(
     "SOC_LOW_DEFENSE_RELEASE_REMAINING_KWH", 0.0
 )
 
+# export_profit przy niskim SOC: sufit mocy [W] (LFP — spadek napięcia / BMS przy dużym I).
+# 0 = bez dodatkowego sufitu (tylko pokrycie loadu ze średniej). Domyślnie 1000 W.
+EXPORT_PROFIT_LOW_SOC_MAX_W = _float_env("EXPORT_PROFIT_LOW_SOC_MAX_W", 1000.0)
+
 # Nocna rezerwa SOC: w godzinach nocnych blokuj discharge gdy SOC ≤ progu — by zostawić
 # zapas na poranne drogie godziny (po 6:00, zanim wstanie słońce). 0 = wyłączone.
 SOC_NIGHT_RESERVE_PCT = _float_env("SOC_NIGHT_RESERVE_PCT", 0.0)
