@@ -319,12 +319,20 @@
         <p class="setting-lead muted">
           Progi bezpieczeństwa baterii: rezerwa nocna (nie rozładowuj za nisko w nocy) oraz obrona przy
           bardzo niskim lub bardzo wysokim SOC. Guardian stosuje je <strong>niezależnie od planu</strong>,
-          gdy zapisy do inwertera są włączone.
+          gdy zapisy do inwertera są włączone. Wyłącz rezerwę nocną, jeśli strategię nocną ma sterować planer.
         </p>
         <div class="grid" id="watchdogSummaryCards"></div>
         <div class="card" style="max-width: 640px; margin-top: 10px;">
           <div class="k" id="wdPathLine">…</div>
           <div class="wd-form">
+            <label class="wd-label eco-enabled" style="flex-direction: row; align-items: flex-start; gap: 10px;">
+              <input id="wd_soc_night_reserve_enabled" type="checkbox" />
+              <span>
+                <span class="wd-name">Rezerwa nocna w Guardianie</span>
+                <span class="wd-hint">Wyłączone — Guardian nie blokuje rozładowania w nocy; godziny nocne obsługuje planer.</span>
+              </span>
+            </label>
+            <div id="wdNightReserveFields">
             <label class="wd-label">
               <span class="wd-name">Minimalny SOC w nocy (%)</span>
               <span class="wd-hint">Poniżej tego progu w godzinach rezerwy — obrona przed rozładowaniem.</span>
@@ -340,6 +348,7 @@
               <span class="wd-hint">Godziny 0–23, po przecinku (np. 22,23,0,1,2,3,4,5).</span>
               <input id="wd_soc_night_reserve_hours" class="wd-wide" type="text" placeholder="22,23,0,1,2,3,4,5" />
             </label>
+            </div>
             <label class="wd-label">
               <span class="wd-name">Próg niskiej obrony SOC (%)</span>
               <span class="wd-hint">Poniżej — Guardian ostro chroni baterię przed rozładowaniem.</span>

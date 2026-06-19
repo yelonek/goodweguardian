@@ -20,6 +20,7 @@ function renderToggleStatus(el, enabled, source, labels) {
 }
 
 const WD_FIELD_LABELS = {
+  soc_night_reserve_enabled: "Rezerwa nocna (Guardian)",
   soc_night_reserve_pct: "Min. SOC w nocy",
   soc_night_reserve_charge_pct: "Ładowanie w rezerwie",
   soc_night_reserve_hours: "Godziny rezerwy",
@@ -274,6 +275,15 @@ function hourArraysEqual(a, b) {
 }
 function flEq(a, b) { return Math.abs(Number(a) - Number(b)) < 1e-6; }
 
+function setNightReserveFieldsEnabled(on) {
+  const wrap = document.getElementById("wdNightReserveFields");
+  if (wrap) wrap.classList.toggle("muted", !on);
+  for (const id of ["wd_soc_night_reserve_pct", "wd_soc_night_reserve_charge_pct", "wd_soc_night_reserve_hours"]) {
+    const el = document.getElementById(id);
+    if (el) el.disabled = !on;
+  }
+}
+
 function renderWatchdogSoc(wds) {
   if (!wds || !wds.effective) return;
   const eff = wds.effective, src = wds.sources || {};
@@ -281,6 +291,7 @@ function renderWatchdogSoc(wds) {
     ? "Nadpisania z panelu: aktywne (niektóre progi mogą różnić się od .env)"
     : "Tylko wartości z .env — brak pliku nadpisania";
   document.getElementById("watchdogSummaryCards").innerHTML = [
+    ["soc_night_reserve_enabled", eff.soc_night_reserve_enabled ? "włączona" : "wyłączona (planer)", formatWatchdogSource(src.soc_night_reserve_enabled)],
     ["soc_night_reserve_pct", `${fmt(eff.soc_night_reserve_pct)}%`, formatWatchdogSource(src.soc_night_reserve_pct)],
     ["soc_night_reserve_charge_pct", `${fmt(eff.soc_night_reserve_charge_pct)}%`, formatWatchdogSource(src.soc_night_reserve_charge_pct)],
     ["soc_night_reserve_hours", (eff.soc_night_reserve_hours || []).join(", "), formatWatchdogSource(src.soc_night_reserve_hours)],
@@ -290,6 +301,9 @@ function renderWatchdogSoc(wds) {
     const title = WD_FIELD_LABELS[k] || k;
     return `<div class="card"><div class="k">${title}</div><div class="v" style="font-size:16px;">${v}</div><div class="muted" style="font-size:11px;margin-top:4px;">źródło: ${s}</div></div>`;
   }).join("");
+  const nightOn = Boolean(eff.soc_night_reserve_enabled);
+  document.getElementById("wd_soc_night_reserve_enabled").checked = nightOn;
+  setNightReserveFieldsEnabled(nightOn);
   document.getElementById("wd_soc_night_reserve_pct").value = eff.soc_night_reserve_pct;
   document.getElementById("wd_soc_night_reserve_charge_pct").value = eff.soc_night_reserve_charge_pct;
   document.getElementById("wd_soc_night_reserve_hours").value = (eff.soc_night_reserve_hours || []).join(",");
@@ -393,6 +407,8 @@ async function saveWatchdog() {
   const eb = (window._lastWds || {}).env_base;
   if (!eb) { st.textContent = "Brak konfiguracji"; return; }
   const body = {};
+  const nightEnabled = document.getElementById("wd_soc_night_reserve_enabled").checked;
+  body.soc_night_reserve_enabled = nightEnabled === eb.soc_night_reserve_enabled ? null : nightEnabled;
   const snr = parseFloat(document.getElementById("wd_soc_night_reserve_pct").value);
   const src = parseInt(document.getElementById("wd_soc_night_reserve_charge_pct").value, 10);
   const slow = parseFloat(document.getElementById("wd_soc_low_defense_threshold_pct").value);
@@ -720,6 +736,9 @@ document.getElementById("enablePlanner").addEventListener("click", () => putPlan
 document.getElementById("disablePlanner").addEventListener("click", () => putPlanner(false));
 document.getElementById("saveWatchdog").addEventListener("click", () => saveWatchdog().catch(console.error));
 document.getElementById("resetWatchdog").addEventListener("click", () => resetWatchdog().catch(console.error));
+document.getElementById("wd_soc_night_reserve_enabled").addEventListener("change", (e) => {
+  setNightReserveFieldsEnabled(e.target.checked);
+});
 
 const ecoPanels = document.getElementById("ecoSlotsPanels");
 ecoPanels.addEventListener("click", handleEcoSaveEvent);
