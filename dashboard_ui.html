@@ -52,6 +52,16 @@
     table.kpi-merged td.delta-pos { color: #0d8050; }
     table.kpi-merged td.delta-neg { color: #b32d2d; }
     table.kpi-merged td.delta-ok { opacity: 0.85; }
+    table.pv-pyramid td, table.pv-pyramid th { text-align: right; font-variant-numeric: tabular-nums; }
+    table.pv-pyramid td:first-child, table.pv-pyramid th:first-child { text-align: left; }
+    table.pv-pyramid .grp-pv { background: rgba(120, 220, 140, 0.10); }
+    table.pv-pyramid .pv-bar-wrap { min-width: 120px; }
+    table.pv-pyramid .pv-bar { display: inline-block; height: 10px; border-radius: 3px; background: rgba(80, 180, 100, 0.75); vertical-align: middle; }
+    table.pv-pyramid tr.pyramid-cheap td { background: rgba(120, 220, 140, 0.06); }
+    table.pv-pyramid tr.pyramid-mid td { background: rgba(255, 200, 80, 0.06); }
+    .pv-pyramid-block { margin-top: 16px; max-width: 720px; }
+    .pv-pyramid-block h3 { margin: 0 0 6px; font-size: 1rem; }
+    .pv-pyramid-summary { display: flex; flex-wrap: wrap; gap: 10px; margin: 8px 0 10px; }
     .settings-block { margin-bottom: 28px; }
     .settings-block h3 { margin: 0 0 10px; font-size: 1rem; }
     .setting-lead { font-size: 13px; line-height: 1.45; margin: 0 0 12px; max-width: 640px; }
@@ -153,6 +163,30 @@
     <section id="page-overview" class="page active">
       <div class="page-hdr"><h2>Stan bieżący</h2></div>
       <div class="grid" id="cards"></div>
+      <div class="pv-pyramid-block card" id="pvPyramidBlock" style="display:none;">
+        <h3>PV a cena RCE (dziś + jutro)</h3>
+        <p class="muted setting-lead" style="font-size:12px; margin:0 0 8px;">
+          Ile energii <strong>wyprodukuje PV</strong> w godzinach z tanim eksportem (RCE).
+          Minione godziny — fakty z telemetrii; reszta — prognoza p50. Pomaga zaplanować CWU, EV, pralkę.
+        </p>
+        <div class="pv-pyramid-summary" id="pvPyramidSummary"></div>
+        <div class="muted" id="pvPyramidMeta" style="font-size:11px; margin-bottom:6px;"></div>
+        <div class="muted" id="pvPyramidWarnings" style="font-size:11px; margin-bottom:6px;"></div>
+        <table class="pv-pyramid">
+          <thead>
+            <tr>
+              <th>Próg RCE</th>
+              <th class="grp-pv">kWh skumul.</th>
+              <th class="grp-pv">w warstwie</th>
+              <th class="grp-pv pv-bar-wrap">udział</th>
+            </tr>
+          </thead>
+          <tbody id="pvPyramidRows"></tbody>
+        </table>
+        <p class="muted" style="font-size:11px; margin:8px 0 0;">
+          Próg 60 gr ≈ taryfa dzienna G12 (~59 gr). Wiersz ≥60 gr — PV w godzinach droższego eksportu.
+        </p>
+      </div>
     </section>
 
     <section id="page-history" class="page">

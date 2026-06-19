@@ -733,6 +733,9 @@ _tomorrow_pricing_cache: tuple[date, float, dict[str, Any] | None] | None = None
 _COMBINED_FORECAST_TTL_S = 90.0
 _combined_forecast_cache: tuple[float, dict[str, Any]] | None = None
 
+_PV_PYRAMID_TTL_S = 90.0
+_pv_pyramid_cache: tuple[float, dict[str, Any]] | None = None
+
 _ECOSLOTS_CACHE_TTL_S = 20.0
 _ecoslots_cache: tuple[float, dict[str, Any]] | None = None
 
@@ -1102,6 +1105,29 @@ def _get_combined_forecast_cached() -> dict[str, Any]:
 @app.get("/api/forecast/combined")
 async def api_forecast_combined() -> JSONResponse:
     payload = await _run_heavy(_get_combined_forecast_cached)
+    return JSONResponse(payload)
+
+
+def _get_pv_pyramid_cached() -> dict[str, Any]:
+    global _pv_pyramid_cache
+    mono = time.monotonic()
+    cached = _pv_pyramid_cache
+    if cached is not None and (mono - cached[0]) < _PV_PYRAMID_TTL_S:
+        return cached[1]
+    with _forecast_build_lock:
+        cached = _pv_pyramid_cache
+        if cached is not None and (mono - cached[0]) < _PV_PYRAMID_TTL_S:
+            return cached[1]
+        from pv_pyramid import build_pv_pyramid_payload
+
+        payload = build_pv_pyramid_payload()
+        _pv_pyramid_cache = (time.monotonic(), payload)
+        return payload
+
+
+@app.get("/api/pv-pyramid")
+async def api_pv_pyramid() -> JSONResponse:
+    payload = await _run_heavy(_get_pv_pyramid_cached)
     return JSONResponse(payload)
 
 

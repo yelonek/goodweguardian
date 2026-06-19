@@ -68,7 +68,10 @@ function localNowParts() {
 async function loadOverview(force) {
   if (!force && pageLoaded.overview) return;
   try {
-    const status = await fetchJson("/api/status", 10000);
+    const [status, pyramid] = await Promise.all([
+      fetchJson("/api/status", 10000),
+      fetchJson("/api/pv-pyramid", 60000).catch((e) => ({ _error: String(e) })),
+    ]);
     document.getElementById("logPath").textContent = status.log_path || "—";
     const f = status.fields || {};
     document.getElementById("cards").innerHTML = [
@@ -78,12 +81,51 @@ async function loadOverview(force) {
       ["ecoslot_read_pct", f.ecoslot_read_pct], ["intervene", f.intervene], ["reason", f.reason],
       ["cmd_enabled", f.cmd_enabled], ["cmd_pct", f.cmd_pct], ["cmd_duration_s", f.cmd_duration_s],
     ].map(([k, v]) => card(k, v)).join("");
+    renderPvPyramid(pyramid);
     pageLoaded.overview = true;
     setUpdated(true);
   } catch (e) {
     setUpdated(false);
     console.error(e);
   }
+}
+
+function renderPvPyramid(p) {
+  const block = document.getElementById("pvPyramidBlock");
+  if (!p || p._error) {
+    block.style.display = "none";
+    return;
+  }
+  block.style.display = "block";
+  const total = Number(p.pv_total_kwh || 0);
+  const above = Number(p.above_60_kwh || 0);
+  document.getElementById("pvPyramidSummary").innerHTML = [
+    ["PV w horyzoncie", `${total.toFixed(1)} kWh`],
+    ["RCE ≥ 60 gr", `${above.toFixed(1)} kWh`],
+    ["Tanio (<60 gr)", `${Math.max(0, total - above).toFixed(1)} kWh`],
+  ].map(([k, v]) => card(k, v)).join("");
+  const meta = [
+    p.pricing_tomorrow_available ? `jutro RCE: ${p.pricing_tomorrow_source || "ok"}` : "jutro RCE: brak",
+    `PV: ${p.hours_with_pv || 0}/48 h`,
+  ];
+  document.getElementById("pvPyramidMeta").textContent = meta.join(" · ");
+  const warns = p.warnings || [];
+  document.getElementById("pvPyramidWarnings").textContent = warns.length
+    ? `Uwagi: ${warns.slice(0, 4).join(" · ")}` : "";
+  const barMax = total > 0 ? total : 1;
+  const tierRows = (p.tiers || []).map((t) => {
+    const gr = t.threshold_gr;
+    const cum = Number(t.cumulative_kwh || 0);
+    const layer = Number(t.layer_kwh || 0);
+    const pct = Math.min(100, Math.round((cum / barMax) * 100));
+    const cls = gr <= 30 ? "pyramid-cheap" : gr <= 50 ? "pyramid-mid" : "";
+    return `<tr class="${cls}"><td>&lt; ${gr} gr</td><td>${cum.toFixed(2)}</td><td>${layer.toFixed(2)}</td>
+      <td class="pv-bar-wrap"><span class="pv-bar" style="width:${pct}%;"></span></td></tr>`;
+  }).join("");
+  const abovePct = Math.min(100, Math.round((above / barMax) * 100));
+  document.getElementById("pvPyramidRows").innerHTML = tierRows +
+    `<tr><td>≥ 60 gr</td><td>${above.toFixed(2)}</td><td>${above.toFixed(2)}</td>
+      <td class="pv-bar-wrap"><span class="pv-bar" style="width:${abovePct}%; opacity:0.55;"></span></td></tr>`;
 }
 
 async function loadHistory(force) {
