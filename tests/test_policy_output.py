@@ -60,8 +60,8 @@ def _hin(*, pv: float = 5.0, load: float = 2.0, export_pln: float = 0.4) -> Hour
         (0.0, 0.5, 0.4, "neutral"),
         (-1.0, 0.5, 0.4, "charge_grid"),
         (2.0, -0.8, 0.5, "export_profit"),
-        (0.0, -0.6, 0.4, "neutral"),
-        (-0.4, -0.1, 0.4, "import_grid"),
+        (0.0, -0.6, 0.4, "export_profit"),
+        (-0.4, -0.1, 0.4, "neutral"),
     ],
 )
 def test_map_hour_to_exec_mode_cases(
@@ -116,6 +116,105 @@ def test_export_profit_soc_floor_uses_end_not_start() -> None:
     assert row.exec_mode == "export_profit"
     assert row.params.discharge_pct == 100
     assert row.params.soc_floor_pct == 43.0
+
+
+def test_discharge_h22_serve_load_is_neutral_not_import_grid() -> None:
+    """Rozładowanie na dom + import dopełniający (net ujemny) → neutral, nie import_grid."""
+    row = map_hour_to_exec_mode(
+        HourPlan(
+            date="2026-06-19",
+            hour=22,
+            target_net_kwh=-0.194,
+            expected_cashflow_pln=-0.02,
+            soc_start_pct=15.0,
+            soc_end_pct=10.0,
+            battery_delta_kwh=-0.691,
+        ),
+        HourInputs(
+            date="2026-06-19",
+            hour=22,
+            load_kwh=0.424,
+            pv_kwh=0.0,
+            import_pln_per_kwh=0.59,
+            export_pln_per_kwh=0.807,
+        ),
+    )
+    assert row.exec_mode == "neutral"
+    assert row.params.discharge_pct is None
+
+
+def test_discharge_h01_positive_net_is_export_profit() -> None:
+    row = map_hour_to_exec_mode(
+        HourPlan(
+            date="2026-06-20",
+            hour=1,
+            target_net_kwh=0.068,
+            expected_cashflow_pln=0.02,
+            soc_start_pct=15.0,
+            soc_end_pct=10.0,
+            battery_delta_kwh=-0.46,
+        ),
+        HourInputs(
+            date="2026-06-20",
+            hour=1,
+            load_kwh=0.392,
+            pv_kwh=0.0,
+            import_pln_per_kwh=0.59,
+            export_pln_per_kwh=0.644,
+        ),
+    )
+    assert row.exec_mode == "export_profit"
+    assert row.params.discharge_pct is not None
+    assert row.params.soc_floor_pct == 10.0
+
+
+def test_discharge_morning_low_rce_before_free_pv_is_export_profit() -> None:
+    """Niska RCE, ale nadmiar ponad load i net dodatni — intencja sprzedaży przed darmowym PV."""
+    row = map_hour_to_exec_mode(
+        HourPlan(
+            date="2026-06-20",
+            hour=6,
+            target_net_kwh=0.15,
+            expected_cashflow_pln=0.01,
+            soc_start_pct=20.0,
+            soc_end_pct=10.0,
+            battery_delta_kwh=-0.55,
+        ),
+        HourInputs(
+            date="2026-06-20",
+            hour=6,
+            load_kwh=0.35,
+            pv_kwh=0.05,
+            import_pln_per_kwh=0.59,
+            export_pln_per_kwh=0.20,
+        ),
+    )
+    assert row.exec_mode == "export_profit"
+    assert row.params.discharge_pct is not None
+
+
+def test_discharge_surplus_without_import_net_is_export_profit() -> None:
+    """|bd| >> load−pv i net ≈ 0 (bez wyraźnego importu) → export_profit."""
+    row = map_hour_to_exec_mode(
+        HourPlan(
+            date="2026-06-10",
+            hour=12,
+            target_net_kwh=0.0,
+            expected_cashflow_pln=0.01,
+            soc_start_pct=25.0,
+            soc_end_pct=10.0,
+            battery_delta_kwh=-0.8,
+        ),
+        HourInputs(
+            date="2026-06-10",
+            hour=12,
+            load_kwh=0.35,
+            pv_kwh=0.0,
+            import_pln_per_kwh=0.59,
+            export_pln_per_kwh=0.20,
+        ),
+    )
+    assert row.exec_mode == "export_profit"
 
 
 def test_build_and_save_policy_artifact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

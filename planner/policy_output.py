@@ -7,7 +7,6 @@ import logging
 from datetime import UTC, datetime, timedelta
 
 from planner.config import (
-    PLANNER_EXPORT_PROFIT_MIN_PLN,
     PLANNER_OUTPUT_PATH,
     PLANNER_POLICY_VALID_MINUTES,
     PLANNER_SOC_MIN_PCT,
@@ -69,6 +68,35 @@ def _export_pv_surplus_viable(export_pln: float) -> bool:
     return export_pln > 0.0
 
 
+def _planned_serve_kwh(hin: HourInputs | None) -> float:
+    """Prognozowany pobór domu netto PV [kWh/h] — rozładowanie do tego poziomu = zasil dom."""
+    if hin is None:
+        return 0.0
+    return max(0.0, float(hin.load_kwh) - float(hin.pv_kwh))
+
+
+def _discharge_export_intent(bd: float, net: float, hin: HourInputs | None) -> bool:
+    """
+    Intencja eksportu zarobkowego przy planowanym rozładowaniu (bd < 0).
+
+    1) net > ε — licznik ma iść w plus, albo
+    2) |bd| > (load − pv) + ε **oraz** net ≥ −ε — nadmiar ponad dom bez wyraźnego importu.
+    """
+    if net > NET_NEUTRAL_EPS_KWH:
+        return True
+    if hin is None:
+        return False
+    serve = _planned_serve_kwh(hin)
+    surplus = abs(bd) > serve + BATTERY_DELTA_EPS_KWH
+    return surplus and net >= -NET_NEUTRAL_EPS_KWH
+
+
+def _export_profit_params(bd: float, hp: HourPlan) -> tuple[int, float]:
+    discharge_pct = _pct_from_battery_delta(bd)
+    soc_floor_pct = max(float(PLANNER_SOC_MIN_PCT), float(hp.soc_end_pct))
+    return discharge_pct, soc_floor_pct
+
+
 def map_hour_to_exec_mode(
     hp: HourPlan,
     hin: HourInputs | None = None,
@@ -88,6 +116,7 @@ def map_hour_to_exec_mode(
     allow_grid = False
 
     if abs(bd) <= BATTERY_DELTA_EPS_KWH:
+        # Bateria stoi — patrzymy tylko na bilans licznika.
         if net > NET_NEUTRAL_EPS_KWH and _export_pv_surplus_viable(export_pln):
             exec_mode = "export_pv_surplus"
         elif net < -NET_NEUTRAL_EPS_KWH:
@@ -96,27 +125,17 @@ def map_hour_to_exec_mode(
             exec_mode = "neutral"
     elif bd > BATTERY_DELTA_EPS_KWH:
         if net < -NET_NEUTRAL_EPS_KWH:
-            # Świadome ładowanie magazynu z sieci (tanio) + ewent. PV.
             exec_mode = "charge_grid"
             allow_grid = True
             charge_pct = _pct_from_battery_delta(bd)
             target_soc_pct = float(hp.soc_end_pct)
         else:
-            # Nadwyżka PV → bateria, net ≈ 0 — Flappy soak (§13.5), nie charge_grid.
             exec_mode = "neutral"
-    elif net > NET_NEUTRAL_EPS_KWH and export_pln >= PLANNER_EXPORT_PROFIT_MIN_PLN:
-        # Celowy eksport z baterii (dodatni net na liczniku).
+    elif _discharge_export_intent(bd, net, hin):
         exec_mode = "export_profit"
-        discharge_pct = _pct_from_battery_delta(bd)
-        # Podłoga = planowany SOC na koniec h (nie start — przy pełnej baterii start=100% blokowałby eksport).
-        soc_floor_pct = max(float(PLANNER_SOC_MIN_PCT), float(hp.soc_end_pct))
-    elif net > NET_NEUTRAL_EPS_KWH and _export_pv_surplus_viable(export_pln):
-        exec_mode = "export_pv_surplus"
-    elif net < -NET_NEUTRAL_EPS_KWH:
-        # Import z sieci dominuje (net ujemny), nie eksport zarobkowy.
-        exec_mode = "import_grid"
+        discharge_pct, soc_floor_pct = _export_profit_params(bd, hp)
     else:
-        # net ≈ 0, rozładowanie pokrywa load — bilans licznika neutralny (Flappy).
+        # Rozładowanie ≈ pokrycie load; ewent. import dopełniający — Flappy w Guardianie.
         exec_mode = "neutral"
 
     return HourPolicyRow(
