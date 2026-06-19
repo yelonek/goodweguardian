@@ -54,6 +54,21 @@
     table.kpi-merged td.delta-ok { opacity: 0.85; }
     .settings-block { margin-bottom: 28px; }
     .settings-block h3 { margin: 0 0 10px; font-size: 1rem; }
+    .setting-lead { font-size: 13px; line-height: 1.45; margin: 0 0 12px; max-width: 640px; }
+    .setting-status { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 8px; }
+    .status-pill { border-radius: 999px; padding: 4px 12px; font-size: 13px; font-weight: 700; }
+    .status-on { background: rgba(13, 128, 80, 0.18); color: #0d8050; }
+    .status-off { background: rgba(179, 45, 45, 0.15); color: #b32d2d; }
+    .status-source { font-size: 12px; }
+    .setting-hint { font-size: 12px; line-height: 1.4; margin-top: 10px; max-width: 640px; }
+    .setting-hint ul { margin: 6px 0 0; padding-left: 1.2rem; }
+    .setting-hint li { margin: 4px 0; }
+    .wd-form { display: grid; gap: 10px; max-width: 480px; margin-top: 8px; }
+    .wd-label { display: flex; flex-direction: column; gap: 2px; }
+    .wd-label .wd-name { font-size: 13px; font-weight: 600; }
+    .wd-label .wd-hint { font-size: 11px; opacity: 0.72; line-height: 1.35; }
+    .wd-label input { max-width: 8rem; }
+    .wd-label input.wd-wide { max-width: none; width: 100%; }
     /* Eco slots — mobile-first */
     .eco-slots-toolbar { display: flex; flex-direction: column; gap: 10px; margin-bottom: 14px; }
     .eco-slot-card { margin-bottom: 16px; padding: 14px 14px 16px; }
@@ -249,56 +264,105 @@
       </div>
 
       <div class="settings-block">
-        <h3>Planer — egzekucja w Guardianie</h3>
-        <div class="card" style="max-width: 520px;">
+        <h3>Guardian — zapisy do inwertera</h3>
+        <p class="setting-lead muted">
+          Główny przełącznik: czy Guardian <strong>wysyła polecenia</strong> do inwertera (eco sloty).
+          Wyłączone = tylko podgląd i logi, bez zmian na urządzeniu. Wszystkie inne panele poniżej działają
+          tylko gdy zapisy są włączone.
+        </p>
+        <div class="card" style="max-width: 640px;">
           <div class="row">
-            <button type="button" id="refreshPlanner">Status</button>
-            <button type="button" id="enablePlanner">Guardian: plan ON</button>
-            <button type="button" id="disablePlanner">Guardian: plan OFF</button>
-          </div>
-          <div class="muted" style="margin-top:8px;">Egzekucja: <span id="plannerStatus">—</span></div>
-          <div class="muted" id="plannerHorizon" style="font-size:12px; margin-top:6px;"></div>
-          <div class="muted" style="font-size:12px; margin-top:8px;">
-            Rolling plan liczy się zawsze (<code>uv run python -m planner plan</code>, cron co ~10 min).
-            Dzienny audyt: <code>scripts/daily_audit.sh</code> (cron 00:30, wczorajsza doba).
-            Policy (6 intencji) zapisuje się w <code>state/planner_output.json</code> i widać je w Prognozie.
-            Przełącznik egzekucji (<code>state/planner_override.json</code>) — na razie bez podpięcia do watchdog.
-          </div>
-        </div>
-      </div>
-
-      <div class="settings-block">
-        <h3>Guardian control</h3>
-        <div class="card" style="max-width: 520px;">
-          <div class="row">
-            <button type="button" id="refreshControl">Status</button>
+            <button type="button" id="refreshControl">Odśwież status</button>
             <button type="button" id="enableControl">Włącz zapisy</button>
             <button type="button" id="disableControl">Wyłącz zapisy</button>
           </div>
-          <div class="muted" style="margin-top:8px;">Status: <span id="controlStatus">—</span></div>
-          <div class="muted" style="font-size:12px; margin-top:8px;">
-            Plik <code>state/guardian_control_override.json</code> — ten sam przełącznik co w runnerze.
+          <div class="setting-status" id="controlStatus">—</div>
+          <div class="setting-hint muted">
+            <ul>
+              <li><strong>Włączone</strong> — Guardian może zmieniać tryb inwertera (watchdog, plan, eco sloty).</li>
+              <li><strong>Wyłączone</strong> — bezpieczny tryb obserwacji; nic nie zapisujemy do GoodWe.</li>
+              <li><strong>Źródło „z panelu”</strong> — ostatnia zmiana z tego dashboardu (plik <code>state/guardian_control_override.json</code>) ma pierwszeństwo nad <code>.env</code>.</li>
+              <li><strong>Źródło „z .env”</strong> — brak pliku nadpisania; obowiązuje <code>GUARDIAN_CONTROL_ENABLED</code> (wymaga restartu procesu po zmianie w pliku).</li>
+            </ul>
           </div>
         </div>
       </div>
 
       <div class="settings-block">
-        <h3>Watchdog / SOC</h3>
+        <h3>Planer — stosowanie planu</h3>
+        <p class="setting-lead muted">
+          Plan dobowy <strong>liczy się zawsze</strong> (cron co ~10&nbsp;min) — widać go w zakładce Prognoza.
+          Ten przełącznik decyduje tylko, czy Guardian <strong>stosuje</strong> wynik planu przy sterowaniu
+          (<code>target_net_kwh</code> z <code>plan_latest.json</code>). Nie zatrzymuje samego planera.
+        </p>
+        <div class="card" style="max-width: 640px;">
+          <div class="row">
+            <button type="button" id="refreshPlanner">Odśwież status</button>
+            <button type="button" id="enablePlanner">Włącz stosowanie planu</button>
+            <button type="button" id="disablePlanner">Wyłącz stosowanie planu</button>
+          </div>
+          <div class="setting-status" id="plannerStatus">—</div>
+          <div class="muted" id="plannerHorizon" style="font-size:12px; margin-top:6px;"></div>
+          <div class="setting-hint muted">
+            <ul>
+              <li><strong>Włączone</strong> — Guardian bierze pod uwagę plan oprócz watchdog i eco slotów.</li>
+              <li><strong>Wyłączone</strong> — plan jest tylko podglądem; sterowanie bez intencji planera.</li>
+              <li>Plik nadpisania: <code>state/planner_override.json</code> (<code>planner_execution_enabled</code>).</li>
+              <li>Domyślna wartość bez pliku: <code>PLANNER_EXECUTION_ENABLED</code> w <code>.env</code>.</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-block">
+        <h3>Watchdog — obrona SOC</h3>
+        <p class="setting-lead muted">
+          Progi bezpieczeństwa baterii: rezerwa nocna (nie rozładowuj za nisko w nocy) oraz obrona przy
+          bardzo niskim lub bardzo wysokim SOC. Guardian stosuje je <strong>niezależnie od planu</strong>,
+          gdy zapisy do inwertera są włączone.
+        </p>
         <div class="grid" id="watchdogSummaryCards"></div>
-        <div class="card" style="max-width: 520px; margin-top: 10px;">
+        <div class="card" style="max-width: 640px; margin-top: 10px;">
           <div class="k" id="wdPathLine">…</div>
-          <div style="display:grid; gap:8px; max-width: 440px; margin-top:8px;">
-            <label class="row">soc_night_reserve_pct <input id="wd_soc_night_reserve_pct" type="number" step="0.1" min="0" max="100" style="max-width: 8rem;" /></label>
-            <label class="row">soc_night_reserve_charge_pct <input id="wd_soc_night_reserve_charge_pct" type="number" step="1" min="-1" max="100" style="max-width: 8rem;" /></label>
-            <label class="row">soc_night_reserve_hours (CSV) <input id="wd_soc_night_reserve_hours" type="text" placeholder="22,23,0,1,2,3,4,5" style="width: 100%;" /></label>
-            <label class="row">soc_low_defense_threshold_pct <input id="wd_soc_low_defense_threshold_pct" type="number" step="0.1" min="0" max="100" style="max-width: 8rem;" /></label>
-            <label class="row">soc_full_defense_threshold_pct <input id="wd_soc_full_defense_threshold_pct" type="number" step="0.1" min="0" max="100" style="max-width: 8rem;" /></label>
+          <div class="wd-form">
+            <label class="wd-label">
+              <span class="wd-name">Minimalny SOC w nocy (%)</span>
+              <span class="wd-hint">Poniżej tego progu w godzinach rezerwy — obrona przed rozładowaniem.</span>
+              <input id="wd_soc_night_reserve_pct" type="number" step="0.1" min="0" max="100" />
+            </label>
+            <label class="wd-label">
+              <span class="wd-name">Ładowanie w rezerwie nocnej (%)</span>
+              <span class="wd-hint">Moc ładowania eco slotu w godzinach rezerwy; −1 = wyłączone.</span>
+              <input id="wd_soc_night_reserve_charge_pct" type="number" step="1" min="-1" max="100" />
+            </label>
+            <label class="wd-label">
+              <span class="wd-name">Godziny rezerwy nocnej</span>
+              <span class="wd-hint">Godziny 0–23, po przecinku (np. 22,23,0,1,2,3,4,5).</span>
+              <input id="wd_soc_night_reserve_hours" class="wd-wide" type="text" placeholder="22,23,0,1,2,3,4,5" />
+            </label>
+            <label class="wd-label">
+              <span class="wd-name">Próg niskiej obrony SOC (%)</span>
+              <span class="wd-hint">Poniżej — Guardian ostro chroni baterię przed rozładowaniem.</span>
+              <input id="wd_soc_low_defense_threshold_pct" type="number" step="0.1" min="0" max="100" />
+            </label>
+            <label class="wd-label">
+              <span class="wd-name">Próg pełnej obrony SOC (%)</span>
+              <span class="wd-hint">Powyżej — ogranicza dalsze ładowanie / eksport (bateria „pełna”).</span>
+              <input id="wd_soc_full_defense_threshold_pct" type="number" step="0.1" min="0" max="100" />
+            </label>
           </div>
           <div class="row" style="margin-top:12px;">
-            <button type="button" id="saveWatchdog">Zapisz</button>
-            <button type="button" id="resetWatchdog">Wyczyść override</button>
+            <button type="button" id="saveWatchdog">Zapisz zmiany</button>
+            <button type="button" id="resetWatchdog">Przywróć wartości z .env</button>
           </div>
           <div class="muted" id="wdSaveStatus" style="margin-top:8px;"></div>
+          <div class="setting-hint muted">
+            <ul>
+              <li>Na kartach powyżej: <strong>wartość</strong> oraz w nawiasie <strong>skąd pochodzi</strong> (panel lub .env).</li>
+              <li>Zapis z panelu trafia do <code>state/guardian_watchdog_override.json</code> — bez restartu procesu.</li>
+              <li>„Przywróć wartości z .env” usuwa nadpisania; z powrotem obowiązują zmienne <code>SOC_*</code> z pliku środowiskowego.</li>
+            </ul>
+          </div>
         </div>
       </div>
 

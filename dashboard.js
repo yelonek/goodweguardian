@@ -5,6 +5,34 @@ function card(key, val) {
 }
 function getKey() { return (localStorage.getItem("guardianApiKey") || "").trim(); }
 
+function formatConfigSource(source) {
+  if (source === "override") return "z panelu (plik nadpisania)";
+  if (source === "env") return "z .env (domyślna konfiguracja)";
+  return fmt(source);
+}
+
+function renderToggleStatus(el, enabled, source, labels) {
+  const on = Boolean(enabled);
+  const stateLabel = on ? (labels.on || "Włączone") : (labels.off || "Wyłączone");
+  el.innerHTML =
+    `<span class="status-pill ${on ? "status-on" : "status-off"}">${stateLabel}</span>` +
+    `<span class="status-source muted">Źródło: ${formatConfigSource(source)}</span>`;
+}
+
+const WD_FIELD_LABELS = {
+  soc_night_reserve_pct: "Min. SOC w nocy",
+  soc_night_reserve_charge_pct: "Ładowanie w rezerwie",
+  soc_night_reserve_hours: "Godziny rezerwy",
+  soc_low_defense_threshold_pct: "Próg niskiej obrony",
+  soc_full_defense_threshold_pct: "Próg pełnej obrony",
+};
+
+function formatWatchdogSource(source) {
+  if (source === "override") return "panel";
+  if (source === "env") return ".env";
+  return fmt(source);
+}
+
 const pageLoaded = {};
 let currentPage = null;
 let pollTimer = null;
@@ -249,15 +277,19 @@ function flEq(a, b) { return Math.abs(Number(a) - Number(b)) < 1e-6; }
 function renderWatchdogSoc(wds) {
   if (!wds || !wds.effective) return;
   const eff = wds.effective, src = wds.sources || {};
-  document.getElementById("wdPathLine").textContent =
-    `File ${wds.override_path || "—"} — ${wds.override_exists ? "override present" : "env only"}`;
+  document.getElementById("wdPathLine").textContent = wds.override_exists
+    ? "Nadpisania z panelu: aktywne (niektóre progi mogą różnić się od .env)"
+    : "Tylko wartości z .env — brak pliku nadpisania";
   document.getElementById("watchdogSummaryCards").innerHTML = [
-    ["soc_night_reserve_pct", `${fmt(eff.soc_night_reserve_pct)} (${fmt(src.soc_night_reserve_pct)})`],
-    ["soc_night_reserve_charge_pct", `${fmt(eff.soc_night_reserve_charge_pct)} (${fmt(src.soc_night_reserve_charge_pct)})`],
-    ["soc_night_reserve_hours", `${(eff.soc_night_reserve_hours || []).join(",")}`],
-    ["soc_low_defense_threshold_pct", `${fmt(eff.soc_low_defense_threshold_pct)}`],
-    ["soc_full_defense_threshold_pct", `${fmt(eff.soc_full_defense_threshold_pct)}`],
-  ].map(([k, v]) => `<div class="card"><div class="k">${k}</div><div class="v" style="font-size:16px;">${v}</div></div>`).join("");
+    ["soc_night_reserve_pct", `${fmt(eff.soc_night_reserve_pct)}%`, formatWatchdogSource(src.soc_night_reserve_pct)],
+    ["soc_night_reserve_charge_pct", `${fmt(eff.soc_night_reserve_charge_pct)}%`, formatWatchdogSource(src.soc_night_reserve_charge_pct)],
+    ["soc_night_reserve_hours", (eff.soc_night_reserve_hours || []).join(", "), formatWatchdogSource(src.soc_night_reserve_hours)],
+    ["soc_low_defense_threshold_pct", `${fmt(eff.soc_low_defense_threshold_pct)}%`, formatWatchdogSource(src.soc_low_defense_threshold_pct)],
+    ["soc_full_defense_threshold_pct", `${fmt(eff.soc_full_defense_threshold_pct)}%`, formatWatchdogSource(src.soc_full_defense_threshold_pct)],
+  ].map(([k, v, s]) => {
+    const title = WD_FIELD_LABELS[k] || k;
+    return `<div class="card"><div class="k">${title}</div><div class="v" style="font-size:16px;">${v}</div><div class="muted" style="font-size:11px;margin-top:4px;">źródło: ${s}</div></div>`;
+  }).join("");
   document.getElementById("wd_soc_night_reserve_pct").value = eff.soc_night_reserve_pct;
   document.getElementById("wd_soc_night_reserve_charge_pct").value = eff.soc_night_reserve_charge_pct;
   document.getElementById("wd_soc_night_reserve_hours").value = (eff.soc_night_reserve_hours || []).join(",");
@@ -289,10 +321,14 @@ async function loadSettings(force) {
 async function refreshControl() {
   const key = getKey();
   const el = document.getElementById("controlStatus");
-  if (!key) { el.textContent = "ustaw klucz API"; return; }
+  if (!key) { el.textContent = "Ustaw klucz API powyżej, żeby zobaczyć i zmieniać status."; return; }
   const r = await fetch("/api/guardian/control", { headers: { "X-Guardian-Api-Key": key } });
   const j = await r.json().catch(() => ({}));
-  el.textContent = r.ok ? `enabled=${j.control_enabled} source=${j.source}` : (j.detail || "error");
+  if (!r.ok) { el.textContent = j.detail || "error"; return; }
+  renderToggleStatus(el, j.control_enabled, j.source, {
+    on: "Zapisy włączone",
+    off: "Zapisy wyłączone",
+  });
 }
 
 async function putControl(enabled) {
@@ -305,28 +341,34 @@ async function putControl(enabled) {
   });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) { alert(j.detail || "error"); return; }
-  document.getElementById("controlStatus").textContent = `enabled=${j.control_enabled} source=${j.source}`;
+  renderToggleStatus(document.getElementById("controlStatus"), j.control_enabled, j.source, {
+    on: "Zapisy włączone",
+    off: "Zapisy wyłączone",
+  });
 }
 
 async function refreshPlanner() {
   const key = getKey();
   const el = document.getElementById("plannerStatus");
   const hz = document.getElementById("plannerHorizon");
-  if (!key) { el.textContent = "ustaw klucz API"; hz.textContent = ""; return; }
+  if (!key) { el.textContent = "Ustaw klucz API powyżej, żeby zobaczyć i zmieniać status."; hz.textContent = ""; return; }
   const r = await fetch("/api/guardian/planner", { headers: { "X-Guardian-Api-Key": key } });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) { el.textContent = j.detail || "error"; hz.textContent = ""; return; }
-  el.textContent = `execution=${j.planner_execution_enabled} source=${j.source}`;
+  renderToggleStatus(el, j.planner_execution_enabled, j.source, {
+    on: "Plan stosowany w Guardianie",
+    off: "Plan tylko podgląd (nie stosowany)",
+  });
   if (!j.horizon_start) {
-    hz.textContent = "brak plan_latest.json (uruchom: planner plan)";
+    hz.textContent = "Brak plan_latest.json — uruchom: uv run python -m planner plan";
     return;
   }
   let pol = "";
   if (j.policy_hours_count != null) {
-    pol = ` · policy ${j.policy_hours_count}h${j.policy_degraded ? " degraded" : ""}`;
-    if (j.policy_valid_until) pol += ` do ${j.policy_valid_until.slice(0, 19)}`;
+    pol = ` · polityka ${j.policy_hours_count} h${j.policy_degraded ? " (degraded)" : ""}`;
+    if (j.policy_valid_until) pol += `, ważna do ${j.policy_valid_until.slice(0, 19)}`;
   }
-  hz.textContent = `plan ${(j.plan_id || "").slice(0, 8)}… ${j.horizon_start} → ${j.horizon_end}${pol}`;
+  hz.textContent = `Aktualny plan ${(j.plan_id || "").slice(0, 8)}… · ${j.horizon_start} → ${j.horizon_end}${pol}`;
 }
 
 async function putPlanner(enabled) {
@@ -339,8 +381,10 @@ async function putPlanner(enabled) {
   });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) { alert(j.detail || "error"); return; }
-  document.getElementById("plannerStatus").textContent =
-    `execution=${j.planner_execution_enabled} source=${j.source}`;
+  renderToggleStatus(document.getElementById("plannerStatus"), j.planner_execution_enabled, j.source, {
+    on: "Plan stosowany w Guardianie",
+    off: "Plan tylko podgląd (nie stosowany)",
+  });
 }
 
 async function saveWatchdog() {
@@ -377,7 +421,7 @@ async function resetWatchdog() {
   const r = await fetch("/api/guardian/watchdog-soc", { method: "DELETE", headers: { "X-Guardian-Api-Key": key } });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) { st.textContent = j.detail || "error"; return; }
-  st.textContent = "Override wyczyszczony.";
+  st.textContent = "Przywrócono wartości z .env (plik nadpisania usunięty).";
   window._lastWds = j;
   renderWatchdogSoc(j);
 }
