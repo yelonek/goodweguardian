@@ -106,6 +106,7 @@ EXPORT_PROFIT_LOW_SOC_MAX_W = _float_env("EXPORT_PROFIT_LOW_SOC_MAX_W", 1000.0)
 
 # Nocna rezerwa SOC: w godzinach nocnych blokuj discharge gdy SOC ≤ progu — by zostawić
 # zapas na poranne drogie godziny (po 6:00, zanim wstanie słońce). 0 = wyłączone.
+SOC_NIGHT_RESERVE_ENABLED = _bool_env("SOC_NIGHT_RESERVE_ENABLED", True)
 SOC_NIGHT_RESERVE_PCT = _float_env("SOC_NIGHT_RESERVE_PCT", 0.0)
 SOC_NIGHT_RESERVE_CHARGE_PCT = _int_env("SOC_NIGHT_RESERVE_CHARGE_PCT", -1)
 

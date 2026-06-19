@@ -55,6 +55,7 @@ class WatchdogConfig:
     soc_low_threshold_pct: float = 22.0
     soc_low_defense_charge_pct: int = -1
     soc_low_defense_release_remaining_kwh: float = 0.0
+    soc_night_reserve_enabled: bool = True
     soc_night_reserve_pct: float = 0.0
     soc_night_reserve_charge_pct: int = -1
     night_reserve_hours: frozenset[int] = frozenset({22, 23, 0, 1, 2, 3, 4, 5})
@@ -334,7 +335,8 @@ def decide_soc_defenses(
         return _neutral_decision("other_eco_slot_active")
 
     if (
-        hour_of_day is not None
+        cfg.soc_night_reserve_enabled
+        and hour_of_day is not None
         and int(hour_of_day) in cfg.night_reserve_hours
         and float(cfg.soc_night_reserve_pct) > 0.0
         and float(inp.soc_pct) <= float(cfg.soc_night_reserve_pct)

@@ -362,6 +362,7 @@ async def run_one_cycle() -> None:
         soc_low_threshold_pct=float(ws.soc_low_defense_threshold_pct),
         soc_low_defense_charge_pct=int(SOC_LOW_DEFENSE_CHARGE_PCT),
         soc_low_defense_release_remaining_kwh=float(SOC_LOW_DEFENSE_RELEASE_REMAINING_KWH),
+        soc_night_reserve_enabled=bool(ws.soc_night_reserve_enabled),
         soc_night_reserve_pct=float(ws.soc_night_reserve_pct),
         soc_night_reserve_charge_pct=int(ws.soc_night_reserve_charge_pct),
         night_reserve_hours=ws.night_reserve_hours,

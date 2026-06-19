@@ -15,6 +15,7 @@ Source = Literal["override", "env"]
 
 ALLOWED_KEYS = frozenset(
     {
+        "soc_night_reserve_enabled",
         "soc_night_reserve_pct",
         "soc_night_reserve_charge_pct",
         "soc_night_reserve_hours",
@@ -26,6 +27,7 @@ ALLOWED_KEYS = frozenset(
 
 @dataclass(frozen=True)
 class EffectiveWatchdogSoc:
+    soc_night_reserve_enabled: bool
     soc_night_reserve_pct: float
     soc_night_reserve_charge_pct: int
     night_reserve_hours: frozenset[int]
@@ -37,6 +39,7 @@ class EffectiveWatchdogSoc:
 def env_base_watchdog_soc() -> EffectiveWatchdogSoc:
     """Wartości z guardian_config (env przy imporcie), bez pliku override."""
     return EffectiveWatchdogSoc(
+        soc_night_reserve_enabled=bool(_gc.SOC_NIGHT_RESERVE_ENABLED),
         soc_night_reserve_pct=float(_gc.SOC_NIGHT_RESERVE_PCT),
         soc_night_reserve_charge_pct=int(_gc.SOC_NIGHT_RESERVE_CHARGE_PCT),
         night_reserve_hours=frozenset(_gc.SOC_NIGHT_RESERVE_HOURS),
@@ -62,7 +65,22 @@ def _normalize_hours(val: Any) -> frozenset[int]:
     return frozenset(out)
 
 
+def _coerce_bool(val: Any) -> bool:
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        return bool(val)
+    s = str(val).strip().lower()
+    if s in ("0", "false", "no", "off"):
+        return False
+    if s in ("1", "true", "yes", "on"):
+        return True
+    raise ValueError(f"expected boolean, got {val!r}")
+
+
 def _coerce_from_file(key: str, val: Any) -> Any:
+    if key == "soc_night_reserve_enabled":
+        return _coerce_bool(val)
     if key == "soc_night_reserve_pct":
         x = float(val)
         if not 0.0 <= x <= 100.0:
@@ -129,6 +147,13 @@ def effective_watchdog_soc() -> EffectiveWatchdogSoc:
         sources[name] = "env"
         return base_v
 
+    def pick_bool(name: str, base_v: bool) -> bool:
+        if name in ov:
+            sources[name] = "override"
+            return bool(ov[name])
+        sources[name] = "env"
+        return base_v
+
     if "soc_night_reserve_hours" in ov:
         nh: frozenset[int] = ov["soc_night_reserve_hours"]
         sources["soc_night_reserve_hours"] = "override"
@@ -137,6 +162,9 @@ def effective_watchdog_soc() -> EffectiveWatchdogSoc:
         sources["soc_night_reserve_hours"] = "env"
 
     return EffectiveWatchdogSoc(
+        soc_night_reserve_enabled=pick_bool(
+            "soc_night_reserve_enabled", base.soc_night_reserve_enabled
+        ),
         soc_night_reserve_pct=pick_float("soc_night_reserve_pct", base.soc_night_reserve_pct),
         soc_night_reserve_charge_pct=pick_int(
             "soc_night_reserve_charge_pct", base.soc_night_reserve_charge_pct
@@ -165,6 +193,7 @@ def watchdog_soc_api_payload() -> dict[str, Any]:
         "override_path": str(path),
         "override_exists": path.exists(),
         "env_base": {
+            "soc_night_reserve_enabled": base.soc_night_reserve_enabled,
             "soc_night_reserve_pct": base.soc_night_reserve_pct,
             "soc_night_reserve_charge_pct": base.soc_night_reserve_charge_pct,
             "soc_night_reserve_hours": _serialize_for_json(base.night_reserve_hours),
@@ -172,6 +201,7 @@ def watchdog_soc_api_payload() -> dict[str, Any]:
             "soc_full_defense_threshold_pct": base.soc_full_defense_threshold_pct,
         },
         "effective": {
+            "soc_night_reserve_enabled": eff.soc_night_reserve_enabled,
             "soc_night_reserve_pct": eff.soc_night_reserve_pct,
             "soc_night_reserve_charge_pct": eff.soc_night_reserve_charge_pct,
             "soc_night_reserve_hours": _serialize_for_json(eff.night_reserve_hours),

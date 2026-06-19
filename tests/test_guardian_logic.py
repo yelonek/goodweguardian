@@ -599,6 +599,25 @@ class TestWatchdogPolicy:
         assert d.mode == "charge"
         assert d.reason == "night_soc_reserve_hold"
 
+    def test_night_soc_reserve_skipped_when_disabled(
+        self, default_inputs: BalanceInputs
+    ) -> None:
+        default_inputs.soc_pct = 40.0
+        default_inputs.time_to_end_s = 2400
+        default_inputs.remaining_kwh = -0.2
+        cfg = WatchdogConfig(
+            soc_night_reserve_enabled=False,
+            soc_night_reserve_pct=40.0,
+            soc_night_reserve_charge_pct=-1,
+            night_reserve_hours=frozenset({22, 23, 0, 1, 2, 3, 4, 5}),
+        )
+        d = decide_watchdog(
+            default_inputs,
+            cfg=cfg,
+            hour_of_day=3,
+        )
+        assert d.reason != "night_soc_reserve_hold"
+
     def test_night_soc_reserve_inactive_outside_night_hours(
         self, default_inputs: BalanceInputs
     ) -> None:

@@ -50,6 +50,13 @@ def test_null_removes_key(isolated_override_path) -> None:
     assert not gc.GUARDIAN_WATCHDOG_OVERRIDE_PATH.exists()
 
 
+def test_override_enabled_bool(isolated_override_path) -> None:
+    apply_watchdog_override_updates({"soc_night_reserve_enabled": False})
+    eff = effective_watchdog_soc()
+    assert eff.soc_night_reserve_enabled is False
+    assert eff.sources["soc_night_reserve_enabled"] == "override"
+
+
 def test_watchdog_soc_api_payload_shape(isolated_override_path) -> None:
     p = watchdog_soc_api_payload()
     assert set(p["effective"].keys()) == set(p["env_base"].keys())

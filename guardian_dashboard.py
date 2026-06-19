@@ -89,6 +89,7 @@ class PlannerControlBody(BaseModel):
 class WatchdogSocUpdateBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    soc_night_reserve_enabled: bool | None = None
     soc_night_reserve_pct: float | None = Field(default=None, ge=0, le=100)
     soc_night_reserve_charge_pct: int | None = Field(default=None, ge=-1, le=100)
     soc_night_reserve_hours: list[int] | None = None
