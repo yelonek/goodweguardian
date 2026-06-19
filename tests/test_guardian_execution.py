@@ -118,7 +118,24 @@ def test_export_profit_skips_low_soc_defense() -> None:
     )
     assert d.reason == "export_profit_pace"
     assert d.reason != "soc_low_discharge_cap"
-    assert d.power_pct == 4
+    assert d.power_pct == 6
+
+
+def test_export_profit_taper_uses_consumption_when_no_average() -> None:
+    """Bez średniej z telemetrii — taper z bieżącego consumption_w."""
+    d = decide_plan_execution(
+        _inp(
+            soc_pct=18.0,
+            time_to_end_s=2400.0,
+            pv_w=100.0,
+            consumption_w=500.0,
+            low_soc_discharge_target_w=None,
+        ),
+        _row("export_profit", soc_floor_pct=10.0, discharge_pct=100),
+        cfg=WatchdogConfig(soc_low_threshold_pct=22.0),
+    )
+    assert d.reason == "export_profit_pace"
+    assert d.power_pct == 7
 
 
 def test_export_profit_pace_caps_at_plan_discharge_pct() -> None:

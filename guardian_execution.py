@@ -3,14 +3,11 @@
 from __future__ import annotations
 
 from guardian_config import (
-    BATTERY_CAPACITY_KWH,
     EXEC_EARLY_INTERVENTION_KW,
     EXEC_MIN_ACTIVE_CHARGE_PCT,
     EXEC_MIN_ACTIVE_DISCHARGE_PCT,
     EXEC_STEADY_PCT,
-    EXPORT_PROFIT_PACE_MARGIN,
     IMPORT_GRID_SOC_PCT,
-    SOC_LOW_DISCHARGE_FALLBACK_W,
     SOC_LOW_DISCHARGE_MAX_W,
 )
 from guardian_logic import (
@@ -24,6 +21,7 @@ from guardian_logic import (
     compute_export_profit_pace_w,
     decide_flappy_relative,
     decide_soc_defenses,
+    resolve_low_soc_taper_max_w,
 )
 from planner.models import ExecMode, HourPolicyParams, HourPolicyRow
 
@@ -33,13 +31,6 @@ def _params_pct(params: HourPolicyParams, field: str, *, minimum: int, default: 
     if raw is None:
         return max(minimum, default)
     return max(minimum, min(100, int(raw)))
-
-
-def _export_profit_taper_max_w() -> float:
-    cap = float(SOC_LOW_DISCHARGE_MAX_W)
-    if cap > 0.0:
-        return cap
-    return max(0.0, float(SOC_LOW_DISCHARGE_FALLBACK_W))
 
 
 def _exec_export_profit(
@@ -64,11 +55,12 @@ def _exec_export_profit(
     )
     target_w = compute_export_profit_pace_w(
         inp,
-        floor_pct=floor,
-        capacity_kwh=BATTERY_CAPACITY_KWH,
-        pace_margin=EXPORT_PROFIT_PACE_MARGIN,
         taper_threshold_pct=float(cfg.soc_low_threshold_pct),
-        taper_max_w=_export_profit_taper_max_w(),
+        taper_max_w=resolve_low_soc_taper_max_w(
+            inp,
+            threshold_pct=float(cfg.soc_low_threshold_pct),
+            hard_cap_w=float(SOC_LOW_DISCHARGE_MAX_W),
+        ),
         plan_discharge_pct=plan_pct,
         min_discharge_pct=EXEC_MIN_ACTIVE_DISCHARGE_PCT,
     )

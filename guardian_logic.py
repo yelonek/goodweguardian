@@ -137,35 +137,50 @@ def _steady_decision(
     )
 
 
+def resolve_low_soc_taper_max_w(
+    inp: BalanceInputs,
+    *,
+    threshold_pct: float,
+    hard_cap_w: float = 0.0,
+) -> float:
+    """
+    Sufit mocy rozładowania poniżej progu SOC [W]; 0 = brak dodatkowego sufitu.
+
+    Preferuje ``low_soc_discharge_target_w`` (średnia ``consumption_w`` z telemetrii);
+    gdy brak historii — bieżące ``consumption_w``.
+    """
+    if float(inp.soc_pct) > float(threshold_pct):
+        return 0.0
+    limit = inp.low_soc_discharge_target_w
+    if limit is None and float(inp.consumption_w) > 0.0:
+        limit = float(inp.consumption_w)
+    if limit is None or limit <= 0.0:
+        return 0.0
+    if hard_cap_w > 0.0:
+        limit = min(float(limit), hard_cap_w)
+    return float(limit)
+
+
 def compute_export_profit_pace_w(
     inp: BalanceInputs,
     *,
-    floor_pct: float,
-    capacity_kwh: float,
-    pace_margin: float,
     taper_threshold_pct: float,
     taper_max_w: float,
     plan_discharge_pct: int,
     min_discharge_pct: int,
 ) -> float:
     """
-    Moc rozładowania [W] dla ``export_profit``: E_remain/t × margin, cap plan/taper/inwerter.
+    Moc rozładowania [W] dla ``export_profit``.
 
-    ``E_remain`` = energia w magazynie powyżej ``floor_pct`` (kWh).
+    Powyżej ``taper_threshold_pct``: maks. dozwolona moc (plan, bateria, inwerter).
+    Poniżej progu: dodatkowy sufit ``taper_max_w`` (średnie zużycie domu).
     """
-    e_remain_kwh = max(0.0, (float(inp.soc_pct) - float(floor_pct)) / 100.0 * capacity_kwh)
-    if e_remain_kwh <= 1e-9:
-        return 0.0
-
-    pace_kw = power_needed_kw(e_remain_kwh, inp.time_to_end_s) * pace_margin
-    target_w = pace_kw * 1000.0
+    cap_w = _discharge_cap_w(inp.p_inverter_w, inp.pv_w, inp.p_battery_w)
+    plan_max_w = plan_discharge_pct * inp.watts_per_percent
+    target_w = min(cap_w, float(inp.p_battery_w), plan_max_w)
 
     if float(inp.soc_pct) <= float(taper_threshold_pct) and taper_max_w > 0.0:
         target_w = min(target_w, taper_max_w)
-
-    cap_w = _discharge_cap_w(inp.p_inverter_w, inp.pv_w, inp.p_battery_w)
-    plan_max_w = plan_discharge_pct * inp.watts_per_percent
-    target_w = min(target_w, cap_w, float(inp.p_battery_w), plan_max_w)
 
     min_w = min_discharge_pct * inp.watts_per_percent
     if target_w > 0.0 and target_w < min_w:
