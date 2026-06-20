@@ -117,6 +117,7 @@ Brak osobnego `anchor_net_kwh` — **Ockham:** jedno pole, różna interpretacja
 
 - Aktywne rozładowanie baterii do sieci (wysokie RCE); `discharge_pct` z planu lub wyliczone.
 - **`soc_floor_pct`:** po osiągnięciu podłogi zmniejszyć discharge do **1%** lub wyjść w neutral w ramach strategii.
+- **Liniowy taper LFP** (`DISCHARGE_TAPER_SOC_LOW/HIGH`, `DISCHARGE_TAPER_MAX_W_LOW/HIGH`): między podłogą a ~20% SOC sufit mocy maleje liniowo (domyślnie 10%→70 W, 20%→1000 W), bez podbijania do loadu — reszta z sieci/PV.
 
 #### `export_pv_surplus` — eksport nadwyżek PV
 

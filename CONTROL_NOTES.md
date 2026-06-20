@@ -106,3 +106,8 @@ Skrót hierarchii włączenia zapisów: tabela **„Skąd brać ustawienia”** 
   - `ecoslot_read%` i `P_bat` w kolejnej minucie (czy GoodWe wykonał).
 - Sprawdzaj, czy watchdog nie łamie „guard kierunku” (np. `remaining<0` i `cmd=On -%`).
 
+
+## Liniowy taper rozładowania (LFP)
+
+Przy niskim SOC (domyślnie **10%–20%**) wszystkie ścieżki **DISCHARGE** Guardiana mają liniowy sufit mocy: **70 W przy 10%** → **1000 W przy 20%** (env: `DISCHARGE_TAPER_*`). W tej strefie **nie** podbijamy do mocy domu — reszta idzie z sieci/PV. Uzasadnienie: duży prąd przy podłodze LFP obniża napięcie ogniwa; BMS wymusza doładowanie do ~15% (~0,5 kWh straty). Powyżej 20% SOC — bez tego limitu (tylko inwerter/bateria).
+
