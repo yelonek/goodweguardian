@@ -12,9 +12,11 @@ Moc baterii: dodatnia = rozładowanie, ujemna = ładowanie.
 
 from dataclasses import dataclass
 
+from planner.config import PLANNER_SOC_MIN_PCT
 from planner.models import ExecMode
 
 # Obrony SOC a exec_mode (§13 PLANNING_SYSTEM.md)
+PLAN_CHARGE_INTENT_EPS_KWH = 0.05
 _EXEC_SKIP_SOC_FULL: frozenset[ExecMode] = frozenset({"export_profit"})
 _EXEC_SOC_LOW_ACTIVE: frozenset[ExecMode] = frozenset(
     {"export_pv_surplus", "neutral"}
@@ -313,6 +315,7 @@ def decide_soc_defenses(
     hour_of_day: int | None = None,
     soc_full_defense_carryover: bool = False,
     exec_mode: ExecMode | None = None,
+    plan_battery_delta_kwh: float | None = None,
 ) -> WatchdogDecision | None:
     """
     Obrony SOC / rezerwa nocna — warstwa nadrzędna; ``None`` = brak interwencji.
@@ -422,6 +425,23 @@ def decide_soc_defenses(
                     duration_s=duration_s,
                     mode="discharge",
                     reason="soc_low_pv_surplus_no_discharge",
+                )
+            # Deficyt loadu przy niskim SOC: sieć dopełnia, bateria nie rozładowuje się
+            # (szczególnie na podłodze SOC lub gdy plan przewiduje ład).
+            at_soc_floor = float(inp.soc_pct) <= float(PLANNER_SOC_MIN_PCT) + 0.5
+            plan_wants_charge = (
+                plan_battery_delta_kwh is not None
+                and float(plan_battery_delta_kwh) > PLAN_CHARGE_INTENT_EPS_KWH
+            )
+            if at_soc_floor or plan_wants_charge:
+                duration_s = min(inp.time_to_end_s, max(60.0, inp.time_to_end_s))
+                return WatchdogDecision(
+                    write_slot=True,
+                    enabled=True,
+                    power_pct=int(cfg.soc_low_defense_charge_pct),
+                    duration_s=duration_s,
+                    mode="charge",
+                    reason="soc_low_grid_covers_load",
                 )
             target_w = min(float(low_soc_target_w), load_deficit_w, float(inp.p_battery_w))
             target_pct = max(

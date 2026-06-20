@@ -182,6 +182,27 @@ def test_neutral_low_soc_uses_low_defense() -> None:
     assert d.reason == "soc_low_defense_hold"
 
 
+def test_neutral_at_soc_floor_with_load_deficit_charges_not_discharges() -> None:
+    """SOC na minimum + plan ładuje → deficyt loadu z sieci, nie rozładowanie baterii."""
+    d = decide_plan_execution(
+        _inp(
+            soc_pct=10.0,
+            remaining_kwh=0.34,
+            pv_w=3100.0,
+            consumption_w=3908.0,
+            low_soc_discharge_target_w=1200.0,
+        ),
+        _row("neutral", target_net_kwh=0.42, battery_delta_kwh=4.15),
+        cfg=WatchdogConfig(
+            soc_low_threshold_pct=20.0,
+            soc_low_defense_charge_pct=-1,
+        ),
+    )
+    assert d.mode == "charge"
+    assert d.power_pct == -1
+    assert d.reason == "soc_low_grid_covers_load"
+
+
 def test_export_profit_respects_soc_floor() -> None:
     d = decide_plan_execution(
         _inp(soc_pct=12.0),

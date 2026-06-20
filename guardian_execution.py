@@ -180,6 +180,7 @@ def decide_plan_execution(
         hour_of_day=hour_of_day,
         soc_full_defense_carryover=soc_full_defense_carryover,
         exec_mode=policy_row.exec_mode,
+        plan_battery_delta_kwh=float(policy_row.params.battery_delta_kwh),
     )
     if soc is not None:
         return soc
