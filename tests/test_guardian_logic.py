@@ -653,3 +653,46 @@ class TestWatchdogPolicy:
             hour_of_day=3,
         )
         assert d.reason != "night_soc_reserve_hold"
+
+
+class TestLinearDischargeTaper:
+    def test_deficit_recovery_capped_by_linear_taper(
+        self, default_inputs: BalanceInputs
+    ) -> None:
+        default_inputs.soc_pct = 12.0
+        default_inputs.time_to_end_s = 2400
+        default_inputs.remaining_kwh = -1.0
+        default_inputs.pv_w = 200.0
+        default_inputs.consumption_w = 2000.0
+        cfg = WatchdogConfig(
+            soc_low_threshold_pct=25.0,
+            discharge_taper_soc_high_pct=20.0,
+            discharge_taper_soc_low_pct=10.0,
+            discharge_taper_max_w_high=1000.0,
+            discharge_taper_max_w_low=70.0,
+        )
+        d = decide_watchdog(default_inputs, cfg=cfg)
+        assert d.write_slot is True
+        assert d.mode == "discharge"
+        assert d.power_pct == 4  # ~256 W cap przy 12% SOC
+        assert "deficit" in d.reason
+
+    def test_soc_low_discharge_cap_limited_by_linear_taper(
+        self, default_inputs: BalanceInputs
+    ) -> None:
+        default_inputs.soc_pct = 12.0
+        default_inputs.time_to_end_s = 2400
+        default_inputs.remaining_kwh = -0.20
+        default_inputs.pv_w = 100.0
+        default_inputs.consumption_w = 1000.0
+        default_inputs.low_soc_discharge_target_w = 700.0
+        cfg = WatchdogConfig(
+            soc_low_threshold_pct=20.0,
+            discharge_taper_soc_high_pct=20.0,
+            discharge_taper_soc_low_pct=10.0,
+            discharge_taper_max_w_high=1000.0,
+            discharge_taper_max_w_low=70.0,
+        )
+        d = decide_watchdog(default_inputs, cfg=cfg)
+        assert d.reason == "soc_low_discharge_cap"
+        assert d.power_pct == 4  # min(load, avg, taper) ≈ 256 W

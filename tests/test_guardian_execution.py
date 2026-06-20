@@ -120,7 +120,7 @@ def test_export_profit_skips_low_soc_defense() -> None:
     )
     assert d.reason == "export_profit_pace"
     assert d.reason != "soc_low_discharge_cap"
-    assert d.power_pct == 14  # min(1000 W, full) ≈ 1000 / 72
+    assert d.power_pct == 11  # ~814 W liniowy taper przy 18% SOC / 72 W na 1%
 
 
 def test_export_profit_full_power_above_threshold() -> None:
@@ -232,3 +232,26 @@ def test_export_profit_respects_soc_floor() -> None:
     )
     assert d.power_pct == 1
     assert d.reason == "export_profit_soc_floor"
+
+
+def test_export_profit_linear_taper_at_11_pct() -> None:
+    """SOC w strefie taperu: cap ~163 W, bez podbijania do min_discharge 2%."""
+    d = decide_plan_execution(
+        _inp(
+            soc_pct=11.0,
+            pv_w=0.0,
+            consumption_w=800.0,
+            p_inverter_w=8200.0,
+            p_battery_w=5200.0,
+            watts_per_percent=70.0,
+        ),
+        _row("export_profit", soc_floor_pct=10.0, discharge_pct=100),
+        cfg=WatchdogConfig(
+            discharge_taper_soc_high_pct=20.0,
+            discharge_taper_soc_low_pct=10.0,
+            discharge_taper_max_w_high=1000.0,
+            discharge_taper_max_w_low=70.0,
+        ),
+    )
+    assert d.reason == "export_profit_pace"
+    assert d.power_pct == 2
