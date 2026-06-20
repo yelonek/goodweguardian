@@ -400,9 +400,26 @@ def decide_soc_defenses(
 
     if apply_soc_low and float(inp.soc_pct) <= float(cfg.soc_low_threshold_pct):
         low_soc_target_w = inp.low_soc_discharge_target_w
+        at_soc_floor = float(inp.soc_pct) <= float(PLANNER_SOC_MIN_PCT) + 0.5
+        plan_wants_charge = (
+            plan_battery_delta_kwh is not None
+            and float(plan_battery_delta_kwh) > PLAN_CHARGE_INTENT_EPS_KWH
+        )
+        prefer_charge_over_export = at_soc_floor or plan_wants_charge
+
         if low_soc_discharge_cap_active:
             load_deficit_w = float(inp.consumption_w) - float(inp.pv_w)
             if load_deficit_w <= 0.0:
+                if prefer_charge_over_export:
+                    duration_s = min(inp.time_to_end_s, max(60.0, inp.time_to_end_s))
+                    return WatchdogDecision(
+                        write_slot=True,
+                        enabled=True,
+                        power_pct=int(cfg.soc_low_defense_charge_pct),
+                        duration_s=duration_s,
+                        mode="charge",
+                        reason="soc_low_pv_soak",
+                    )
                 if float(inp.remaining_kwh) < 0.0:
                     target_pct = max(1, int(cfg.min_discharge_assist_pct))
                     duration_s = min(inp.time_to_end_s, max(60.0, inp.time_to_end_s))
@@ -415,7 +432,6 @@ def decide_soc_defenses(
                         reason="soc_low_pv_surplus_balance_priority",
                     )
                 # DISCHARGE 1% jak export_pv_surplus: PV na sieć bez rozładowania baterii.
-                # write_slot=False zostawia inwerter bez ecoslota → GoodWe ładuje z nadwyżki PV.
                 target_pct = max(1, int(cfg.min_discharge_assist_pct))
                 duration_s = min(inp.time_to_end_s, max(60.0, inp.time_to_end_s))
                 return WatchdogDecision(
@@ -426,14 +442,8 @@ def decide_soc_defenses(
                     mode="discharge",
                     reason="soc_low_pv_surplus_no_discharge",
                 )
-            # Deficyt loadu przy niskim SOC: sieć dopełnia, bateria nie rozładowuje się
-            # (szczególnie na podłodze SOC lub gdy plan przewiduje ład).
-            at_soc_floor = float(inp.soc_pct) <= float(PLANNER_SOC_MIN_PCT) + 0.5
-            plan_wants_charge = (
-                plan_battery_delta_kwh is not None
-                and float(plan_battery_delta_kwh) > PLAN_CHARGE_INTENT_EPS_KWH
-            )
-            if at_soc_floor or plan_wants_charge:
+            # Deficyt loadu przy niskim SOC: sieć dopełnia, bateria nie rozładowuje się.
+            if prefer_charge_over_export:
                 duration_s = min(inp.time_to_end_s, max(60.0, inp.time_to_end_s))
                 return WatchdogDecision(
                     write_slot=True,

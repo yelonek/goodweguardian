@@ -203,6 +203,27 @@ def test_neutral_at_soc_floor_with_load_deficit_charges_not_discharges() -> None
     assert d.reason == "soc_low_grid_covers_load"
 
 
+def test_neutral_low_soc_pv_surplus_soak_when_plan_charges() -> None:
+    """Nadwyżka PV + plan ładuje → CHARGE -1%, nie eksport DISCHARGE 1%."""
+    d = decide_plan_execution(
+        _inp(
+            soc_pct=15.0,
+            remaining_kwh=0.05,
+            pv_w=5950.0,
+            consumption_w=1335.0,
+            low_soc_discharge_target_w=1200.0,
+        ),
+        _row("neutral", target_net_kwh=1.49, battery_delta_kwh=4.15),
+        cfg=WatchdogConfig(
+            soc_low_threshold_pct=20.0,
+            soc_low_defense_charge_pct=-1,
+        ),
+    )
+    assert d.mode == "charge"
+    assert d.power_pct == -1
+    assert d.reason == "soc_low_pv_soak"
+
+
 def test_export_profit_respects_soc_floor() -> None:
     d = decide_plan_execution(
         _inp(soc_pct=12.0),
