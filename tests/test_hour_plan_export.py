@@ -72,6 +72,42 @@ def test_normalize_discharge_pct_uses_full_hour_battery_delta(
     assert row.params.discharge_pct == 100
 
 
+def test_mid_hour_pv_soak_not_charge_grid_after_prior_import(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MILP: net=0 na resztę h (PV→bateria); wcześniejszy import ≠ charge_grid."""
+    frac = 40 / 60
+    hin = HourInputs(
+        date="2026-06-20",
+        hour=12,
+        load_kwh=1.43 * frac,
+        pv_kwh=4.79 * frac,
+        import_pln_per_kwh=1.11,
+        export_pln_per_kwh=0.0,
+        hour_fraction=frac,
+    )
+    hp = HourPlan(
+        date="2026-06-20",
+        hour=12,
+        target_net_kwh=0.0,
+        expected_cashflow_pln=0.0,
+        soc_start_pct=21.0,
+        soc_end_pct=52.0,
+        battery_delta_kwh=3.36,
+    )
+    monkeypatch.setattr(
+        "planner.hour_plan_export.net_kwh_so_far_for_hour",
+        lambda _d, _h: -0.5,
+    )
+    now = datetime(2026, 6, 20, 12, 20, 0)
+    out = normalize_hour_plans_for_policy([hin], [hp], now=now)[0]
+    assert out.target_net_kwh == pytest.approx(-0.5)
+    assert out.battery_delta_kwh == pytest.approx(3.36 / frac, rel=0.01)
+    row = map_hour_to_exec_mode(out, hin)
+    assert row.exec_mode == "neutral"
+    assert row.params.allow_grid_charge is False
+
+
 def test_full_hour_slot_unchanged() -> None:
     hin = HourInputs(
         date="2026-06-19",
