@@ -90,6 +90,23 @@ def _remainder_planned_net_kwh(hp: HourPlan, hin: HourInputs | None) -> float:
     return net_full * frac
 
 
+def _remainder_planned_battery_delta_kwh(hp: HourPlan, hin: HourInputs | None) -> float:
+    """
+    Δ baterii planowane na **resztę** bieżącego slotu.
+
+    Po normalizacji ``HourPlan.battery_delta_kwh`` opisuje ekwiwalent pełnej godziny
+    (``remainder_bd / hour_fraction``). Klasyfikacja ``exec_mode`` musi używać
+    reszty — inaczej rozładowanie ≈ deficyt domu wygląda jak export_profit.
+    """
+    bd_full = float(hp.battery_delta_kwh)
+    if hin is None:
+        return bd_full
+    frac = float(hin.hour_fraction)
+    if frac >= 1.0 - 1e-9:
+        return bd_full
+    return bd_full * frac
+
+
 def _planned_serve_kwh(hin: HourInputs | None) -> float:
     """Prognozowany pobór domu netto PV [kWh/h] — rozładowanie do tego poziomu = zasil dom."""
     if hin is None:
@@ -127,6 +144,7 @@ def map_hour_to_exec_mode(
     bd = float(hp.battery_delta_kwh)
     net = float(hp.target_net_kwh)
     net_grid = _remainder_planned_net_kwh(hp, hin)
+    bd_slot = _remainder_planned_battery_delta_kwh(hp, hin)
     pv = float(hin.pv_kwh) if hin is not None else None
     load = float(hin.load_kwh) if hin is not None else None
     export_pln = float(hin.export_pln_per_kwh) if hin is not None else 0.0
@@ -138,7 +156,7 @@ def map_hour_to_exec_mode(
     target_soc_pct: float | None = None
     allow_grid = False
 
-    if abs(bd) <= BATTERY_DELTA_EPS_KWH:
+    if abs(bd_slot) <= BATTERY_DELTA_EPS_KWH:
         # Bateria stoi — patrzymy tylko na bilans licznika (reszta slotu w mid-hour).
         if net_grid > NET_NEUTRAL_EPS_KWH and _export_pv_surplus_viable(export_pln):
             exec_mode = "export_pv_surplus"
@@ -146,7 +164,7 @@ def map_hour_to_exec_mode(
             exec_mode = "import_grid"
         else:
             exec_mode = "neutral"
-    elif bd > BATTERY_DELTA_EPS_KWH:
+    elif bd_slot > BATTERY_DELTA_EPS_KWH:
         if net_grid < -NET_NEUTRAL_EPS_KWH:
             exec_mode = "charge_grid"
             allow_grid = True
@@ -154,7 +172,7 @@ def map_hour_to_exec_mode(
             target_soc_pct = float(hp.soc_end_pct)
         else:
             exec_mode = "neutral"
-    elif _discharge_export_intent(bd, net_grid, hin):
+    elif _discharge_export_intent(bd_slot, net_grid, hin):
         exec_mode = "export_profit"
         discharge_pct, soc_floor_pct = _export_profit_params(bd, hp)
     else:
