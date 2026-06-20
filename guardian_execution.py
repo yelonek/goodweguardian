@@ -7,7 +7,6 @@ from guardian_config import (
     EXEC_MIN_ACTIVE_CHARGE_PCT,
     EXEC_MIN_ACTIVE_DISCHARGE_PCT,
     EXEC_STEADY_PCT,
-    EXPORT_PROFIT_LOW_SOC_MAX_W,
     IMPORT_GRID_SOC_PCT,
 )
 from guardian_logic import (
@@ -19,10 +18,10 @@ from guardian_logic import (
     _discharge_cap_w,
     _neutral_decision,
     _steady_decision,
+    battery_discharge_cap_w,
     compute_export_profit_pace_w,
     decide_flappy_relative,
     decide_soc_defenses,
-    export_profit_low_soc_taper_max_w,
 )
 from planner.models import ExecMode, HourPolicyParams, HourPolicyRow
 
@@ -60,12 +59,8 @@ def _exec_export_profit(
         float(inp.p_battery_w),
         plan_max_w,
     )
-    taper_w = export_profit_low_soc_taper_max_w(
-        inp,
-        threshold_pct=float(cfg.soc_low_threshold_pct),
-        full_max_w=full_max_w,
-        lfp_cap_w=float(EXPORT_PROFIT_LOW_SOC_MAX_W),
-    )
+    taper_cap = battery_discharge_cap_w(inp, cfg, full_max_w=full_max_w)
+    taper_w = 0.0 if taper_cap is None else taper_cap
     target_w = compute_export_profit_pace_w(
         inp,
         plan_discharge_pct=plan_pct,

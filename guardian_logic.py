@@ -62,6 +62,10 @@ class WatchdogConfig:
     soc_night_reserve_charge_pct: int = -1
     night_reserve_hours: frozenset[int] = frozenset({22, 23, 0, 1, 2, 3, 4, 5})
     soc_full_defense_carryover_minutes: int = 5
+    discharge_taper_soc_high_pct: float = 20.0
+    discharge_taper_soc_low_pct: float = 10.0
+    discharge_taper_max_w_high: float = 1000.0
+    discharge_taper_max_w_low: float = 70.0
 
 
 @dataclass
@@ -150,6 +154,40 @@ def load_cover_discharge_w(inp: BalanceInputs) -> float:
     return float(limit)
 
 
+def battery_discharge_cap_w(
+    inp: BalanceInputs,
+    cfg: WatchdogConfig,
+    *,
+    full_max_w: float | None = None,
+) -> float | None:
+    """
+    Liniowy sufit mocy rozładowania [W] w strefie ``soc_low .. soc_high``.
+
+    Powyżej ``soc_high``: ``None`` (brak limitu SOC). Poniżej ``soc_low``: clamp ``w_low``.
+    Bez podbijania do loadu — dom dopełnia sieć/PV.
+    """
+    soc = float(inp.soc_pct)
+    soc_high = float(cfg.discharge_taper_soc_high_pct)
+    soc_low = float(cfg.discharge_taper_soc_low_pct)
+    w_high = float(cfg.discharge_taper_max_w_high)
+    w_low = float(cfg.discharge_taper_max_w_low)
+
+    if soc > soc_high:
+        return None
+
+    if soc_low >= soc_high:
+        cap = w_low
+    elif soc <= soc_low:
+        cap = w_low
+    else:
+        t = (soc - soc_low) / (soc_high - soc_low)
+        cap = w_low + t * (w_high - w_low)
+
+    if full_max_w is not None:
+        cap = min(cap, float(full_max_w))
+    return max(0.0, cap)
+
+
 def export_profit_low_soc_taper_max_w(
     inp: BalanceInputs,
     *,
@@ -158,18 +196,18 @@ def export_profit_low_soc_taper_max_w(
     lfp_cap_w: float,
 ) -> float:
     """
-    Sufit mocy ``export_profit`` poniżej progu SOC [W]; 0 = bez taperu (SOC powyżej progu).
+    Kompatybilność wsteczna dla testów — woła ``battery_discharge_cap_w`` z syntetycznym cfg.
 
-    Ogranicza prąd rozładowania LFP (napięcie/BMS), ale nie mniej niż pokrycie loadu.
-    ``lfp_cap_w`` — górny limit mocy przy niskim SOC; nadal jedziemy do ``soc_floor`` z planu.
+    Zwraca 0 gdy SOC powyżej progu (brak taperu).
     """
-    if float(inp.soc_pct) > float(threshold_pct):
-        return 0.0
-    cap = min(float(full_max_w), float(lfp_cap_w)) if lfp_cap_w > 0.0 else float(full_max_w)
-    load_w = load_cover_discharge_w(inp)
-    if load_w > 0.0:
-        cap = min(float(full_max_w), max(cap, load_w))
-    return max(0.0, cap)
+    cfg = WatchdogConfig(
+        discharge_taper_soc_high_pct=float(threshold_pct),
+        discharge_taper_soc_low_pct=10.0,
+        discharge_taper_max_w_high=float(lfp_cap_w) if lfp_cap_w > 0.0 else float(full_max_w),
+        discharge_taper_max_w_low=70.0,
+    )
+    cap = battery_discharge_cap_w(inp, cfg, full_max_w=full_max_w)
+    return 0.0 if cap is None else cap
 
 
 def compute_export_profit_pace_w(
@@ -192,10 +230,10 @@ def compute_export_profit_pace_w(
 
     if taper_max_w > 0.0:
         target_w = min(target_w, taper_max_w)
-
-    min_w = min_discharge_pct * inp.watts_per_percent
-    if target_w > 0.0 and target_w < min_w:
-        target_w = min_w
+    else:
+        min_w = min_discharge_pct * inp.watts_per_percent
+        if target_w > 0.0 and target_w < min_w:
+            target_w = min_w
     return max(0.0, target_w)
 
 
@@ -236,6 +274,10 @@ def _deficit_recovery_decision(
         target_battery_w = max(0.0, min(inp.p_battery_w, target_battery_w))
         target_battery_w = min(target_battery_w, cap_w)
         reason = "deficit_recovery"
+
+    taper_cap = battery_discharge_cap_w(inp, cfg)
+    if taper_cap is not None:
+        target_battery_w = min(target_battery_w, taper_cap)
 
     target_pct = _battery_pct_from_w(target_battery_w, inp.watts_per_percent)
     if target_pct <= 0 and min_assist > 0:
@@ -447,6 +489,9 @@ def decide_soc_defenses(
             if prefer_charge_over_export:
                 return _neutral_decision("soc_low_grid_covers_load")
             target_w = min(float(low_soc_target_w), load_deficit_w, float(inp.p_battery_w))
+            taper_cap = battery_discharge_cap_w(inp, cfg)
+            if taper_cap is not None:
+                target_w = min(target_w, taper_cap)
             target_pct = max(
                 1,
                 min(100, int(round(target_w / float(inp.watts_per_percent)))),

@@ -104,6 +104,15 @@ SOC_LOW_DEFENSE_RELEASE_REMAINING_KWH = _float_env(
 # 0 = bez dodatkowego sufitu (tylko pokrycie loadu ze średniej). Domyślnie 1000 W.
 EXPORT_PROFIT_LOW_SOC_MAX_W = _float_env("EXPORT_PROFIT_LOW_SOC_MAX_W", 1000.0)
 
+# Liniowy taper rozładowania baterii w strefie niskiego SOC (wszystkie ścieżki DISCHARGE).
+# cap(SOC) = lerp(w_low, w_high) między soc_low a soc_high; bez podbijania do loadu w strefie.
+DISCHARGE_TAPER_SOC_HIGH_PCT = _float_env("DISCHARGE_TAPER_SOC_HIGH_PCT", 20.0)
+DISCHARGE_TAPER_SOC_LOW_PCT = _float_env("DISCHARGE_TAPER_SOC_LOW_PCT", 10.0)
+DISCHARGE_TAPER_MAX_W_HIGH = _float_env(
+    "DISCHARGE_TAPER_MAX_W_HIGH", EXPORT_PROFIT_LOW_SOC_MAX_W
+)
+DISCHARGE_TAPER_MAX_W_LOW = _float_env("DISCHARGE_TAPER_MAX_W_LOW", WATTS_PER_PERCENT)
+
 # Nocna rezerwa SOC: w godzinach nocnych blokuj discharge gdy SOC ≤ progu — by zostawić
 # zapas na poranne drogie godziny (po 6:00, zanim wstanie słońce). 0 = wyłączone.
 SOC_NIGHT_RESERVE_ENABLED = _bool_env("SOC_NIGHT_RESERVE_ENABLED", True)

@@ -24,6 +24,10 @@ from ecoslot_service import (
 from guardian_watchdog_override import effective_watchdog_soc
 from guardian_config import (
     BALANCE_POWER_THRESHOLD_KW,
+    DISCHARGE_TAPER_MAX_W_HIGH,
+    DISCHARGE_TAPER_MAX_W_LOW,
+    DISCHARGE_TAPER_SOC_HIGH_PCT,
+    DISCHARGE_TAPER_SOC_LOW_PCT,
     END_HOUR_MAX_REMAINING_KWH,
     END_HOUR_WINDOW_S,
     FLAPPY_BUFFER_DISCHARGE_PCT,
@@ -367,6 +371,10 @@ async def run_one_cycle() -> None:
         soc_night_reserve_charge_pct=int(ws.soc_night_reserve_charge_pct),
         night_reserve_hours=ws.night_reserve_hours,
         soc_full_defense_carryover_minutes=max(1, int(SOC_FULL_DEFENSE_CARRYOVER_MINUTES)),
+        discharge_taper_soc_high_pct=float(DISCHARGE_TAPER_SOC_HIGH_PCT),
+        discharge_taper_soc_low_pct=float(DISCHARGE_TAPER_SOC_LOW_PCT),
+        discharge_taper_max_w_high=float(DISCHARGE_TAPER_MAX_W_HIGH),
+        discharge_taper_max_w_low=float(DISCHARGE_TAPER_MAX_W_LOW),
     )
 
     carryover_min = max(1, int(SOC_FULL_DEFENSE_CARRYOVER_MINUTES))
