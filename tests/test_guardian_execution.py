@@ -198,8 +198,8 @@ def test_neutral_at_soc_floor_with_load_deficit_charges_not_discharges() -> None
             soc_low_defense_charge_pct=-1,
         ),
     )
-    assert d.mode == "charge"
-    assert d.power_pct == -1
+    assert d.mode == "neutral"
+    assert d.write_slot is False
     assert d.reason == "soc_low_grid_covers_load"
 
 

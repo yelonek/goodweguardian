@@ -442,17 +442,10 @@ def decide_soc_defenses(
                     mode="discharge",
                     reason="soc_low_pv_surplus_no_discharge",
                 )
-            # Deficyt loadu przy niskim SOC: sieć dopełnia, bateria nie rozładowuje się.
+            # Deficyt loadu przy niskim SOC: sieć dopełnia dom, PV nie idzie na siłę do baterii.
+            # CHARGE -1% przy load>PV kieruje PV do magazynu (GoodWe) i pogarsza import — neutral.
             if prefer_charge_over_export:
-                duration_s = min(inp.time_to_end_s, max(60.0, inp.time_to_end_s))
-                return WatchdogDecision(
-                    write_slot=True,
-                    enabled=True,
-                    power_pct=int(cfg.soc_low_defense_charge_pct),
-                    duration_s=duration_s,
-                    mode="charge",
-                    reason="soc_low_grid_covers_load",
-                )
+                return _neutral_decision("soc_low_grid_covers_load")
             target_w = min(float(low_soc_target_w), load_deficit_w, float(inp.p_battery_w))
             target_pct = max(
                 1,
