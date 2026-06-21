@@ -448,11 +448,12 @@ def decide_soc_defenses(
             and float(plan_battery_delta_kwh) > PLAN_CHARGE_INTENT_EPS_KWH
         )
         prefer_charge_over_export = at_soc_floor or plan_wants_charge
+        hour_export_surplus = float(inp.remaining_kwh) >= 0.0
 
         if low_soc_discharge_cap_active:
             load_deficit_w = float(inp.consumption_w) - float(inp.pv_w)
             if load_deficit_w <= 0.0:
-                if prefer_charge_over_export:
+                if prefer_charge_over_export or hour_export_surplus:
                     duration_s = min(inp.time_to_end_s, max(60.0, inp.time_to_end_s))
                     return WatchdogDecision(
                         write_slot=True,
@@ -473,7 +474,7 @@ def decide_soc_defenses(
                         mode="discharge",
                         reason="soc_low_pv_surplus_balance_priority",
                     )
-                # DISCHARGE 1% jak export_pv_surplus: PV na sieć bez rozładowania baterii.
+                # Bilans godziny ~0, PV ≥ load: lekki eksport bez rozładowania baterii.
                 target_pct = max(1, int(cfg.min_discharge_assist_pct))
                 duration_s = min(inp.time_to_end_s, max(60.0, inp.time_to_end_s))
                 return WatchdogDecision(
@@ -484,9 +485,9 @@ def decide_soc_defenses(
                     mode="discharge",
                     reason="soc_low_pv_surplus_no_discharge",
                 )
-            # Deficyt loadu przy niskim SOC: sieć dopełnia dom, PV nie idzie na siłę do baterii.
-            # CHARGE -1% przy load>PV kieruje PV do magazynu (GoodWe) i pogarsza import — neutral.
-            if prefer_charge_over_export:
+            # Deficyt loadu przy niskim SOC: sieć dopełnia dom gdy godzina na plusie
+            # lub plan/SOC wymaga ładowania — nie rozładowuj baterii (LFP / import).
+            if prefer_charge_over_export or hour_export_surplus:
                 return _neutral_decision("soc_low_grid_covers_load")
             target_w = min(float(low_soc_target_w), load_deficit_w, float(inp.p_battery_w))
             taper_cap = battery_discharge_cap_w(inp, cfg)

@@ -475,7 +475,7 @@ class TestWatchdogPolicy:
         assert d.mode == "discharge"
         assert d.reason == "soc_low_discharge_cap"
 
-    def test_soc_low_pv_surplus_routes_pv_to_grid_without_battery_discharge(
+    def test_soc_low_pv_surplus_soaks_into_battery_when_hour_is_export(
         self, default_inputs: BalanceInputs
     ) -> None:
         default_inputs.soc_pct = 15.0
@@ -487,9 +487,9 @@ class TestWatchdogPolicy:
         cfg = WatchdogConfig(soc_low_threshold_pct=20.0)
         d = decide_watchdog(default_inputs, cfg=cfg)
         assert d.write_slot is True
-        assert d.power_pct == 1
-        assert d.mode == "discharge"
-        assert d.reason == "soc_low_pv_surplus_no_discharge"
+        assert d.power_pct == -1
+        assert d.mode == "charge"
+        assert d.reason == "soc_low_pv_soak"
 
     def test_soc_low_pv_surplus_prioritizes_negative_hour_balance(
         self, default_inputs: BalanceInputs
@@ -527,7 +527,7 @@ class TestWatchdogPolicy:
     ) -> None:
         default_inputs.soc_pct = 18.0
         default_inputs.time_to_end_s = 2400
-        default_inputs.remaining_kwh = 0.10
+        default_inputs.remaining_kwh = -0.20
         default_inputs.pv_w = 100.0
         default_inputs.consumption_w = 1000.0
         default_inputs.low_soc_discharge_target_w = 350.0
@@ -537,6 +537,22 @@ class TestWatchdogPolicy:
         assert d.write_slot is True
         assert d.power_pct == 5
         assert d.reason == "soc_low_discharge_cap"
+
+    def test_soc_low_load_spike_does_not_discharge_when_hour_export_surplus(
+        self, default_inputs: BalanceInputs
+    ) -> None:
+        """Reprodukcja 12:44: Tesla spike przy +2.8 kWh eksportu — sieć, nie bateria."""
+        default_inputs.soc_pct = 15.0
+        default_inputs.time_to_end_s = 960
+        default_inputs.remaining_kwh = 2.83
+        default_inputs.pv_w = 6080.0
+        default_inputs.consumption_w = 7251.0
+        default_inputs.low_soc_discharge_target_w = 2500.0
+        default_inputs.other_eco_slot_active = True
+        cfg = WatchdogConfig(soc_low_threshold_pct=20.0)
+        d = decide_watchdog(default_inputs, cfg=cfg)
+        assert d.write_slot is False
+        assert d.reason == "soc_low_grid_covers_load"
 
     def test_night_soc_reserve_has_priority_over_low_soc_discharge_cap(
         self, default_inputs: BalanceInputs
