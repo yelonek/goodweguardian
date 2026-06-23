@@ -111,3 +111,5 @@ Skrót hierarchii włączenia zapisów: tabela **„Skąd brać ustawienia”** 
 
 Przy niskim SOC (domyślnie **10%–20%**) wszystkie ścieżki **DISCHARGE** Guardiana mają liniowy sufit mocy: **70 W przy 10%** → **1000 W przy 20%** (env: `DISCHARGE_TAPER_*`). W tej strefie **nie** podbijamy do mocy domu — reszta idzie z sieci/PV. Uzasadnienie: duży prąd przy podłodze LFP obniża napięcie ogniwa; BMS wymusza doładowanie do ~15% (~0,5 kWh straty). Powyżej 20% SOC — bez tego limitu (tylko inwerter/bateria).
 
+**Nadwyżka PV przy niskim SOC:** gdy `PV ≥ load` i bilans godziny **≥ 0** → **CHARGE −1%** (`soc_low_pv_soak`, PV do baterii). **DISCHARGE +1%** (`soc_low_pv_surplus_balance_priority`) tylko przy **ujemnym** bilansie godziny — korekta straty, nie eksport produkcji. Usunięto błędną gałąź `soc_low_pv_surplus_no_discharge`, która przy dodatnim bilansie pchała PV na sieć.
+

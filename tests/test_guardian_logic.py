@@ -491,6 +491,21 @@ class TestWatchdogPolicy:
         assert d.mode == "charge"
         assert d.reason == "soc_low_pv_soak"
 
+    def test_h12_replay_low_soc_pv_soaks_not_exports(self, default_inputs: BalanceInputs) -> None:
+        """Regresja 2026-06-21 h12:00 — SOC 15%, 6 kW PV, 2.5 kW dom, bilans 0 → CHARGE."""
+        default_inputs.soc_pct = 15.0
+        default_inputs.time_to_end_s = 3600
+        default_inputs.remaining_kwh = 0.0
+        default_inputs.pv_w = 6340.0
+        default_inputs.consumption_w = 2521.0
+        default_inputs.low_soc_discharge_target_w = 2500.0
+        cfg = WatchdogConfig(soc_low_threshold_pct=20.0)
+        d = decide_watchdog(default_inputs, cfg=cfg)
+        assert d.reason == "soc_low_pv_soak"
+        assert d.mode == "charge"
+        assert d.power_pct == -1
+        assert d.reason != "soc_low_pv_surplus_no_discharge"
+
     def test_soc_low_pv_surplus_prioritizes_negative_hour_balance(
         self, default_inputs: BalanceInputs
     ) -> None:

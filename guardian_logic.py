@@ -19,7 +19,7 @@ from planner.models import ExecMode
 PLAN_CHARGE_INTENT_EPS_KWH = 0.05
 _EXEC_SKIP_SOC_FULL: frozenset[ExecMode] = frozenset({"export_profit"})
 _EXEC_SOC_LOW_ACTIVE: frozenset[ExecMode] = frozenset(
-    {"export_pv_surplus", "neutral"}
+    {"export_pv_surplus", "export_profit", "neutral"}
 )
 
 
@@ -368,6 +368,11 @@ def decide_soc_defenses(
     - **Pełna bateria** — wyłączona w ``export_profit`` (celowe rozładowanie).
     - **Niska bateria** — tylko w ``export_pv_surplus``, ``neutral`` (limit loadu);
       ``export_profit``: max powyżej progu, poniżej — taper LFP do ``soc_floor``.
+
+    Przy niskim SOC i nadwyżce PV (``load ≤ PV``):
+    - ``remaining_kwh ≥ 0`` → ``soc_low_pv_soak`` (CHARGE −1%, PV do baterii);
+    - ``remaining_kwh < 0`` → ``soc_low_pv_surplus_balance_priority`` (DISCHARGE +1%
+      tylko na korektę ujemnego bilansu godziny — bez ciężkiego rozładowania magazynu).
     """
 
     low_soc_discharge_cap_active = (
@@ -453,6 +458,7 @@ def decide_soc_defenses(
         if low_soc_discharge_cap_active:
             load_deficit_w = float(inp.consumption_w) - float(inp.pv_w)
             if load_deficit_w <= 0.0:
+                # PV ≥ load: domyślnie PV → bateria; DISCHARGE +1% tylko gdy godzina w deficycie.
                 if prefer_charge_over_export or hour_export_surplus:
                     duration_s = min(inp.time_to_end_s, max(60.0, inp.time_to_end_s))
                     return WatchdogDecision(
@@ -463,18 +469,6 @@ def decide_soc_defenses(
                         mode="charge",
                         reason="soc_low_pv_soak",
                     )
-                if float(inp.remaining_kwh) < 0.0:
-                    target_pct = max(1, int(cfg.min_discharge_assist_pct))
-                    duration_s = min(inp.time_to_end_s, max(60.0, inp.time_to_end_s))
-                    return WatchdogDecision(
-                        write_slot=True,
-                        enabled=True,
-                        power_pct=target_pct,
-                        duration_s=duration_s,
-                        mode="discharge",
-                        reason="soc_low_pv_surplus_balance_priority",
-                    )
-                # Bilans godziny ~0, PV ≥ load: lekki eksport bez rozładowania baterii.
                 target_pct = max(1, int(cfg.min_discharge_assist_pct))
                 duration_s = min(inp.time_to_end_s, max(60.0, inp.time_to_end_s))
                 return WatchdogDecision(
@@ -483,7 +477,7 @@ def decide_soc_defenses(
                     power_pct=target_pct,
                     duration_s=duration_s,
                     mode="discharge",
-                    reason="soc_low_pv_surplus_no_discharge",
+                    reason="soc_low_pv_surplus_balance_priority",
                 )
             # Deficyt loadu przy niskim SOC: sieć dopełnia dom gdy godzina na plusie
             # lub plan/SOC wymaga ładowania — nie rozładowuj baterii (LFP / import).
