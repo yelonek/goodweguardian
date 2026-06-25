@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 import httpx
 from pydantic import BaseModel, ConfigDict
@@ -110,6 +110,132 @@ def compute_delta_twc_kwh(
 ) -> float:
     delta = E_twc_kwh - hour_start_kwh
     return max(0.0, delta)
+
+
+def _first_twc_kwh_per_hour(local_date: date) -> dict[int, float]:
+    """Najwcześniejsza próbka ``E_twc_kwh`` per godzina lokalna."""
+    path = TELEMETRY_DIR / f"telemetry_{local_date.isoformat()}.jsonl"
+    if not path.exists():
+        return {}
+    best: dict[int, tuple[int, float]] = {}
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                    hour = int(row["local_hour"])
+                    minute = int(row["local_minute"])
+                    val = row.get("E_twc_kwh")
+                    if val is None:
+                        continue
+                    v = float(val)
+                except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if not (0 <= hour <= 23):
+                    continue
+                prev = best.get(hour)
+                if prev is None or minute < prev[0]:
+                    best[hour] = (minute, v)
+    except OSError:
+        return {}
+    return {h: v for h, (_m, v) in best.items()}
+
+
+def _max_delta_twc_per_hour(local_date: date) -> dict[int, float]:
+    """Maksymalny ``delta_twc_kwh`` w każdej godzinie (fallback gdy brak granicy H+1)."""
+    path = TELEMETRY_DIR / f"telemetry_{local_date.isoformat()}.jsonl"
+    if not path.exists():
+        return {}
+    out: dict[int, float] = {}
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                    hour = int(row["local_hour"])
+                    val = row.get("delta_twc_kwh")
+                    if val is None:
+                        continue
+                    v = max(0.0, float(val))
+                except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if not (0 <= hour <= 23):
+                    continue
+                prev = out.get(hour)
+                if prev is None or v > prev:
+                    out[hour] = v
+    except OSError:
+        return {}
+    return out
+
+
+def _twc_sample_hours(local_date: date) -> set[int]:
+    """Godziny z dowolną próbką TWC (``E_twc_kwh`` lub ``delta_twc_kwh``)."""
+    path = TELEMETRY_DIR / f"telemetry_{local_date.isoformat()}.jsonl"
+    if not path.exists():
+        return set()
+    hours: set[int] = set()
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                    hour = int(row["local_hour"])
+                    if row.get("E_twc_kwh") is None and row.get("delta_twc_kwh") is None:
+                        continue
+                except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if 0 <= hour <= 23:
+                    hours.add(hour)
+    except OSError:
+        return set()
+    return hours
+
+
+def hourly_ev_kwh_from_telemetry(local_date: date) -> dict[int, float]:
+    """
+    kWh ładowania EV per godzina z telemetrii TWC.
+
+    Preferuje Δ ``E_twc_kwh`` między pierwszą próbką H a H+1 (jak PV).
+    Fallback: ``max(delta_twc_kwh)`` w godzinie. Godziny bez TWC — pominięte.
+    """
+    sample_hours = _twc_sample_hours(local_date)
+    if not sample_hours:
+        return {}
+
+    first_today = _first_twc_kwh_per_hour(local_date)
+    first_tomorrow = _first_twc_kwh_per_hour(local_date + timedelta(days=1))
+    max_delta = _max_delta_twc_per_hour(local_date)
+
+    out: dict[int, float] = {}
+    for h in sorted(sample_hours):
+        ev: float | None = None
+        start = first_today.get(h)
+        if start is not None:
+            if h < 23:
+                end = first_today.get(h + 1)
+            else:
+                end = first_tomorrow.get(0)
+            if end is not None:
+                delta = end - start
+                if delta >= 0:
+                    ev = delta
+        if ev is None and h in max_delta:
+            ev = max_delta[h]
+        if ev is None and h in first_today:
+            ev = 0.0
+        if ev is not None:
+            out[h] = ev
+    return out
 
 
 def main() -> None:
