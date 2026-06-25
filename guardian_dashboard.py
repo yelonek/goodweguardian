@@ -59,6 +59,7 @@ from planner.policy_output import (
     policy_rows_by_slot,
 )
 from planner.telemetry import hourly_actuals
+from tesla_wall_charger import hourly_ev_kwh_from_telemetry, twc_enabled
 
 app = FastAPI(title="GoodWeGuardian Dashboard", version="0.1.0")
 
@@ -911,6 +912,11 @@ def _combined_forecast_payload() -> dict[str, Any]:
         today.isoformat(): actuals_today,
         tomorrow.isoformat(): actuals_tomorrow,
     }
+    twc_on = twc_enabled()
+    ev_by_date: dict[str, dict[int, float]] = {}
+    if twc_on:
+        ev_by_date[today.isoformat()] = hourly_ev_kwh_from_telemetry(today)
+        ev_by_date[tomorrow.isoformat()] = hourly_ev_kwh_from_telemetry(tomorrow)
     plan_latest = load_latest_plan()
     policy_artifact = load_policy_artifact()
     policy_by_slot = policy_rows_by_slot(policy_artifact)
@@ -951,6 +957,14 @@ def _combined_forecast_payload() -> dict[str, Any]:
         act_load_map, act_pv_map = actuals_by_date.get(d_iso, ({}, {}))
         load_actual = act_load_map.get(h) if hour_complete else None
         pv_actual = act_pv_map.get(h) if hour_complete else None
+        ev_actual: float | None = None
+        load_base_actual: float | None = None
+        if twc_on and hour_complete:
+            ev_map = ev_by_date.get(d_iso, {})
+            if h in ev_map:
+                ev_actual = float(ev_map[h])
+                if load_actual is not None:
+                    load_base_actual = max(0.0, float(load_actual) - ev_actual)
 
         pv_mean = float(pv_row["pv_kw"]) if pv_row and pv_row.get("pv_kw") is not None else None
         load_delta_p50 = (
@@ -1004,6 +1018,8 @@ def _combined_forecast_payload() -> dict[str, Any]:
                 "load_kwh_p75": load_p75,
                 "load_kwh_actual": load_actual,
                 "load_kwh_delta_p50": load_delta_p50,
+                "ev_kwh_actual": ev_actual,
+                "load_base_kwh_actual": load_base_actual,
                 "pv_kwh": pv_mean,
                 "pv_kwh_p10": float(pv_row["pv_kw_p10"]) if pv_row and pv_row.get("pv_kw_p10") is not None else None,
                 "pv_kwh_p90": float(pv_row["pv_kw_p90"]) if pv_row and pv_row.get("pv_kw_p90") is not None else None,
@@ -1066,8 +1082,11 @@ def _combined_forecast_payload() -> dict[str, Any]:
         "pricing_tomorrow_source": (pricing_tomorrow or {}).get("source"),
         "pricing_tomorrow_available": pricing_tomorrow is not None,
         "load_nowcast": load_payload.get("nowcast", {}),
+        "twc_enabled": twc_on,
         "comparison_note": (
-            "Zakończone godziny: act load ≈ średnia consumption_w/1000 z telemetrii (kWh/h); "
+            "Zakończone godziny: razem ≈ średnia consumption_w/1000 z telemetrii (kWh/h); "
+            "EV = przyrost licznika Tesla Wall Connector (first(H+1)−first(H), fallback max delta_twc); "
+            "dom = razem − EV (tylko gdy TWC włączone i są próbki). "
             "act PV = przyrost licznika e_total inwertera w tej godzinie (dokładne kWh, "
             "first(H+1) − first(H)). Prognoza PV: średnia moc kW × 1h = kWh (sloty 30 min "
             "z Solcast zagregowane do godziny). Prognoza obciążenia: baseline z historii; "
