@@ -36,6 +36,64 @@ def _pv_forecast_kwh(pv_row: dict[str, Any] | None) -> float | None:
     return max(0.0, v)
 
 
+CHEAP_THRESHOLD_PLN = 0.60
+
+
+def _aggregate_pv_rce(
+    hour_rows: list[dict[str, Any]],
+    *,
+    cheap_threshold_pln: float = CHEAP_THRESHOLD_PLN,
+) -> dict[str, Any]:
+    """Agreguj PV × RCE dla podzbioru godzin (segment dziś/jutro, było/zostało)."""
+    threshold_pln = [g / 100.0 for g in PV_PYRAMID_TIERS_GR]
+
+    pv_total = sum(float(r["pv_kwh"]) for r in hour_rows if r.get("pv_kwh") is not None)
+
+    cumulative: list[float] = []
+    for thr in threshold_pln:
+        s = sum(
+            float(r["pv_kwh"])
+            for r in hour_rows
+            if r.get("pv_kwh") is not None and float(r["rce_pln_kwh"]) < thr
+        )
+        cumulative.append(round(s, 4))
+
+    above_60 = sum(
+        float(r["pv_kwh"])
+        for r in hour_rows
+        if r.get("pv_kwh") is not None and float(r["rce_pln_kwh"]) >= cheap_threshold_pln
+    )
+
+    cheap_kwh = sum(
+        float(r["pv_kwh"])
+        for r in hour_rows
+        if r.get("pv_kwh") is not None and float(r["rce_pln_kwh"]) < cheap_threshold_pln
+    )
+
+    tiers: list[dict[str, Any]] = []
+    prev = 0.0
+    for i, gr in enumerate(PV_PYRAMID_TIERS_GR):
+        cum = cumulative[i]
+        tiers.append(
+            {
+                "threshold_gr": gr,
+                "cumulative_kwh": cum,
+                "layer_kwh": round(max(0.0, cum - prev), 4),
+            }
+        )
+        prev = cum
+
+    hours_with_pv = sum(1 for r in hour_rows if r.get("pv_kwh") is not None)
+
+    return {
+        "pv_total_kwh": round(pv_total, 4),
+        "cheap_kwh": round(cheap_kwh, 4),
+        "above_60_kwh": round(above_60, 4),
+        "tiers": tiers,
+        "hours_with_pv": hours_with_pv,
+    }
+
+
 def build_pv_pyramid_payload(now: datetime | None = None) -> dict[str, Any]:
     """
     Horyzont 48 h od północy dziś (dziś + jutro).
@@ -149,38 +207,33 @@ def build_pv_pyramid_payload(now: datetime | None = None) -> dict[str, Any]:
             }
         )
 
-    pv_total = sum(float(r["pv_kwh"]) for r in hour_rows if r.get("pv_kwh") is not None)
-    threshold_pln = [g / 100.0 for g in PV_PYRAMID_TIERS_GR]
+    today_iso = today.isoformat()
+    tomorrow_iso = tomorrow.isoformat()
 
-    cumulative: list[float] = []
-    for thr in threshold_pln:
-        s = sum(
-            float(r["pv_kwh"])
-            for r in hour_rows
-            if r.get("pv_kwh") is not None and float(r["rce_pln_kwh"]) < thr
-        )
-        cumulative.append(round(s, 4))
+    today_past_rows = [
+        r for r in hour_rows if r["date"] == today_iso and r.get("hour_complete")
+    ]
+    today_remaining_rows = [
+        r for r in hour_rows if r["date"] == today_iso and not r.get("hour_complete")
+    ]
+    today_all_rows = [r for r in hour_rows if r["date"] == today_iso]
+    tomorrow_rows = [r for r in hour_rows if r["date"] == tomorrow_iso]
 
-    above_60 = sum(
-        float(r["pv_kwh"])
-        for r in hour_rows
-        if r.get("pv_kwh") is not None and float(r["rce_pln_kwh"]) >= 0.60
-    )
+    aggregate_all = _aggregate_pv_rce(hour_rows)
+    segments = {
+        "cheap_threshold_gr": int(CHEAP_THRESHOLD_PLN * 100),
+        "today": {
+            "date": today_iso,
+            "past": _aggregate_pv_rce(today_past_rows),
+            "remaining": _aggregate_pv_rce(today_remaining_rows),
+            "total": _aggregate_pv_rce(today_all_rows),
+        },
+        "tomorrow": {
+            "date": tomorrow_iso,
+            "total": _aggregate_pv_rce(tomorrow_rows),
+        },
+    }
 
-    tiers: list[dict[str, Any]] = []
-    prev = 0.0
-    for i, gr in enumerate(PV_PYRAMID_TIERS_GR):
-        cum = cumulative[i]
-        tiers.append(
-            {
-                "threshold_gr": gr,
-                "cumulative_kwh": cum,
-                "layer_kwh": round(max(0.0, cum - prev), 4),
-            }
-        )
-        prev = cum
-
-    hours_with_pv = sum(1 for r in hour_rows if r.get("pv_kwh") is not None)
     hours_with_rce = sum(1 for r in hour_rows if r.get("rce_pln_kwh") is not None)
 
     return {
@@ -188,12 +241,13 @@ def build_pv_pyramid_payload(now: datetime | None = None) -> dict[str, Any]:
         "timezone": TELEMETRY_TZ,
         "horizon_start": start_dt.isoformat(timespec="seconds"),
         "horizon_hours": 48,
-        "pv_total_kwh": round(pv_total, 4),
-        "above_60_kwh": round(above_60, 4),
+        "pv_total_kwh": aggregate_all["pv_total_kwh"],
+        "above_60_kwh": aggregate_all["above_60_kwh"],
         "tiers_gr": list(PV_PYRAMID_TIERS_GR),
-        "tiers": tiers,
-        "hours_with_pv": hours_with_pv,
+        "tiers": aggregate_all["tiers"],
+        "hours_with_pv": aggregate_all["hours_with_pv"],
         "hours_with_rce": hours_with_rce,
+        "segments": segments,
         "pricing_today_source": pricing_today.get("source") if pricing_today else None,
         "pricing_tomorrow_available": pricing_tomorrow is not None,
         "pricing_tomorrow_source": pricing_tomorrow.get("source") if pricing_tomorrow else None,

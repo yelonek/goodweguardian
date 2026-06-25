@@ -63,6 +63,16 @@ def test_pyramid_actual_past_forecast_future(fixed_now: datetime) -> None:
     assert p["tiers"][-1]["cumulative_kwh"] == pytest.approx(14 * 0.5 + 10 * 1.0)
     assert p["above_60_kwh"] == pytest.approx(24 * 2.0)
 
+    seg = p["segments"]
+    assert seg["cheap_threshold_gr"] == 60
+    assert seg["today"]["past"]["cheap_kwh"] == pytest.approx(14 * 0.5)
+    assert seg["today"]["past"]["pv_total_kwh"] == pytest.approx(14 * 0.5)
+    assert seg["today"]["remaining"]["cheap_kwh"] == pytest.approx(10 * 1.0)
+    assert seg["today"]["remaining"]["pv_total_kwh"] == pytest.approx(10 * 1.0)
+    assert seg["today"]["total"]["cheap_kwh"] == pytest.approx(14 * 0.5 + 10 * 1.0)
+    assert seg["tomorrow"]["total"]["above_60_kwh"] == pytest.approx(24 * 2.0)
+    assert seg["tomorrow"]["total"]["cheap_kwh"] == pytest.approx(0.0)
+
 
 def test_pyramid_tier_layers_incremental(fixed_now: datetime) -> None:
     today = fixed_now.date().isoformat()
