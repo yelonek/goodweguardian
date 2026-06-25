@@ -65,6 +65,14 @@
     .pv-pyramid-block { margin-top: 16px; max-width: 720px; }
     .pv-pyramid-block h3 { margin: 0 0 6px; font-size: 1rem; }
     .pv-pyramid-summary { display: flex; flex-wrap: wrap; gap: 10px; margin: 8px 0 10px; }
+    .pv-pyramid-hero { margin: 10px 0 14px; }
+    .pv-pyramid-hero .card { padding: 14px 18px; background: rgba(13, 128, 80, 0.12); border: 1px solid rgba(13, 128, 80, 0.35); }
+    .pv-pyramid-hero .card-key { font-size: 13px; font-weight: 600; opacity: 0.85; }
+    .pv-pyramid-hero .card-val { font-size: 1.75rem; font-weight: 700; color: #0d8050; line-height: 1.2; }
+    .pv-pyramid-day-section { margin: 14px 0 10px; }
+    .pv-pyramid-day-section h4 { margin: 0 0 8px; font-size: 0.95rem; }
+    .pv-pyramid-subtitle { margin: 16px 0 6px; font-size: 0.9rem; font-weight: 600; }
+    .pv-pyramid-table-block { margin-bottom: 12px; }
     .settings-block { margin-bottom: 28px; }
     .settings-block h3 { margin: 0 0 10px; font-size: 1rem; }
     .setting-lead { font-size: 13px; line-height: 1.45; margin: 0 0 12px; max-width: 640px; }
@@ -172,20 +180,73 @@
           Ile energii <strong>wyprodukuje PV</strong> w godzinach z tanim eksportem (RCE).
           Minione godziny — fakty z telemetrii; reszta — prognoza p50. Pomaga zaplanować CWU, EV, pralkę.
         </p>
-        <div class="pv-pyramid-summary" id="pvPyramidSummary"></div>
+        <div class="pv-pyramid-hero" id="pvPyramidHero"></div>
+        <div class="pv-pyramid-day-section">
+          <h4>Dziś</h4>
+          <div class="pv-pyramid-summary" id="pvPyramidTodaySummary"></div>
+        </div>
+        <div class="pv-pyramid-day-section">
+          <h4>Jutro</h4>
+          <div class="pv-pyramid-summary" id="pvPyramidTomorrowSummary"></div>
+        </div>
         <div class="muted" id="pvPyramidMeta" style="font-size:11px; margin-bottom:6px;"></div>
         <div class="muted" id="pvPyramidWarnings" style="font-size:11px; margin-bottom:6px;"></div>
-        <table class="pv-pyramid">
-          <thead>
-            <tr>
-              <th>Próg RCE</th>
-              <th class="grp-pv">kWh skumul.</th>
-              <th class="grp-pv">w warstwie</th>
-              <th class="grp-pv pv-bar-wrap">udział</th>
-            </tr>
-          </thead>
-          <tbody id="pvPyramidRows"></tbody>
-        </table>
+        <div class="pv-pyramid-table-block">
+          <div class="pv-pyramid-subtitle">Dziś — zostało</div>
+          <table class="pv-pyramid">
+            <thead>
+              <tr>
+                <th>Próg RCE</th>
+                <th class="grp-pv">kWh skumul.</th>
+                <th class="grp-pv">w warstwie</th>
+                <th class="grp-pv pv-bar-wrap">udział</th>
+              </tr>
+            </thead>
+            <tbody id="pvPyramidRowsRemaining"></tbody>
+          </table>
+        </div>
+        <div class="pv-pyramid-table-block">
+          <div class="pv-pyramid-subtitle">Dziś — było</div>
+          <table class="pv-pyramid">
+            <thead>
+              <tr>
+                <th>Próg RCE</th>
+                <th class="grp-pv">kWh skumul.</th>
+                <th class="grp-pv">w warstwie</th>
+                <th class="grp-pv pv-bar-wrap">udział</th>
+              </tr>
+            </thead>
+            <tbody id="pvPyramidRowsPast"></tbody>
+          </table>
+        </div>
+        <div class="pv-pyramid-table-block">
+          <div class="pv-pyramid-subtitle">Dziś — razem</div>
+          <table class="pv-pyramid">
+            <thead>
+              <tr>
+                <th>Próg RCE</th>
+                <th class="grp-pv">kWh skumul.</th>
+                <th class="grp-pv">w warstwie</th>
+                <th class="grp-pv pv-bar-wrap">udział</th>
+              </tr>
+            </thead>
+            <tbody id="pvPyramidRowsTodayTotal"></tbody>
+          </table>
+        </div>
+        <div class="pv-pyramid-table-block">
+          <div class="pv-pyramid-subtitle">Jutro</div>
+          <table class="pv-pyramid">
+            <thead>
+              <tr>
+                <th>Próg RCE</th>
+                <th class="grp-pv">kWh skumul.</th>
+                <th class="grp-pv">w warstwie</th>
+                <th class="grp-pv pv-bar-wrap">udział</th>
+              </tr>
+            </thead>
+            <tbody id="pvPyramidRowsTomorrow"></tbody>
+          </table>
+        </div>
         <p class="muted" style="font-size:11px; margin:8px 0 0;">
           Próg 60 gr ≈ taryfa dzienna G12 (~59 gr). Wiersz ≥60 gr — PV w godzinach droższego eksportu.
         </p>

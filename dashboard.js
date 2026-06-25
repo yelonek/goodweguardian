@@ -90,30 +90,13 @@ async function loadOverview(force) {
   }
 }
 
-function renderPvPyramid(p) {
-  const block = document.getElementById("pvPyramidBlock");
-  if (!p || p._error) {
-    block.style.display = "none";
-    return;
-  }
-  block.style.display = "block";
-  const total = Number(p.pv_total_kwh || 0);
-  const above = Number(p.above_60_kwh || 0);
-  document.getElementById("pvPyramidSummary").innerHTML = [
-    ["PV w horyzoncie", `${total.toFixed(1)} kWh`],
-    ["RCE ≥ 60 gr", `${above.toFixed(1)} kWh`],
-    ["Tanio (<60 gr)", `${Math.max(0, total - above).toFixed(1)} kWh`],
-  ].map(([k, v]) => card(k, v)).join("");
-  const meta = [
-    p.pricing_tomorrow_available ? `jutro RCE: ${p.pricing_tomorrow_source || "ok"}` : "jutro RCE: brak",
-    `PV: ${p.hours_with_pv || 0}/48 h`,
-  ];
-  document.getElementById("pvPyramidMeta").textContent = meta.join(" · ");
-  const warns = p.warnings || [];
-  document.getElementById("pvPyramidWarnings").textContent = warns.length
-    ? `Uwagi: ${warns.slice(0, 4).join(" · ")}` : "";
+function renderPvPyramidTable(segment, tbodyId) {
+  const tbody = document.getElementById(tbodyId);
+  if (!tbody) return;
+  const total = Number(segment?.pv_total_kwh || 0);
+  const above = Number(segment?.above_60_kwh || 0);
   const barMax = total > 0 ? total : 1;
-  const tierRows = (p.tiers || []).map((t) => {
+  const tierRows = (segment?.tiers || []).map((t) => {
     const gr = t.threshold_gr;
     const cum = Number(t.cumulative_kwh || 0);
     const layer = Number(t.layer_kwh || 0);
@@ -123,9 +106,60 @@ function renderPvPyramid(p) {
       <td class="pv-bar-wrap"><span class="pv-bar" style="width:${pct}%;"></span></td></tr>`;
   }).join("");
   const abovePct = Math.min(100, Math.round((above / barMax) * 100));
-  document.getElementById("pvPyramidRows").innerHTML = tierRows +
+  tbody.innerHTML = tierRows +
     `<tr><td>≥ 60 gr</td><td>${above.toFixed(2)}</td><td>${above.toFixed(2)}</td>
       <td class="pv-bar-wrap"><span class="pv-bar" style="width:${abovePct}%; opacity:0.55;"></span></td></tr>`;
+}
+
+function renderPvPyramid(p) {
+  const block = document.getElementById("pvPyramidBlock");
+  if (!p || p._error) {
+    block.style.display = "none";
+    return;
+  }
+  block.style.display = "block";
+  const seg = p.segments || {};
+  const today = seg.today || {};
+  const tomorrow = seg.tomorrow || {};
+  const past = today.past || {};
+  const remaining = today.remaining || {};
+  const todayTotal = today.total || {};
+  const tomorrowTotal = tomorrow.total || {};
+  const cheapGr = seg.cheap_threshold_gr || 60;
+
+  const remainingCheap = Number(remaining.cheap_kwh || 0);
+  document.getElementById("pvPyramidHero").innerHTML =
+    `<div class="card"><div class="card-key">Tanio zostało dziś (&lt;${cheapGr} gr)</div>` +
+    `<div class="card-val">${remainingCheap.toFixed(1)} kWh</div></div>`;
+
+  document.getElementById("pvPyramidTodaySummary").innerHTML = [
+    ["Zostało tanio", `${remainingCheap.toFixed(1)} kWh`],
+    ["Zostało PV", `${Number(remaining.pv_total_kwh || 0).toFixed(1)} kWh`],
+    ["Było tanio", `${Number(past.cheap_kwh || 0).toFixed(1)} kWh`],
+    ["Było PV", `${Number(past.pv_total_kwh || 0).toFixed(1)} kWh`],
+    ["Dziś razem tanio", `${Number(todayTotal.cheap_kwh || 0).toFixed(1)} kWh`],
+  ].map(([k, v]) => card(k, v)).join("");
+
+  document.getElementById("pvPyramidTomorrowSummary").innerHTML = [
+    [`Tanio (&lt;${cheapGr} gr)`, `${Number(tomorrowTotal.cheap_kwh || 0).toFixed(1)} kWh`],
+    ["PV razem", `${Number(tomorrowTotal.pv_total_kwh || 0).toFixed(1)} kWh`],
+  ].map(([k, v]) => card(k, v)).join("");
+
+  const meta = [
+    p.pricing_tomorrow_available ? `jutro RCE: ${p.pricing_tomorrow_source || "ok"}` : "jutro RCE: brak",
+    `dziś zostało: ${remaining.hours_with_pv || 0} h PV`,
+    `dziś było: ${past.hours_with_pv || 0} h PV`,
+    `jutro: ${tomorrowTotal.hours_with_pv || 0} h PV`,
+  ];
+  document.getElementById("pvPyramidMeta").textContent = meta.join(" · ");
+  const warns = p.warnings || [];
+  document.getElementById("pvPyramidWarnings").textContent = warns.length
+    ? `Uwagi: ${warns.slice(0, 4).join(" · ")}` : "";
+
+  renderPvPyramidTable(remaining, "pvPyramidRowsRemaining");
+  renderPvPyramidTable(past, "pvPyramidRowsPast");
+  renderPvPyramidTable(todayTotal, "pvPyramidRowsTodayTotal");
+  renderPvPyramidTable(tomorrowTotal, "pvPyramidRowsTomorrow");
 }
 
 async function loadHistory(force) {
