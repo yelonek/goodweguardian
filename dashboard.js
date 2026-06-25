@@ -154,6 +154,30 @@ async function loadHistory(force) {
 
 function renderForecastBlock(forecast) {
   const fcell = (v, d) => (v == null) ? `<td class="nodata">—</td>` : `<td>${Number(v).toFixed(d)}</td>`;
+  const twcOn = !!forecast.twc_enabled;
+  const forecastTable = document.getElementById("forecastTable");
+  if (forecastTable) forecastTable.classList.toggle("twc-on", twcOn);
+  const loadColspan = document.getElementById("forecastLoadColspan");
+  if (loadColspan) loadColspan.colSpan = twcOn ? 7 : 5;
+  const twcNote = document.getElementById("forecastTwcNote");
+  if (twcNote) {
+    twcNote.style.display = twcOn ? "" : "none";
+    twcNote.textContent = twcOn
+      ? "EV = licznik Tesla Wall Connector (kWh/h); dom = razem − EV. Tylko zakończone godziny z próbkami TWC."
+      : "";
+  }
+  const evCell = (v) => {
+    if (!twcOn) return "";
+    if (v == null) return `<td class="nodata twc-col">—</td>`;
+    const n = Number(v);
+    const cls = n > 0.05 ? " ev-charge" : "";
+    return `<td class="grp-load twc-col${cls}" title="Tesla Wall Connector">${n.toFixed(3)}</td>`;
+  };
+  const domCell = (v) => {
+    if (!twcOn) return "";
+    if (v == null) return `<td class="nodata twc-col">—</td>`;
+    return `<td class="grp-load twc-col">${Number(v).toFixed(3)}</td>`;
+  };
   const policyCell = (r) => {
     if (!r.policy) return `<td class="nodata">—</td>`;
     const title = r.policy + (r.policy_label ? ` (${r.policy_label})` : "");
@@ -181,6 +205,7 @@ function renderForecastBlock(forecast) {
     return `<tr${trClass}><td>${r.date.slice(5)}</td><td>${String(r.hour).padStart(2, "0")}:00</td>
       ${fcell(r.buy_pln_kwh, 4)}${fcell(r.sell_pln_kwh, 4)}
       ${fcell(r.load_kwh_p25, 3)}${fcell(r.load_kwh_p50, 3)}${fcell(r.load_kwh_p75, 3)}${fcell(r.load_kwh_actual, 3)}${fcellDelta(r.load_kwh_delta_p50, 3, 0.03)}
+      ${evCell(r.ev_kwh_actual)}${domCell(r.load_base_kwh_actual)}
       ${fcell(r.pv_kwh_p10, 3)}${fcell(r.pv_kwh, 3)}${fcell(r.pv_kwh_p90, 3)}${fcell(r.pv_kwh_actual, 3)}${fcellDelta(r.pv_kwh_delta_mean, 3, 0.05)}
       ${policyCell(r)}${fcell(r.policy_battery_delta_kwh, 3)}${boolCell(r.policy_allow_grid_charge)}
       ${fcell(r.net_kwh, 3)}${fcell(r.soc_pct, 1)}</tr>`;

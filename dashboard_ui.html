@@ -43,6 +43,9 @@
     table.forecast td.delta-pos { color: #0d8050; }
     table.forecast td.delta-neg { color: #b32d2d; }
     table.forecast td.delta-ok { opacity: 0.85; }
+    table.forecast td.ev-charge { background: rgba(100, 200, 120, 0.18); }
+    table.forecast .twc-col { display: none; }
+    table.forecast.twc-on .twc-col { display: table-cell; }
     table.kpi-merged td, table.kpi-merged th { text-align: right; font-variant-numeric: tabular-nums; }
     table.kpi-merged td:first-child, table.kpi-merged th:first-child { text-align: left; }
     table.kpi-merged .grp-kpi { background: rgba(255, 200, 80, 0.10); }
@@ -220,13 +223,14 @@
       <div class="muted" id="forecastMeta"></div>
       <div class="muted" id="forecastCompareNote" style="font-size:11px; max-width:960px; margin-top:6px; line-height:1.35;"></div>
       <div class="muted" id="loadNowcast" style="margin-top:4px;"></div>
-      <table class="forecast">
+      <div class="muted" id="forecastTwcNote" style="font-size:11px; margin-top:4px; display:none;"></div>
+      <table class="forecast" id="forecastTable">
         <thead>
           <tr>
             <th rowspan="2">date</th>
             <th rowspan="2">hour</th>
             <th colspan="2" class="grp-price">price [PLN/kWh]</th>
-            <th colspan="5" class="grp-load">load [kWh]</th>
+            <th colspan="5" class="grp-load" id="forecastLoadColspan">load [kWh]</th>
             <th colspan="5" class="grp-pv">PV [kWh]</th>
             <th colspan="5" class="grp-planner">plan / policy</th>
           </tr>
@@ -236,8 +240,10 @@
             <th class="grp-load">p25</th>
             <th class="grp-load">p50</th>
             <th class="grp-load">p75</th>
-            <th class="grp-load">act</th>
+            <th class="grp-load">razem</th>
             <th class="grp-load">Δ</th>
+            <th class="grp-load twc-col" title="Tesla Wall Connector — tylko zakończone godziny">EV</th>
+            <th class="grp-load twc-col" title="Dom bez EV (razem − EV)">dom</th>
             <th class="grp-pv">p10</th>
             <th class="grp-pv">mean</th>
             <th class="grp-pv">p90</th>
