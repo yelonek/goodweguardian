@@ -23,6 +23,7 @@ class HourInputs(BaseModel):
     pv_kwh_p10: float | None = None
     pv_kwh_p90: float | None = None
     load_kwh_p75: float | None = None
+    load_kwh_p25: float | None = None
     # 1.0 = pełna godzina; <1.0 = reszta bieżącej h (limity mocy w MILP).
     hour_fraction: float = 1.0
 
@@ -38,6 +39,16 @@ class HourPlan(BaseModel):
     soc_start_pct: float
     soc_end_pct: float
     battery_delta_kwh: float
+    # Eco-slot MILP (opcjonalnie — bezpośrednia intencja trybu z solve).
+    ch_pv_kwh: float | None = None
+    ch_grid_kwh: float | None = None
+    planned_exec_mode: Literal[
+        "export_profit",
+        "export_pv_surplus",
+        "neutral",
+        "import_grid",
+        "charge_grid",
+    ] | None = None
 
 
 class DailyPlan(BaseModel):

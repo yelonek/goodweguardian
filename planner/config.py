@@ -28,15 +28,36 @@ PLANNER_SOC_MAX_PCT = _float_env("PLANNER_SOC_MAX_PCT", 100.0)
 PLANNER_HORIZON_HOURS = _int_env("PLANNER_HORIZON_HOURS", 24)
 PLANNER_LOAD_LOOKBACK_DAYS = _int_env("PLANNER_LOAD_LOOKBACK_DAYS", 28)
 
-# Wieloscenariuszowy MILP (p10/p50/p90); ``off`` = deterministyczny p50.
+# Silnik optymalizacji: ``ecoslot`` | ``scenario`` | ``deterministic``.
+# ``PLANNER_OPTIMIZER`` ma pierwszeństwo; legacy ``PLANNER_SCENARIO_OPTIMIZER=off`` → deterministic.
+_OPTIMIZER_RAW = (os.environ.get("PLANNER_OPTIMIZER") or "").strip().lower()
 _SCENARIO_OPTIMIZER_RAW = (os.environ.get("PLANNER_SCENARIO_OPTIMIZER") or "1").strip().lower()
 PLANNER_SCENARIO_WEIGHT_PESSIMISTIC = _float_env("PLANNER_SCENARIO_WEIGHT_PESSIMISTIC", 0.15)
 PLANNER_SCENARIO_WEIGHT_BASE = _float_env("PLANNER_SCENARIO_WEIGHT_BASE", 0.70)
 PLANNER_SCENARIO_WEIGHT_OPTIMISTIC = _float_env("PLANNER_SCENARIO_WEIGHT_OPTIMISTIC", 0.15)
+# Siatka scenariuszy eco-slot: 3 (narożniki) lub 9 (PV×load 3×3).
+PLANNER_ECOSLOT_SCENARIO_GRID = _int_env("PLANNER_ECOSLOT_SCENARIO_GRID", 3)
+
+
+def planner_optimizer_mode() -> str:
+    """``ecoslot`` | ``scenario`` | ``deterministic``."""
+    if _OPTIMIZER_RAW in ("ecoslot", "eco", "ecoslot_stochastic"):
+        return "ecoslot"
+    if _OPTIMIZER_RAW in ("scenario", "scenarios", "legacy_scenario"):
+        return "scenario"
+    if _OPTIMIZER_RAW in ("deterministic", "p50", "legacy"):
+        return "deterministic"
+    if _SCENARIO_OPTIMIZER_RAW in ("0", "off", "false", "no", "deterministic"):
+        return "deterministic"
+    return "scenario"
+
+
+def planner_ecoslot_optimizer_enabled() -> bool:
+    return planner_optimizer_mode() == "ecoslot"
 
 
 def planner_scenario_optimizer_enabled() -> bool:
-    return _SCENARIO_OPTIMIZER_RAW not in ("0", "off", "false", "no", "deterministic")
+    return planner_optimizer_mode() == "scenario"
 
 
 # Maks. moc ładowania/rozładowania magazynu w godzinie [kWh]

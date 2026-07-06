@@ -8,7 +8,11 @@ from datetime import UTC, date, datetime
 
 from guardian_config import TELEMETRY_TZ
 from planner.audit import append_audit, new_event
-from planner.config import ensure_planner_dirs, planner_scenario_optimizer_enabled
+from planner.config import (
+    ensure_planner_dirs,
+    planner_ecoslot_optimizer_enabled,
+    planner_scenario_optimizer_enabled,
+)
 from planner.day_audit import build_day_audit, save_day_audit
 from planner.hour_plan_export import normalize_hour_plans_for_policy
 from planner.inputs import build_hour_inputs_for_slots, latest_soc_from_telemetry
@@ -49,7 +53,11 @@ def build_rolling_plan(
         hour_inputs, opt.hours, now=now_local
     )
     optimizer_name = (
-        "lp_battery_scenarios_v1" if planner_scenario_optimizer_enabled() else "lp_battery_v1"
+        "lp_battery_ecoslot_v1"
+        if planner_ecoslot_optimizer_enabled()
+        else "lp_battery_scenarios_v1"
+        if planner_scenario_optimizer_enabled()
+        else "lp_battery_v1"
     )
     plan_id = str(uuid.uuid4())
     generated = datetime.now(UTC)
@@ -87,13 +95,20 @@ def build_rolling_plan(
                 "optimizer": optimizer_name,
                 **(
                     {"scenarios": opt.scenario_meta or {}}
-                    if planner_scenario_optimizer_enabled()
+                    if planner_ecoslot_optimizer_enabled() or planner_scenario_optimizer_enabled()
                     else {}
                 ),
             },
         )
     )
-    if planner_scenario_optimizer_enabled() and opt.scenario_meta:
+    if planner_ecoslot_optimizer_enabled() and opt.scenario_meta:
+        log.info(
+            "plan %s ecoslot: E=%.2f per_scenario=%s",
+            plan_id[:8],
+            opt.scenario_meta.get("expected_cashflow_pln", 0.0),
+            opt.scenario_meta.get("scenario_cashflow_pln", {}),
+        )
+    elif planner_scenario_optimizer_enabled() and opt.scenario_meta:
         log.info(
             "plan %s scenarios: E=%.2f objective=%.2f per_scenario=%s",
             plan_id[:8],

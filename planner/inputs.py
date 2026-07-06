@@ -97,6 +97,7 @@ def build_hour_inputs_for_slots(
             pv_p90 = max(0.0, pv_p90_raw)
 
         load_p75 = float(lr.get("load_kwh_p75") if lr.get("load_kwh_p75") is not None else load_kwh)
+        load_p25 = float(lr.get("load_kwh_p25") if lr.get("load_kwh_p25") is not None else load_kwh)
 
         if d_iso not in pricing_cache:
             pricing_cache[d_iso] = pricing_day_breakdown(date.fromisoformat(d_iso))
@@ -117,6 +118,7 @@ def build_hour_inputs_for_slots(
             pv_kwh_p10=pv_p10,
             pv_kwh_p90=pv_p90,
             load_kwh_p75=load_p75,
+            load_kwh_p25=load_p25,
         )
         out.append(
             scale_hour_inputs_for_remainder(
