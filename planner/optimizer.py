@@ -16,11 +16,7 @@ from planner.battery import (
     max_power_for_hour,
     soc_kwh,
 )
-from planner.config import (
-    PLANNER_BATTERY_CYCLE_COST_PLN,
-    planner_ecoslot_optimizer_enabled,
-    planner_scenario_optimizer_enabled,
-)
+from planner.config import PLANNER_BATTERY_CYCLE_COST_PLN, planner_scenario_optimizer_enabled
 from planner.models import HourInputs, HourPlan
 
 log = logging.getLogger("planner")
@@ -207,11 +203,6 @@ def optimize_horizon(
     cycle_cost = float(PLANNER_BATTERY_CYCLE_COST_PLN)
     if not hours_in:
         return OptimizeResult(hours=[], total_cashflow_pln=0.0, soc_trajectory_pct=[soc_start_pct])
-
-    if planner_ecoslot_optimizer_enabled():
-        from planner.ecoslot_scenario_optimizer import optimize_horizon_ecoslot
-
-        return optimize_horizon_ecoslot(hours_in, soc_start_pct=soc_start_pct, params=bp)
 
     if planner_scenario_optimizer_enabled():
         from planner.scenario_optimizer import optimize_horizon_scenarios

@@ -136,56 +136,11 @@ def _export_profit_params(bd: float, hp: HourPlan) -> tuple[int, float]:
     return discharge_pct, soc_floor_pct
 
 
-def _row_from_planned_exec_mode(
-    hp: HourPlan,
-    hin: HourInputs | None,
-) -> HourPolicyRow:
-    """Eco-slot MILP: tryb znany z solve — bez heurystycznego mappera."""
-    exec_mode: ExecMode = hp.planned_exec_mode  # type: ignore[assignment]
-    bd = float(hp.battery_delta_kwh)
-    net = float(hp.target_net_kwh)
-    pv = float(hin.pv_kwh) if hin is not None else None
-    load = float(hin.load_kwh) if hin is not None else None
-    discharge_pct: int | None = None
-    charge_pct: int | None = None
-    soc_floor_pct: float | None = None
-    target_soc_pct: float | None = None
-    allow_grid = exec_mode == "charge_grid"
-
-    if exec_mode == "export_profit":
-        discharge_pct, soc_floor_pct = _export_profit_params(bd, hp)
-    elif exec_mode == "charge_grid":
-        charge_pct = _pct_from_battery_delta(bd)
-        target_soc_pct = float(hp.soc_end_pct)
-
-    return HourPolicyRow(
-        date=hp.date,
-        hour=hp.hour,
-        exec_mode=exec_mode,
-        policy=_EXEC_TO_LEGACY_POLICY.get(exec_mode),
-        params=HourPolicyParams(
-            target_net_kwh=net,
-            battery_delta_kwh=bd,
-            soc_end_pct=float(hp.soc_end_pct),
-            pv_plan_kwh=pv,
-            load_plan_kwh=load,
-            allow_grid_charge=allow_grid,
-            discharge_pct=discharge_pct,
-            charge_pct=charge_pct,
-            soc_floor_pct=soc_floor_pct,
-            target_soc_pct=target_soc_pct,
-        ),
-    )
-
-
 def map_hour_to_exec_mode(
     hp: HourPlan,
     hin: HourInputs | None = None,
 ) -> HourPolicyRow:
     """Deterministyczne mapowanie wyniku optymalizatora na ``exec_mode`` + parametry."""
-    if hp.planned_exec_mode is not None:
-        return _row_from_planned_exec_mode(hp, hin)
-
     bd = float(hp.battery_delta_kwh)
     net = float(hp.target_net_kwh)
     net_grid = _remainder_planned_net_kwh(hp, hin)

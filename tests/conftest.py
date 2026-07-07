@@ -15,7 +15,6 @@ def _planner_scenario_off_in_tests(monkeypatch: pytest.MonkeyPatch) -> None:
     import planner.config as cfg
 
     monkeypatch.setattr(cfg, "_SCENARIO_OPTIMIZER_RAW", "off")
-    monkeypatch.setattr(cfg, "_OPTIMIZER_RAW", "")
 
 
 @pytest.fixture

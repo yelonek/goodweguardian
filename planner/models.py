@@ -39,16 +39,6 @@ class HourPlan(BaseModel):
     soc_start_pct: float
     soc_end_pct: float
     battery_delta_kwh: float
-    # Eco-slot MILP (opcjonalnie — bezpośrednia intencja trybu z solve).
-    ch_pv_kwh: float | None = None
-    ch_grid_kwh: float | None = None
-    planned_exec_mode: Literal[
-        "export_profit",
-        "export_pv_surplus",
-        "neutral",
-        "import_grid",
-        "charge_grid",
-    ] | None = None
 
 
 class DailyPlan(BaseModel):

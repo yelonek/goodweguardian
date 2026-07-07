@@ -33,12 +33,14 @@ def _pv_band(hin: HourInputs, which: str) -> float:
 def _load_band(hin: HourInputs, which: str) -> float:
     if which == "p75":
         return float(hin.load_kwh_p75 if hin.load_kwh_p75 is not None else hin.load_kwh)
+    if which == "p25":
+        return float(hin.load_kwh_p25 if hin.load_kwh_p25 is not None else hin.load_kwh)
     return float(hin.load_kwh)
 
 
 def build_planning_scenarios(hours_in: list[HourInputs]) -> list[PlanningScenario]:
     """
-    Trzy scenariusze: pesymistyczny (PV p10, load p75), bazowy (p50), optymistyczny (PV p90, load p50).
+    Trzy scenariusze: pesymistyczny (PV p10, load p75), bazowy (p50), optymistyczny (PV p90, load p25).
     """
     if not hours_in:
         return []
@@ -52,7 +54,7 @@ def build_planning_scenarios(hours_in: list[HourInputs]) -> list[PlanningScenari
         base_pv.append(_pv_band(hin, "p50"))
         base_load.append(_load_band(hin, "p50"))
         opt_pv.append(_pv_band(hin, "p90"))
-        opt_load.append(_load_band(hin, "p50"))
+        opt_load.append(_load_band(hin, "p25"))
 
     w_p = float(PLANNER_SCENARIO_WEIGHT_PESSIMISTIC)
     w_b = float(PLANNER_SCENARIO_WEIGHT_BASE)
