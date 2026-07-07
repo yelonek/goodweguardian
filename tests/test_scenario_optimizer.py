@@ -115,7 +115,46 @@ def test_optimize_horizon_uses_scenarios_when_enabled(
     res = optimize_horizon(hours, soc_start_pct=61.0, params=bp)
     assert res.hours
     assert res.scenario_meta is not None
-    assert res.scenario_meta.get("model") == "per_scenario_ch_dis_soc"
+    assert res.scenario_meta.get("model") == "common_ch_dis_recourse_grid"
+
+
+def test_common_battery_precharges_for_pessimistic_deficit() -> None:
+    """Wspólne ch/dis: tani import rano + drogi deficyt wieczorem tylko w p75 → ładuj rano.
+
+    W starym modelu (osobny plan p50) baza nie ma deficytu wieczorem, więc nie ładowałaby
+    rano. Wspólna trajektoria musi obsłużyć scenariusz pesymistyczny → ładuje na zapas.
+    """
+    bp = BatteryParams(capacity_kwh=10.0, soc_min_pct=10.0, soc_max_pct=100.0, max_power_kwh_per_h=5.0)
+    hours = [
+        HourInputs(
+            date="2026-06-20",
+            hour=6,
+            load_kwh=0.5,
+            pv_kwh=0.0,
+            pv_kwh_p10=0.0,
+            pv_kwh_p90=0.0,
+            load_kwh_p25=0.5,
+            load_kwh_p75=0.5,
+            import_pln_per_kwh=0.20,
+            export_pln_per_kwh=0.10,
+        ),
+        HourInputs(
+            date="2026-06-20",
+            hour=18,
+            load_kwh=0.0,
+            pv_kwh=0.0,
+            pv_kwh_p10=0.0,
+            pv_kwh_p90=0.0,
+            load_kwh_p25=0.0,
+            load_kwh_p75=6.0,
+            import_pln_per_kwh=3.0,
+            export_pln_per_kwh=0.10,
+        ),
+    ]
+    res = optimize_horizon_scenarios(hours, soc_start_pct=15.0, params=bp)
+    assert res.scenario_meta is not None
+    assert res.scenario_meta.get("fallback") != "deterministic_p50"
+    assert res.hours[0].battery_delta_kwh > 0.1
 
 
 def test_scenario_milp_no_grid_charge_when_pv_surplus() -> None:
