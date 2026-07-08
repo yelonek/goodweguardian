@@ -151,8 +151,42 @@ def test_normalize_zero_remainder_ignores_net_so_far_import(
     now = datetime(2026, 7, 8, 13, 20, 0)
     out = normalize_hour_plans_for_policy([hin], [hp], now=now)[0]
     assert out.target_net_kwh == pytest.approx(0.0)
+    assert out.target_net_remainder_kwh == pytest.approx(0.0)
     row = map_hour_to_exec_mode(out, hin)
     assert row.exec_mode == "neutral"
+
+
+def test_mid_hour_full_target_zero_with_prior_export_is_neutral_not_charge_grid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cel pełnej h=0 + wcześniejszy eksport + PV→bateria → neutral, nie charge_grid."""
+    frac = 48 / 60
+    hin = HourInputs(
+        date="2026-07-08",
+        hour=14,
+        load_kwh=1.03 * frac,
+        pv_kwh=3.10 * frac,
+        import_pln_per_kwh=0.59,
+        export_pln_per_kwh=0.0,
+        hour_fraction=frac,
+    )
+    hp = HourPlan(
+        date="2026-07-08",
+        hour=14,
+        target_net_kwh=0.0,
+        target_net_remainder_kwh=0.0,
+        expected_cashflow_pln=0.0,
+        soc_start_pct=59.0,
+        soc_end_pct=74.0,
+        battery_delta_kwh=2.49 / frac,
+    )
+    monkeypatch.setattr(
+        "planner.policy_output.net_kwh_so_far_for_hour",
+        lambda _d, _h: 0.31,
+    )
+    row = map_hour_to_exec_mode(hp, hin)
+    assert row.exec_mode == "neutral"
+    assert row.params.allow_grid_charge is False
 
 
 def test_normalize_zero_remainder_ignores_net_so_far_export(
