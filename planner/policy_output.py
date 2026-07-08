@@ -73,11 +73,15 @@ def _remainder_planned_net_kwh(hp: HourPlan, hin: HourInputs | None) -> float:
     """
     Bilans licznika planowany na **resztę** bieżącego slotu.
 
-    ``HourPlan.target_net_kwh`` po normalizacji opisuje całą godzinę (telemetria od :00
-    + plan MILP na resztę). Intencja importu/eksportu w ``exec_mode`` musi patrzeć
-    tylko na resztę — inaczej wcześniejszy import w tej samej godzinie fałszywie
-    włącza ``charge_grid`` przy ładowaniu z nadwyżki PV.
+    ``target_net_remainder_kwh`` (z MILP, przed normalizacją) jest źródłem prawdy
+    dla intencji importu/eksportu. Po normalizacji ``target_net_kwh`` to cel
+    pełnej godziny dla Guardiana — nie wolno go odjąć od ``net_so_far``.
     """
+    if hp.target_net_remainder_kwh is not None and hin is not None:
+        frac = float(hin.hour_fraction)
+        if frac < 1.0 - 1e-9:
+            return float(hp.target_net_remainder_kwh)
+
     net_full = float(hp.target_net_kwh)
     if hin is None:
         return net_full

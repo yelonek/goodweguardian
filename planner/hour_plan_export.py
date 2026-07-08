@@ -83,6 +83,7 @@ def normalize_hour_plans_for_policy(
             hp.model_copy(
                 update={
                     "target_net_kwh": full_net,
+                    "target_net_remainder_kwh": remainder_net,
                     "battery_delta_kwh": full_bd,
                 }
             )

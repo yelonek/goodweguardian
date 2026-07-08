@@ -36,6 +36,7 @@ class HourPlan(BaseModel):
     date: str
     hour: int = Field(ge=0, le=23)
     target_net_kwh: float
+    target_net_remainder_kwh: float | None = None
     expected_cashflow_pln: float
     battery_wear_cost_pln: float = 0.0
     soc_start_pct: float
