@@ -109,7 +109,7 @@ def test_mid_hour_pv_soak_not_charge_grid_after_prior_import(
     )
     now = datetime(2026, 6, 20, 12, 20, 0)
     out = normalize_hour_plans_for_policy([hin], [hp], now=now)[0]
-    # Replan nie kotwiczy wcześniejszego importu — cel pełnej h = 0, nie −0.5.
+    # remainder=0 → cel 0, nie kotwica net_so_far z telemetrii.
     assert out.target_net_kwh == pytest.approx(0.0)
     assert out.battery_delta_kwh == pytest.approx(3.36 / frac, rel=0.01)
     row = map_hour_to_exec_mode(out, hin)
@@ -117,10 +117,10 @@ def test_mid_hour_pv_soak_not_charge_grid_after_prior_import(
     assert row.params.allow_grid_charge is False
 
 
-def test_normalize_obsolete_import_targets_correction_not_anchor(
+def test_normalize_zero_remainder_ignores_net_so_far_import(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Po usunięciu EV: import z pierwszych minut nie blokuje celu 0 na resztę h."""
+    """remainder=0 + ujemny net_so_far → cel 0, nie kotwica."""
     frac = 40 / 60
     hin = HourInputs(
         date="2026-07-08",
@@ -153,6 +153,38 @@ def test_normalize_obsolete_import_targets_correction_not_anchor(
     assert out.target_net_kwh == pytest.approx(0.0)
     row = map_hour_to_exec_mode(out, hin)
     assert row.exec_mode == "neutral"
+
+
+def test_normalize_zero_remainder_ignores_net_so_far_export(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """remainder=0 + dodatni net_so_far (RCE=0) → cel 0, nie kotwica +0,05."""
+    frac = 9 / 60
+    hin = HourInputs(
+        date="2026-07-08",
+        hour=13,
+        load_kwh=0.19 * frac,
+        pv_kwh=0.46 * frac,
+        import_pln_per_kwh=0.59,
+        export_pln_per_kwh=0.0,
+        hour_fraction=frac,
+    )
+    hp = HourPlan(
+        date="2026-07-08",
+        hour=13,
+        target_net_kwh=0.0,
+        expected_cashflow_pln=0.0,
+        soc_start_pct=55.0,
+        soc_end_pct=62.0,
+        battery_delta_kwh=0.25,
+    )
+    monkeypatch.setattr(
+        "planner.hour_plan_export.net_kwh_so_far_for_hour",
+        lambda _d, _h: 0.05,
+    )
+    now = datetime(2026, 7, 8, 13, 54, 0)
+    out = normalize_hour_plans_for_policy([hin], [hp], now=now)[0]
+    assert out.target_net_kwh == pytest.approx(0.0)
 
 
 def test_mid_hour_discharge_serve_not_export_profit(
