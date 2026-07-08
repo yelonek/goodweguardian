@@ -72,6 +72,24 @@ def test_neutral_negative_target_no_pv_soak_on_import_shortfall() -> None:
     assert d.write_slot is False
 
 
+def test_neutral_replanned_target_zero_after_obsolete_import() -> None:
+    """Po replan bez EV: cel 0 (nie −0.24) — Guardian wyrównuje zamiast trzymać import."""
+    d = decide_plan_execution(
+        _inp(
+            remaining_kwh=-0.24,
+            pv_w=4200.0,
+            consumption_w=1600.0,
+            soc_pct=62.0,
+            time_to_end_s=2400.0,
+        ),
+        _row("neutral", target_net_kwh=0.0, battery_delta_kwh=1.76),
+        cfg=WatchdogConfig(),
+    )
+    assert d.mode == "discharge"
+    assert d.write_slot is True
+    assert d.reason in ("neutral_pv_first", "deficit_recovery")
+
+
 def test_import_grid_charge_1_soc_10() -> None:
     d = decide_plan_execution(
         _inp(remaining_kwh=-1.0),
