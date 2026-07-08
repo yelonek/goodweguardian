@@ -1009,6 +1009,7 @@ document.getElementById("saveKey").addEventListener("click", () => {
   localStorage.setItem("guardianApiKey", document.getElementById("apiKey").value.trim());
   refreshControl().catch(console.error);
   refreshPlanner().catch(console.error);
+  updateEvChargingAuthHint();
 });
 document.getElementById("refreshControl").addEventListener("click", () => refreshControl().catch(console.error));
 document.getElementById("enableControl").addEventListener("click", () => putControl(true));

@@ -168,7 +168,9 @@ class DashboardRow:
     fields: dict[str, Any]
 
 
-_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) \[INFO\] dashboard \| ")
+_TS_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2}) \d{2}:\d{2}:\d{2} \[INFO\] dashboard \| (\d{2}:\d{2}:\d{2}) \|"
+)
 
 
 def _parse_float(s: str) -> float | None:
@@ -209,7 +211,8 @@ def _parse_dashboard_line(line: str) -> DashboardRow | None:
     m = _TS_RE.match(line)
     if not m:
         return None
-    ts_s = m.group(1)
+    # Prefiks loga w Dockerze bywa UTC; czas po "dashboard |" to TELEMETRY_TZ (lokalny).
+    ts_s = f"{m.group(1)} {m.group(2)}"
     try:
         ts = datetime.strptime(ts_s, "%Y-%m-%d %H:%M:%S")
     except ValueError:

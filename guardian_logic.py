@@ -556,11 +556,19 @@ def decide_flappy_relative(
         )
         return _deficit_recovery_decision(deficit_inp, cfg)
 
+    # target_net < 0 = planowany import; net > target → brakuje importu — nie soakuj PV do baterii.
+    if target < 0.0 and net > target:
+        return _neutral_decision("neutral_import_shortfall_hold")
+
     soak = _end_hour_soak_decision(inp, cfg)
     if soak is not None and net > target:
         return soak
 
-    if float(inp.pv_w) > float(inp.consumption_w) and net > target + float(cfg.soak_trigger_kwh):
+    if (
+        target >= 0.0
+        and float(inp.pv_w) > float(inp.consumption_w)
+        and net > target + float(cfg.soak_trigger_kwh)
+    ):
         return _soak_charge_decision(
             inp, cfg, target_kwh=target, reason="neutral_pv_soak"
         )
