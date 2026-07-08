@@ -218,15 +218,34 @@ function renderEvChargingPanel(ev) {
     if (powerEl && decl.max_power_kw != null) powerEl.value = String(decl.max_power_kw);
   }
   const slotsEl = document.getElementById("evChargingSlots");
-  const slots = decl ? (ev.slots || []) : (ev.recommended_slots || []);
+  const futureSlots = decl ? (ev.slots || []) : (ev.recommended_slots || []);
+  const pastSlots = decl ? (ev.past_slots || []) : [];
+  const delivered = decl ? Number(ev.delivered_kwh || 0) : 0;
+  const remaining = decl ? Number(ev.remaining_kwh ?? ev.declaration?.target_kwh ?? 0) : 0;
   if (slotsEl) {
-    if (!slots.length) {
+    const parts = [];
+    if (pastSlots.length) {
+      parts.push(
+        "Już naładowano: " + pastSlots.map((s) => `${String(s.hour).padStart(2, "0")}:00 → ${Number(s.kwh).toFixed(1)} kWh`).join(", ")
+      );
+    }
+    if (futureSlots.length) {
+      const prefix = decl ? "Plan na przyszłość" : "Propozycja slotów";
+      parts.push(
+        prefix + ": " + futureSlots.map((s) => `${String(s.hour).padStart(2, "0")}:00 → ${Number(s.kwh).toFixed(1)} kWh`).join(", ")
+      );
+    }
+    if (decl && delivered > 0.001) {
+      parts.push(`Pozostało do zaplanowania: ${remaining.toFixed(1)} kWh (cel ${Number(decl.target_kwh).toFixed(1)} kWh)`);
+    }
+    if (!parts.length) {
       slotsEl.textContent = decl
-        ? "Brak przypisanych godzin — zapisz plan ponownie."
+        ? (delivered > 0.001 && remaining < 0.001
+          ? `Cel ${Number(decl.target_kwh).toFixed(1)} kWh już zrealizowany dziś.`
+          : "Brak przypisanych godzin — zapisz plan ponownie.")
         : "Brak deklaracji — podaj cel kWh i zapisz (propozycja slotów pojawi się po zapisie lub w rekomendacji).";
     } else {
-      const prefix = decl ? "Sloty planu" : "Propozycja slotów";
-      slotsEl.textContent = prefix + ": " + slots.map((s) => `${String(s.hour).padStart(2, "0")}:00 → ${Number(s.kwh).toFixed(1)} kWh`).join(", ");
+      slotsEl.textContent = parts.join(" · ");
     }
   }
   const warnEl = document.getElementById("evChargingWarnings");
