@@ -170,12 +170,21 @@ async function loadHistory(force) {
     const hist = await fetchJson("/api/history?limit=200", 15000);
     document.getElementById("hist").innerHTML = (hist.rows || []).map((r) => {
       const f = r.fields || {};
+      const reasonRaw = String(f.reason || "");
+      let reasonShown = reasonRaw;
+      const neutralTarget = reasonRaw.match(/mode=neutral target_net=([+-]?\d+(?:\.\d+)?)/);
+      if (neutralTarget) {
+        const target = Number(neutralTarget[1]);
+        if (!Number.isNaN(target)) {
+          reasonShown = `neutral (target ${target.toFixed(2)} kWh)`;
+        }
+      }
       const cmd = (f.cmd_enabled === null) ? "—" : `${f.cmd_enabled ? "On" : "Off"} ${fmt(f.cmd_pct)}% ${fmt(f.cmd_duration_s)}s`;
       const closing = f.closing_prev_hour_kwh;
       const balCell = (closing !== null && closing !== undefined)
         ? `<td title="bilans końcowy poprzedniej godziny (∑)">${fmt(closing)} <span class="muted">∑</span></td>`
         : `<td>${fmt(f.remaining_kwh)}</td>`;
-      return `<tr><td>${fmt(f.ts)}</td>${balCell}<td>${fmt(f.grid_kw)}</td><td>${fmt(f.pv_kw)}</td><td>${fmt(f.house_w)}</td><td>${fmt(f.soc_pct)}</td><td>${fmt(f.p_bat_w)}</td><td class="muted">${fmt(f.reason)}</td><td class="muted">${cmd}</td></tr>`;
+      return `<tr><td>${fmt(f.ts)}</td>${balCell}<td>${fmt(f.grid_kw)}</td><td>${fmt(f.pv_kw)}</td><td>${fmt(f.house_w)}</td><td>${fmt(f.soc_pct)}</td><td>${fmt(f.p_bat_w)}</td><td class="muted">${fmt(reasonShown)}</td><td class="muted">${cmd}</td></tr>`;
     }).join("");
     pageLoaded.history = true;
     st.textContent = "OK";
@@ -209,26 +218,44 @@ function renderEvChargingPanel(ev) {
     if (powerEl && decl.max_power_kw != null) powerEl.value = String(decl.max_power_kw);
   }
   const slotsEl = document.getElementById("evChargingSlots");
-  const slots = ev.slots || ev.recommended_slots || [];
+  const slots = decl ? (ev.slots || []) : (ev.recommended_slots || []);
   if (slotsEl) {
     if (!slots.length) {
-      slotsEl.textContent = decl ? "Brak przypisanych godzin — zapisz plan ponownie." : "Brak deklaracji — podaj cel kWh i zapisz.";
+      slotsEl.textContent = decl
+        ? "Brak przypisanych godzin — zapisz plan ponownie."
+        : "Brak deklaracji — podaj cel kWh i zapisz (propozycja slotów pojawi się po zapisie lub w rekomendacji).";
     } else {
-      slotsEl.textContent = "Sloty: " + slots.map((s) => `${String(s.hour).padStart(2, "0")}:00 → ${Number(s.kwh).toFixed(1)} kWh`).join(", ");
+      const prefix = decl ? "Sloty planu" : "Propozycja slotów";
+      slotsEl.textContent = prefix + ": " + slots.map((s) => `${String(s.hour).padStart(2, "0")}:00 → ${Number(s.kwh).toFixed(1)} kWh`).join(", ");
     }
   }
   const warnEl = document.getElementById("evChargingWarnings");
   if (warnEl) warnEl.textContent = (ev.warnings || []).join(" ");
 }
 
-async function loadEvChargingRecommendation() {
+function updateEvChargingAuthHint() {
+  const st = document.getElementById("evChargingStatus");
+  const saveBtn = document.getElementById("evChargingSave");
+  const clearBtn = document.getElementById("evChargingClear");
+  const hasKey = !!getKey();
+  if (saveBtn) saveBtn.disabled = !hasKey;
+  if (clearBtn) clearBtn.disabled = !hasKey;
+  if (!st) return;
+  if (!hasKey) {
+    st.textContent = "Zapis i wyczyszczenie wymagają klucza API — Ustawienia → Zapisz klucz.";
+  }
+}
+
+async function loadEvChargingPlan() {
   try {
-    const rec = await fetchJson("/api/ev-charging/recommendation", 30000);
-    renderEvChargingPanel(rec);
-    return rec;
+    const plan = await fetchJson("/api/ev-charging/plan", 30000);
+    renderEvChargingPanel(plan);
+    updateEvChargingAuthHint();
+    return plan;
   } catch (e) {
     const st = document.getElementById("evChargingStatus");
-    if (st) st.textContent = "Rekomendacja: " + e;
+    if (st && !getKey()) updateEvChargingAuthHint();
+    else if (st) st.textContent = "Plan EV: " + e;
     return null;
   }
 }
@@ -246,7 +273,7 @@ async function saveEvChargingPlan() {
   }
   const max_power_kw = parseFloat(document.getElementById("evMaxPowerKw").value) || 11;
   const st = document.getElementById("evChargingStatus");
-  if (st) st.textContent = "Zapisuję…";
+  if (st) st.textContent = "Zapisuję i przeliczam plan…";
   const r = await fetch("/api/ev-charging/plan", {
     method: "PUT",
     headers: { "Content-Type": "application/json", "X-Guardian-Api-Key": key },
@@ -260,7 +287,15 @@ async function saveEvChargingPlan() {
     return;
   }
   renderEvChargingPanel(j);
-  if (st) st.textContent = "Zapisano — planer uwzględni przy następnym przeplanowaniu.";
+  if (st) {
+    if (j.planner && j.planner.replanned) {
+      st.textContent = "Zapisano — planer przeliczony.";
+    } else if (j.planner && j.planner.reason) {
+      st.textContent = "Zapisano deklarację EV, ale planer nie przeliczony: " + j.planner.reason;
+    } else {
+      st.textContent = "Zapisano.";
+    }
+  }
   pageLoaded.forecast = false;
   await loadForecast(true);
 }
@@ -280,8 +315,16 @@ async function clearEvChargingPlan() {
   }
   document.getElementById("evTargetKwh").value = "";
   document.getElementById("evPreferredHour").value = "";
-  if (st) st.textContent = "Wyczyszczono deklarację EV.";
-  await loadEvChargingRecommendation();
+  if (st) {
+    if (j.planner && j.planner.replanned) {
+      st.textContent = "Wyczyszczono — planer przeliczony.";
+    } else if (j.planner && j.planner.reason) {
+      st.textContent = "Wyczyszczono deklarację EV, ale planer nie przeliczony: " + j.planner.reason;
+    } else {
+      st.textContent = "Wyczyszczono deklarację EV.";
+    }
+  }
+  await loadEvChargingPlan();
   pageLoaded.forecast = false;
   await loadForecast(true);
 }
@@ -364,7 +407,10 @@ function renderForecastBlock(forecast) {
   document.getElementById("loadNowcast").textContent = nc.applied
     ? `load nowcast: ×${Number(nc.factor || 1).toFixed(2)} (bias ${Number(nc.bias_w || 0).toFixed(0)} W); decay ${dv(nc.decay_hours, "—")} h`
     : (nc.reason ? "nowcast off — " + nc.reason : "");
-  renderEvChargingPanel(evPlan);
+  if (evPlan && evPlan.declaration) {
+    renderEvChargingPanel(evPlan);
+  }
+  updateEvChargingAuthHint();
 }
 
 async function loadForecast(force) {
@@ -372,9 +418,10 @@ async function loadForecast(force) {
   const st = document.getElementById("forecastStatus");
   if (!pageLoaded.forecast) st.textContent = "ładowanie…";
   try {
+    updateEvChargingAuthHint();
     const [forecast] = await Promise.all([
       fetchJson("/api/forecast/combined", 60000),
-      loadEvChargingRecommendation(),
+      loadEvChargingPlan(),
     ]);
     renderForecastBlock(forecast);
     pageLoaded.forecast = true;
