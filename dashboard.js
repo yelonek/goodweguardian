@@ -166,6 +166,7 @@ async function loadHistory(force) {
   if (!force && pageLoaded.history) return;
   const st = document.getElementById("historyStatus");
   if (!pageLoaded.history) st.textContent = "ładowanie…";
+  else if (force) st.textContent = "odświeżanie…";
   try {
     const hist = await fetchJson("/api/history?limit=200", 15000);
     document.getElementById("hist").innerHTML = (hist.rows || []).map((r) => {
@@ -961,7 +962,7 @@ const PAGE_LOADERS = {
 /** Interwał auto-odświeżania aktywnej zakładki [ms]. */
 const PAGE_POLL_MS = {
   overview: 15000,
-  history: 30000,
+  history: 15000,
   forecast: 60000,
   kpi: 60000,
   settings: 20000,
@@ -978,6 +979,7 @@ function startPagePolling(page) {
 
 function navigate(page, force) {
   if (!PAGE_LOADERS[page]) page = "overview";
+  const switching = currentPage !== page;
   if (currentPage === page && !force) return;
   currentPage = page;
   document.querySelectorAll(".page").forEach((el) => el.classList.remove("active"));
@@ -986,7 +988,8 @@ function navigate(page, force) {
     a.classList.toggle("active", a.dataset.page === page);
   });
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-  PAGE_LOADERS[page](!!force);
+  // Przy przełączeniu zakładki zawsze pobierz świeże dane (pageLoaded blokował ponowne wejście).
+  PAGE_LOADERS[page](!!force || switching);
   startPagePolling(page);
 }
 
