@@ -22,7 +22,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 import guardian_config as guardian_cfg
 
 from energy_pricing import pricing_day_breakdown
-from guardian_config import LOG_DIR, TELEMETRY_DIR, TELEMETRY_TZ
+from ev_charging_plan import EvChargingDeclaration, build_ev_recommendation
+from ev_charging_store import active_plan, clear_declaration, write_declaration
+from guardian_config import LOG_DIR, TELEMETRY_DIR, TELEMETRY_TZ, TESLA_WC_MAX_KW
 from ecoslot_service import (
     balancing_slot_id,
     editable_slot_ids,
@@ -125,6 +127,24 @@ class EcoslotWriteBody(BaseModel):
     soc: int = Field(default=100, ge=10, le=100)
     months: str | list[int] | None = None
     enabled: bool = True
+
+
+class EvChargingPlanBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target_kwh: float = Field(ge=0)
+    preferred_start_hour: int | None = Field(default=None, ge=0, le=23)
+    max_power_kw: float | None = Field(default=None, gt=0)
+    manual_slots: dict[int, float] | None = None
+
+    @field_validator("manual_slots", mode="before")
+    @classmethod
+    def _normalize_manual_slots(cls, v: Any) -> dict[int, float] | None:
+        if v is None:
+            return None
+        if not isinstance(v, dict):
+            raise TypeError("manual_slots must be a dict")
+        return {int(k): max(0.0, float(val)) for k, val in v.items()}
 
 
 def _require_guardian_api_key(
@@ -925,6 +945,9 @@ def _combined_forecast_payload() -> dict[str, Any]:
     telemetry_today = hourly_actuals(today)
     telemetry_tomorrow = hourly_actuals(tomorrow)
 
+    ev_plan = active_plan()
+    ev_by_slot = {(s.date, s.hour): s.kwh for s in ev_plan.slots}
+
     rows: list[dict[str, Any]] = []
     start_dt = datetime.combine(today, datetime.min.time())
     for offset in range(48):
@@ -1006,6 +1029,9 @@ def _combined_forecast_payload() -> dict[str, Any]:
         if policy_row is None and plan_h is not None:
             policy_row = map_hour_to_exec_mode(plan_h)
 
+        ev_planned = float(ev_by_slot.get((d_iso, h), 0.0))
+        load_plan = load_p50 + ev_planned
+
         rows.append(
             {
                 "date": d_iso,
@@ -1018,6 +1044,8 @@ def _combined_forecast_payload() -> dict[str, Any]:
                 "load_kwh_p75": load_p75,
                 "load_kwh_actual": load_actual,
                 "load_kwh_delta_p50": load_delta_p50,
+                "ev_planned_kwh": ev_planned if ev_planned > 0 else None,
+                "load_plan_kwh": load_plan if ev_planned > 0 else None,
                 "ev_kwh_actual": ev_actual,
                 "load_base_kwh_actual": load_base_actual,
                 "pv_kwh": pv_mean,
@@ -1102,8 +1130,14 @@ def _combined_forecast_payload() -> dict[str, Any]:
             "Przełącznik w ustawieniach steruje egzekucją w Guardianie (jeszcze nie podpięte do policy)."
         ) + plan_note,
         "planner_policy": policy_meta,
+        "ev_charging": ev_plan.model_dump(),
         "rows": rows,
     }
+
+
+def _invalidate_combined_forecast_cache() -> None:
+    global _combined_forecast_cache
+    _combined_forecast_cache = None
 
 
 def _get_combined_forecast_cached() -> dict[str, Any]:
@@ -1272,3 +1306,50 @@ def api_planner_control_put(
     write_planner_execution_override(body.planner_execution_enabled)
     enabled, source = effective_planner_execution_enabled()
     return JSONResponse({"planner_execution_enabled": enabled, "source": source})
+
+
+@app.get("/api/ev-charging/recommendation")
+async def api_ev_charging_recommendation(
+    target_kwh: float | None = Query(default=None, ge=0),
+) -> JSONResponse:
+    payload = await _run_heavy(
+        lambda: build_ev_recommendation(target_kwh=target_kwh).model_dump()
+    )
+    return JSONResponse(payload)
+
+
+@app.get("/api/ev-charging/plan")
+async def api_ev_charging_plan_get() -> JSONResponse:
+    payload = await _run_heavy(lambda: active_plan().model_dump())
+    return JSONResponse(payload)
+
+
+@app.put("/api/ev-charging/plan")
+async def api_ev_charging_plan_put(
+    body: EvChargingPlanBody,
+    _: None = Depends(_require_guardian_api_key),
+) -> JSONResponse:
+    today = datetime.now(ZoneInfo(TELEMETRY_TZ)).date().isoformat()
+    decl = EvChargingDeclaration(
+        date=today,
+        target_kwh=body.target_kwh,
+        preferred_start_hour=body.preferred_start_hour,
+        max_power_kw=body.max_power_kw or TESLA_WC_MAX_KW,
+        manual_slots=body.manual_slots,
+    )
+    write_declaration(decl)
+    _invalidate_combined_forecast_cache()
+    try:
+        plan = active_plan()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return JSONResponse(plan.model_dump())
+
+
+@app.delete("/api/ev-charging/plan")
+def api_ev_charging_plan_delete(
+    _: None = Depends(_require_guardian_api_key),
+) -> JSONResponse:
+    clear_declaration()
+    _invalidate_combined_forecast_cache()
+    return JSONResponse({"cleared": True})

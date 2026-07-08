@@ -186,13 +186,118 @@ async function loadHistory(force) {
   }
 }
 
+function renderEvChargingPanel(ev) {
+  if (!ev) return;
+  const budget = ev.cheap_budget || {};
+  const cheapPv = Number(budget.cheap_pv_kwh || 0);
+  const cheapImp = Number(budget.cheap_import_kwh || 0);
+  const rec = Number(budget.recommendable_kwh || 0);
+  const hero = document.getElementById("evChargingHero");
+  if (hero) {
+    hero.innerHTML =
+      `<div class="card"><div class="card-key">Tanio PV (&lt;60 gr)</div><div class="card-val">${cheapPv.toFixed(1)} kWh</div></div>` +
+      `<div class="card"><div class="card-key">Tanio import G12</div><div class="card-val">${cheapImp.toFixed(1)} kWh</div></div>` +
+      `<div class="card"><div class="card-key">Razem tanio dziś</div><div class="card-val">${rec.toFixed(1)} kWh</div></div>`;
+  }
+  const decl = ev.declaration;
+  const targetEl = document.getElementById("evTargetKwh");
+  const prefEl = document.getElementById("evPreferredHour");
+  const powerEl = document.getElementById("evMaxPowerKw");
+  if (decl && targetEl && !targetEl.matches(":focus")) {
+    targetEl.value = decl.target_kwh != null ? String(decl.target_kwh) : "";
+    if (prefEl) prefEl.value = decl.preferred_start_hour != null ? String(decl.preferred_start_hour) : "";
+    if (powerEl && decl.max_power_kw != null) powerEl.value = String(decl.max_power_kw);
+  }
+  const slotsEl = document.getElementById("evChargingSlots");
+  const slots = ev.slots || ev.recommended_slots || [];
+  if (slotsEl) {
+    if (!slots.length) {
+      slotsEl.textContent = decl ? "Brak przypisanych godzin — zapisz plan ponownie." : "Brak deklaracji — podaj cel kWh i zapisz.";
+    } else {
+      slotsEl.textContent = "Sloty: " + slots.map((s) => `${String(s.hour).padStart(2, "0")}:00 → ${Number(s.kwh).toFixed(1)} kWh`).join(", ");
+    }
+  }
+  const warnEl = document.getElementById("evChargingWarnings");
+  if (warnEl) warnEl.textContent = (ev.warnings || []).join(" ");
+}
+
+async function loadEvChargingRecommendation() {
+  try {
+    const rec = await fetchJson("/api/ev-charging/recommendation", 30000);
+    renderEvChargingPanel(rec);
+    return rec;
+  } catch (e) {
+    const st = document.getElementById("evChargingStatus");
+    if (st) st.textContent = "Rekomendacja: " + e;
+    return null;
+  }
+}
+
+async function saveEvChargingPlan() {
+  const key = getKey();
+  if (!key) { alert("Ustaw klucz API w ustawieniach"); return; }
+  const target = parseFloat(document.getElementById("evTargetKwh").value);
+  if (Number.isNaN(target) || target < 0) { alert("Podaj cel kWh ≥ 0"); return; }
+  const prefRaw = document.getElementById("evPreferredHour").value.trim();
+  const preferred_start_hour = prefRaw === "" ? null : parseInt(prefRaw, 10);
+  if (preferred_start_hour != null && (Number.isNaN(preferred_start_hour) || preferred_start_hour < 0 || preferred_start_hour > 23)) {
+    alert("Godzina startu: 0–23 lub puste");
+    return;
+  }
+  const max_power_kw = parseFloat(document.getElementById("evMaxPowerKw").value) || 11;
+  const st = document.getElementById("evChargingStatus");
+  if (st) st.textContent = "Zapisuję…";
+  const r = await fetch("/api/ev-charging/plan", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", "X-Guardian-Api-Key": key },
+    body: JSON.stringify({ target_kwh: target, preferred_start_hour, max_power_kw }),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const msg = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail || "error");
+    if (st) st.textContent = msg;
+    alert(msg);
+    return;
+  }
+  renderEvChargingPanel(j);
+  if (st) st.textContent = "Zapisano — planer uwzględni przy następnym przeplanowaniu.";
+  pageLoaded.forecast = false;
+  await loadForecast(true);
+}
+
+async function clearEvChargingPlan() {
+  const key = getKey();
+  if (!key) { alert("Ustaw klucz API w ustawieniach"); return; }
+  const st = document.getElementById("evChargingStatus");
+  const r = await fetch("/api/ev-charging/plan", {
+    method: "DELETE",
+    headers: { "X-Guardian-Api-Key": key },
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    if (st) st.textContent = j.detail || "error";
+    return;
+  }
+  document.getElementById("evTargetKwh").value = "";
+  document.getElementById("evPreferredHour").value = "";
+  if (st) st.textContent = "Wyczyszczono deklarację EV.";
+  await loadEvChargingRecommendation();
+  pageLoaded.forecast = false;
+  await loadForecast(true);
+}
+
 function renderForecastBlock(forecast) {
   const fcell = (v, d) => (v == null) ? `<td class="nodata">—</td>` : `<td>${Number(v).toFixed(d)}</td>`;
   const twcOn = !!forecast.twc_enabled;
+  const evPlan = forecast.ev_charging || {};
+  const evPlanOn = !!(evPlan.declaration || (evPlan.slots && evPlan.slots.length));
   const forecastTable = document.getElementById("forecastTable");
-  if (forecastTable) forecastTable.classList.toggle("twc-on", twcOn);
+  if (forecastTable) {
+    forecastTable.classList.toggle("twc-on", twcOn);
+    forecastTable.classList.toggle("ev-plan-on", evPlanOn);
+  }
   const loadColspan = document.getElementById("forecastLoadColspan");
-  if (loadColspan) loadColspan.colSpan = twcOn ? 7 : 5;
+  if (loadColspan) loadColspan.colSpan = (twcOn ? 7 : 5) + (evPlanOn ? 0 : 0);
   const twcNote = document.getElementById("forecastTwcNote");
   if (twcNote) {
     twcNote.style.display = twcOn ? "" : "none";
@@ -211,6 +316,11 @@ function renderForecastBlock(forecast) {
     if (!twcOn) return "";
     if (v == null) return `<td class="nodata twc-col">—</td>`;
     return `<td class="grp-load twc-col">${Number(v).toFixed(3)}</td>`;
+  };
+  const evPlanCell = (v) => {
+    if (!evPlanOn) return "";
+    if (v == null || Number(v) <= 0) return `<td class="nodata ev-plan-col">—</td>`;
+    return `<td class="grp-load ev-plan-col ev-charge">${Number(v).toFixed(1)}</td>`;
   };
   const policyCell = (r) => {
     if (!r.policy) return `<td class="nodata">—</td>`;
@@ -240,6 +350,7 @@ function renderForecastBlock(forecast) {
       ${fcell(r.buy_pln_kwh, 4)}${fcell(r.sell_pln_kwh, 4)}
       ${fcell(r.load_kwh_p25, 3)}${fcell(r.load_kwh_p50, 3)}${fcell(r.load_kwh_p75, 3)}${fcell(r.load_kwh_actual, 3)}${fcellDelta(r.load_kwh_delta_p50, 3, 0.03)}
       ${evCell(r.ev_kwh_actual)}${domCell(r.load_base_kwh_actual)}
+      ${evPlanCell(r.ev_planned_kwh)}${evPlanCell(r.load_plan_kwh)}
       ${fcell(r.pv_kwh_p10, 3)}${fcell(r.pv_kwh, 3)}${fcell(r.pv_kwh_p90, 3)}${fcell(r.pv_kwh_actual, 3)}${fcellDelta(r.pv_kwh_delta_mean, 3, 0.05)}
       ${policyCell(r)}${fcell(r.policy_battery_delta_kwh, 3)}${boolCell(r.policy_allow_grid_charge)}
       ${fcell(r.net_kwh, 3)}${fcell(r.soc_pct, 1)}</tr>`;
@@ -253,6 +364,7 @@ function renderForecastBlock(forecast) {
   document.getElementById("loadNowcast").textContent = nc.applied
     ? `load nowcast: ×${Number(nc.factor || 1).toFixed(2)} (bias ${Number(nc.bias_w || 0).toFixed(0)} W); decay ${dv(nc.decay_hours, "—")} h`
     : (nc.reason ? "nowcast off — " + nc.reason : "");
+  renderEvChargingPanel(evPlan);
 }
 
 async function loadForecast(force) {
@@ -260,7 +372,10 @@ async function loadForecast(force) {
   const st = document.getElementById("forecastStatus");
   if (!pageLoaded.forecast) st.textContent = "ładowanie…";
   try {
-    const forecast = await fetchJson("/api/forecast/combined", 60000);
+    const [forecast] = await Promise.all([
+      fetchJson("/api/forecast/combined", 60000),
+      loadEvChargingRecommendation(),
+    ]);
     renderForecastBlock(forecast);
     pageLoaded.forecast = true;
     st.textContent = "OK";
@@ -840,6 +955,9 @@ document.getElementById("resetWatchdog").addEventListener("click", () => resetWa
 document.getElementById("wd_soc_night_reserve_enabled").addEventListener("change", (e) => {
   setNightReserveFieldsEnabled(e.target.checked);
 });
+
+document.getElementById("evChargingSave").addEventListener("click", () => saveEvChargingPlan().catch(console.error));
+document.getElementById("evChargingClear").addEventListener("click", () => clearEvChargingPlan().catch(console.error));
 
 const ecoPanels = document.getElementById("ecoSlotsPanels");
 ecoPanels.addEventListener("click", handleEcoSaveEvent);

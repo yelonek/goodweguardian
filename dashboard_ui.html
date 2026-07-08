@@ -46,6 +46,13 @@
     table.forecast td.ev-charge { background: rgba(100, 200, 120, 0.18); }
     table.forecast .twc-col { display: none; }
     table.forecast.twc-on .twc-col { display: table-cell; }
+    table.forecast .ev-plan-col { display: none; }
+    table.forecast.ev-plan-on .ev-plan-col { display: table-cell; }
+    .ev-charging-panel { margin: 12px 0 16px; padding: 12px 14px; border: 1px solid rgba(127,127,127,0.35); border-radius: 8px; max-width: 960px; }
+    .ev-charging-panel .grid-ev { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; align-items: end; margin-top: 8px; }
+    .ev-charging-panel label { display: block; font-size: 11px; opacity: 0.85; margin-bottom: 2px; }
+    .ev-charging-panel input { width: 100%; box-sizing: border-box; }
+    .ev-charging-warnings { margin-top: 8px; font-size: 11px; color: #b32d2d; }
     table.kpi-merged td, table.kpi-merged th { text-align: right; font-variant-numeric: tabular-nums; }
     table.kpi-merged td:first-child, table.kpi-merged th:first-child { text-align: left; }
     table.kpi-merged .grp-kpi { background: rgba(255, 200, 80, 0.10); }
@@ -285,6 +292,31 @@
       <div class="muted" id="forecastCompareNote" style="font-size:11px; max-width:960px; margin-top:6px; line-height:1.35;"></div>
       <div class="muted" id="loadNowcast" style="margin-top:4px;"></div>
       <div class="muted" id="forecastTwcNote" style="font-size:11px; margin-top:4px; display:none;"></div>
+      <div class="ev-charging-panel" id="evChargingPanel">
+        <h3 style="margin:0 0 4px; font-size:15px;">Planowane ładowanie EV</h3>
+        <div id="evChargingHero" class="grid4" style="margin-top:8px;"></div>
+        <div class="grid-ev">
+          <div>
+            <label for="evTargetKwh">Cel [kWh]</label>
+            <input type="number" id="evTargetKwh" min="0" step="0.5" placeholder="np. 15" />
+          </div>
+          <div>
+            <label for="evPreferredHour">Start (godz., opcj.)</label>
+            <input type="number" id="evPreferredHour" min="0" max="23" step="1" placeholder="np. 10" />
+          </div>
+          <div>
+            <label for="evMaxPowerKw">Moc ładowarki [kW]</label>
+            <input type="number" id="evMaxPowerKw" min="1" max="22" step="0.5" value="11" />
+          </div>
+          <div style="display:flex; gap:6px; flex-wrap:wrap;">
+            <button type="button" id="evChargingSave">Zapisz plan</button>
+            <button type="button" id="evChargingClear">Wyczyść</button>
+          </div>
+        </div>
+        <div class="muted" id="evChargingSlots" style="font-size:11px; margin-top:8px;"></div>
+        <div class="ev-charging-warnings" id="evChargingWarnings"></div>
+        <div class="muted" id="evChargingStatus" style="font-size:11px; margin-top:4px;"></div>
+      </div>
       <table class="forecast" id="forecastTable">
         <thead>
           <tr>
@@ -292,6 +324,7 @@
             <th rowspan="2">hour</th>
             <th colspan="2" class="grp-price">price [PLN/kWh]</th>
             <th colspan="5" class="grp-load" id="forecastLoadColspan">load [kWh]</th>
+            <th colspan="2" class="grp-load ev-plan-col" id="forecastEvPlanColspan">EV plan</th>
             <th colspan="5" class="grp-pv">PV [kWh]</th>
             <th colspan="5" class="grp-planner">plan / policy</th>
           </tr>
@@ -305,6 +338,8 @@
             <th class="grp-load">Δ</th>
             <th class="grp-load twc-col" title="Tesla Wall Connector — tylko zakończone godziny">EV</th>
             <th class="grp-load twc-col" title="Dom bez EV (razem − EV)">dom</th>
+            <th class="grp-load ev-plan-col" title="Planowane ładowanie EV">EV plan</th>
+            <th class="grp-load ev-plan-col" title="Prognoza dom + EV plan">load plan</th>
             <th class="grp-pv">p10</th>
             <th class="grp-pv">mean</th>
             <th class="grp-pv">p90</th>

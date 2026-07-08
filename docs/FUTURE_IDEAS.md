@@ -18,11 +18,11 @@ load_base = total − EV  →   load_plan = base + ev_slot    →   piramida PV 
 
 | # | Pomysł | Warstwa | Dla kogo | Status |
 |---|--------|---------|----------|--------|
-| 1 | **`load_base`** — odjąć EV od prognozy loadu (+ korekta dzienna) | `load_forecast.py` | planer | **następny krok** (TWC w telemetrii ✓) |
-| 2 | **Piramida PV × RCE** — skumulowane progi &lt;10…&lt;60 gr | dashboard / KPI | **użytkownik** | pomysł — **nie** planer, **nie** Guardian |
+| 1 | **`load_base`** — odjąć EV od prognozy loadu (+ korekta dzienna) | `load_forecast.py` | planer | **wdrożone** |
+| 2 | **Piramida PV × RCE** — skumulowane progi &lt;10…&lt;60 gr | dashboard / KPI | **użytkownik** | **wdrożone** (UX) |
 | 2b | **Zużycie dzień/tydz./mies.** — dom vs EV + cashflow | dashboard / KPI | **użytkownik** | pomysł (UX; po agregacji `load_base`) |
-| 3 | **Rekomendacja godzin EV** — „N kWh dziś” → sloty | dashboard + planer | użytkownik + planer | pomysł (po `load_base`) |
-| 4 | **`load_plan = base + ev`** w optimizerze | `planner/` | planer | pomysł (po #3) |
+| 3 | **Rekomendacja godzin EV** — „N kWh dziś” → sloty | dashboard + planer | użytkownik + planer | **wdrożone** |
+| 4 | **`load_plan = base + ev`** w optimizerze | `planner/` | planer | **wdrożone** (post-processing load) |
 
 **Kolejność wdrożenia:** 1 → 2 i 2b równolegle (KPI, bez planera) → 3 → 4.
 
@@ -211,7 +211,7 @@ Kolejność wdrożenia korekt: (1) `load_base[h]` w medianie → (2) nowcast na 
 - Zmienne `ev_h` w `scenario_optimizer` lub post-processing slotów.
 - Spójność z SOC, export_profit, wear baterii.
 
-**Status:** pomysł — **po** `load_base` w prognozie.
+**Status:** **wdrożone** (`load_forecast.py`, `ev_charging_plan.py`, dashboard Prognoza).
 
 ---
 
@@ -524,7 +524,7 @@ Szczegóły: sekcja **Load forecast: `load_base`**.
 
 Powiązanie z **LOAD oportunistyczny:** twardy pomiar EV; rekomendacja godzin — sekcja **EV: rekomendacja godzin ładowania**.
 
-**Status:** moduł `tesla_wall_charger.py` + zapis w telemetrii — **wdrożone**; `load_base` w `load_forecast.py` — **kolejny krok**.
+**Status:** **wdrożone** — moduł `tesla_wall_charger.py` + zapis w telemetrii + `load_base` w `load_forecast.py`.
 
 ---
 
