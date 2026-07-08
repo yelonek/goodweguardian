@@ -22,7 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 import guardian_config as guardian_cfg
 
 from energy_pricing import pricing_day_breakdown
-from ev_charging_plan import EvChargingDeclaration, build_ev_recommendation
+from ev_charging_plan import EvChargingDeclaration, build_ev_recommendation, ev_schedule_map
 from ev_charging_store import active_plan, clear_declaration, write_declaration
 from guardian_config import LOG_DIR, TELEMETRY_DIR, TELEMETRY_TZ, TESLA_WC_MAX_KW
 from ecoslot_service import (
@@ -951,7 +951,7 @@ def _combined_forecast_payload() -> dict[str, Any]:
     telemetry_tomorrow = hourly_actuals(tomorrow)
 
     ev_plan = active_plan()
-    ev_by_slot = {(s.date, s.hour): s.kwh for s in ev_plan.slots}
+    ev_by_slot = ev_schedule_map(ev_plan, include_past=True)
 
     rows: list[dict[str, Any]] = []
     start_dt = datetime.combine(today, datetime.min.time())

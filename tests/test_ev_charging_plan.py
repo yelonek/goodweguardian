@@ -109,3 +109,63 @@ def test_cheap_budget_sums_pv_and_import() -> None:
     assert budget.cheap_pv_kwh == pytest.approx(3.0)
     assert budget.cheap_import_kwh == pytest.approx(11.0)
     assert budget.recommendable_kwh == pytest.approx(14.0)
+
+
+def test_past_hour_slot_not_shifted_after_delivery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Po zakończeniu h ze startem EV energia nie przesuwa się na kolejną godzinę."""
+    d = "2026-07-08"
+    rows = [_slot_row(d, h, score=0.5) for h in range(8, 18)]
+    decl = EvChargingDeclaration(
+        date=d, target_kwh=1.0, preferred_start_hour=12, max_power_kw=4.0
+    )
+    monkeypatch.setattr("ev_charging_plan.twc_enabled", lambda: True)
+    monkeypatch.setattr(
+        "ev_charging_plan.hourly_ev_kwh_from_telemetry",
+        lambda _day: {12: 1.0},
+    )
+    plan = allocate_ev_schedule(decl, rows, now=datetime(2026, 7, 8, 13, 5))
+    assert plan.delivered_kwh == pytest.approx(1.0)
+    assert plan.remaining_kwh == pytest.approx(0.0)
+    assert plan.slots == []
+    assert len(plan.past_slots) == 1
+    assert plan.past_slots[0].hour == 12
+    assert ev_schedule_map(plan) == {}
+
+
+def test_partial_delivery_allocates_only_remainder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    d = "2026-07-08"
+    rows = [_slot_row(d, h, score=0.5) for h in range(8, 18)]
+    decl = EvChargingDeclaration(
+        date=d, target_kwh=1.0, preferred_start_hour=12, max_power_kw=4.0
+    )
+    monkeypatch.setattr("ev_charging_plan.twc_enabled", lambda: True)
+    monkeypatch.setattr(
+        "ev_charging_plan.hourly_ev_kwh_from_telemetry",
+        lambda _day: {12: 0.4},
+    )
+    plan = allocate_ev_schedule(decl, rows, now=datetime(2026, 7, 8, 13, 5))
+    assert plan.delivered_kwh == pytest.approx(0.4)
+    assert plan.remaining_kwh == pytest.approx(0.6)
+    assert len(plan.slots) == 1
+    assert plan.slots[0].hour == 13
+    assert plan.slots[0].kwh == pytest.approx(0.6)
+
+
+def test_ev_schedule_map_include_past() -> None:
+    d = "2026-07-08"
+    from ev_charging_plan import EvChargingPlan, EvChargingSlot
+
+    plan = EvChargingPlan(
+        date=d,
+        past_slots=[EvChargingSlot(date=d, hour=12, kwh=1.0)],
+        slots=[EvChargingSlot(date=d, hour=13, kwh=0.5)],
+    )
+    assert ev_schedule_map(plan) == {(d, 13): 0.5}
+    assert ev_schedule_map(plan, include_past=True) == {
+        (d, 12): 1.0,
+        (d, 13): 0.5,
+    }
