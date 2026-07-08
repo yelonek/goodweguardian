@@ -55,6 +55,23 @@ def test_export_pv_surplus_deficit_only_below_zero() -> None:
     assert "deficit" in d.reason
 
 
+def test_neutral_negative_target_no_pv_soak_on_import_shortfall() -> None:
+    """Regresja 2026-07-08: target importu, bilans za mały → bez neutral_pv_soak."""
+    d = decide_plan_execution(
+        _inp(
+            remaining_kwh=-0.40,
+            pv_w=8000.0,
+            consumption_w=800.0,
+            soc_pct=72.0,
+            time_to_end_s=2100.0,
+        ),
+        _row("neutral", target_net_kwh=-1.26),
+        cfg=WatchdogConfig(),
+    )
+    assert d.reason == "neutral_import_shortfall_hold"
+    assert d.write_slot is False
+
+
 def test_import_grid_charge_1_soc_10() -> None:
     d = decide_plan_execution(
         _inp(remaining_kwh=-1.0),

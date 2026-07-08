@@ -3,8 +3,19 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
-from guardian_config import LOG_DIR
+from guardian_config import LOG_DIR, TELEMETRY_TZ
+
+
+class _LocalTzFormatter(logging.Formatter):
+    """%(asctime)s w TELEMETRY_TZ — zgodnie z dashboard | HH:MM:SS w logu."""
+
+    def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
+        dt = datetime.fromtimestamp(record.created, tz=ZoneInfo(TELEMETRY_TZ))
+        if datefmt:
+            return dt.strftime(datefmt)
+        return dt.isoformat()
 
 
 def _log_path() -> Path:
@@ -15,15 +26,17 @@ def _log_path() -> Path:
 def setup_logging() -> None:
     """Konfiguruje logging do pliku i konsoli."""
     path = _log_path()
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-        handlers=[
-            logging.FileHandler(path, encoding="utf-8"),
-            logging.StreamHandler(),
-        ],
-    )
+    fmt = "%(asctime)s [%(levelname)s] %(message)s"
+    formatter = _LocalTzFormatter(fmt, datefmt="%Y-%m-%d %H:%M:%S")
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    root.handlers.clear()
+    file_handler = logging.FileHandler(path, encoding="utf-8")
+    file_handler.setFormatter(formatter)
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+    root.addHandler(file_handler)
+    root.addHandler(stream_handler)
 
 
 def balancing_power_kw_signed(remaining_kwh: float, time_to_end_s: float) -> float:
