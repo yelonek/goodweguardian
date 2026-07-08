@@ -19,6 +19,7 @@ from guardian_config import (
     TELEMETRY_DIR,
 )
 from telemetry_store import recent_consumption_average_w
+from tesla_wall_charger import hourly_ev_kwh_from_telemetry
 
 
 def _percentile(sorted_vals: list[float], q: float) -> float:
@@ -63,6 +64,23 @@ def _hourly_kwh_from_file(path: Path) -> dict[int, float]:
     return out
 
 
+def _hourly_base_kwh_from_file(path: Path, local_date: date) -> dict[int, float]:
+    """
+    Zużycie domu bez EV: load_total[h] − ev_charge[h].
+    Brak danych TWC → fallback do load_total (jak dotychczas).
+    """
+    total = _hourly_kwh_from_file(path)
+    if not total:
+        return {}
+    ev_by_hour = hourly_ev_kwh_from_telemetry(local_date)
+    if not ev_by_hour:
+        return total
+    return {
+        h: max(0.0, load_total - ev_by_hour.get(h, 0.0))
+        for h, load_total in total.items()
+    }
+
+
 def _is_weekend(d: date) -> bool:
     return d.weekday() >= 5
 
@@ -85,7 +103,7 @@ def _historical_hour_samples(
         p = TELEMETRY_DIR / f"telemetry_{d.isoformat()}.jsonl"
         if not p.exists():
             continue
-        hourly = _hourly_kwh_from_file(p)
+        hourly = _hourly_base_kwh_from_file(p, d)
         for v in hourly.values():
             all_vals.append(v)
         hv = hourly.get(target_hour)
@@ -142,7 +160,7 @@ def build_daily_hourly_kwh_cache(
             continue
         if min_date is not None and d < min_date:
             continue
-        hourly = _hourly_kwh_from_file(p)
+        hourly = _hourly_base_kwh_from_file(p, d)
         if hourly:
             out[d] = hourly
     return out
@@ -171,18 +189,28 @@ def predict_load_one_hour(
         samples = all_vals
         source = "global_fallback"
     if not samples:
-        return {
+        empty = {
             "load_kwh_p25": 0.0,
             "load_kwh_p50": 0.0,
             "load_kwh_p75": 0.0,
+            "load_base_kwh_p25": 0.0,
+            "load_base_kwh_p50": 0.0,
+            "load_base_kwh_p75": 0.0,
             "samples": 0,
             "source": "no_history",
         }
+        return empty
     s = sorted(samples)
+    p25 = _percentile(s, 0.25)
+    p50 = median(s)
+    p75 = _percentile(s, 0.75)
     return {
-        "load_kwh_p25": _percentile(s, 0.25),
-        "load_kwh_p50": median(s),
-        "load_kwh_p75": _percentile(s, 0.75),
+        "load_kwh_p25": p25,
+        "load_kwh_p50": p50,
+        "load_kwh_p75": p75,
+        "load_base_kwh_p25": p25,
+        "load_base_kwh_p50": p50,
+        "load_base_kwh_p75": p75,
         "samples": len(samples),
         "source": source,
     }
@@ -400,19 +428,28 @@ def forecast_load_hours(
                     "load_kwh_p25": 0.0,
                     "load_kwh_p50": 0.0,
                     "load_kwh_p75": 0.0,
+                    "load_base_kwh_p25": 0.0,
+                    "load_base_kwh_p50": 0.0,
+                    "load_base_kwh_p75": 0.0,
                     "samples": 0,
                     "source": "no_history",
                 }
             )
             continue
         s = sorted(samples)
+        p25 = _percentile(s, 0.25)
+        p50 = median(s)
+        p75 = _percentile(s, 0.75)
         rows.append(
             {
                 "date": target_date.isoformat(),
                 "hour": target_hour,
-                "load_kwh_p25": _percentile(s, 0.25),
-                "load_kwh_p50": median(s),
-                "load_kwh_p75": _percentile(s, 0.75),
+                "load_kwh_p25": p25,
+                "load_kwh_p50": p50,
+                "load_kwh_p75": p75,
+                "load_base_kwh_p25": p25,
+                "load_base_kwh_p50": p50,
+                "load_base_kwh_p75": p75,
                 "samples": len(samples),
                 "source": source,
             }

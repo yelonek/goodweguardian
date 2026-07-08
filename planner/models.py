@@ -23,6 +23,9 @@ class HourInputs(BaseModel):
     pv_kwh_p10: float | None = None
     pv_kwh_p90: float | None = None
     load_kwh_p75: float | None = None
+    load_kwh_p25: float | None = None
+    ev_load_kwh: float = 0.0
+    load_base_kwh: float | None = None
     # 1.0 = pełna godzina; <1.0 = reszta bieżącej h (limity mocy w MILP).
     hour_fraction: float = 1.0
 

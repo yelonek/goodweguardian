@@ -186,6 +186,12 @@ TESLA_WC_HOST = (
     os.environ.get("TESLA_WC_HOST") or os.environ.get("TESLA_WC_IP") or ""
 ).strip()
 TESLA_WC_TIMEOUT_S = _float_env("TESLA_WC_TIMEOUT_S", 5.0)
+TESLA_WC_MAX_KW = _float_env("TESLA_WC_MAX_KW", 11.0)
+
+EV_CHARGING_DECLARATION_PATH = Path(
+    os.environ.get("EV_CHARGING_DECLARATION_PATH")
+    or (STATE_DIR / "ev_charging_declaration.json")
+)
 
 # Load forecast: korekta krótkoterminowa (factor = recent/baseline p50 bieżącej godz.)
 LOAD_NOWCAST_ENABLED = _bool_env("LOAD_NOWCAST_ENABLED", True)

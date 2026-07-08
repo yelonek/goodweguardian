@@ -8,6 +8,8 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from energy_pricing import pricing_day_breakdown
+from ev_charging_plan import build_ev_charging_plan, ev_schedule_map
+from ev_charging_store import declarations_for_dates
 from guardian_config import TELEMETRY_TZ
 from load_forecast import forecast_load_hours
 from planner.config import PLANNER_HORIZON_HOURS, PLANNER_LOAD_LOOKBACK_DAYS
@@ -68,13 +70,24 @@ def build_hour_inputs_for_slots(
         slots, pv_by_key, now=now_local
     )
 
+    slot_dates = {d for d, _ in slots}
+    ev_declarations = declarations_for_dates(slot_dates)
+    ev_plans_by_date: dict[str, Any] = {}
+    ev_schedule: dict[tuple[str, int], float] = {}
+    for d_iso, decl in ev_declarations.items():
+        plan = build_ev_charging_plan(declaration=decl, now=now_local)
+        ev_plans_by_date[d_iso] = plan.model_dump()
+        ev_schedule.update(ev_schedule_map(plan))
+
     out: list[HourInputs] = []
     pricing_cache: dict[str, dict] = {}
 
     for d_iso, h in slots:
         key = (d_iso, h)
         lr = load_by_key.get(key, {})
-        load_kwh = float(lr.get("load_kwh_p50") or 0.0)
+        load_base = float(lr.get("load_base_kwh_p50") or lr.get("load_kwh_p50") or 0.0)
+        ev_kwh = float(ev_schedule.get(key, 0.0))
+        load_kwh = load_base + ev_kwh
         load_src = str(lr.get("source") or "unknown")
 
         if key in pv_corrected:
@@ -97,6 +110,9 @@ def build_hour_inputs_for_slots(
             pv_p90 = max(0.0, pv_p90_raw)
 
         load_p75 = float(lr.get("load_kwh_p75") if lr.get("load_kwh_p75") is not None else load_kwh)
+        load_p25 = float(lr.get("load_kwh_p25") if lr.get("load_kwh_p25") is not None else load_kwh)
+        if ev_kwh > 0:
+            load_p75 = max(load_p75, load_kwh)
 
         if d_iso not in pricing_cache:
             pricing_cache[d_iso] = pricing_day_breakdown(date.fromisoformat(d_iso))
@@ -117,6 +133,9 @@ def build_hour_inputs_for_slots(
             pv_kwh_p10=pv_p10,
             pv_kwh_p90=pv_p90,
             load_kwh_p75=load_p75,
+            load_kwh_p25=load_p25,
+            ev_load_kwh=ev_kwh,
+            load_base_kwh=load_base,
         )
         out.append(
             scale_hour_inputs_for_remainder(
@@ -135,6 +154,7 @@ def build_hour_inputs_for_slots(
         },
         "pv_correction": pv_correction_meta,
         "pricing_dates": list(pricing_cache.keys()),
+        "ev_charging_plans": ev_plans_by_date,
     }
     return out, snapshot
 
