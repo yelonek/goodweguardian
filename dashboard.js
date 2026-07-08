@@ -170,12 +170,21 @@ async function loadHistory(force) {
     const hist = await fetchJson("/api/history?limit=200", 15000);
     document.getElementById("hist").innerHTML = (hist.rows || []).map((r) => {
       const f = r.fields || {};
+      const reasonRaw = String(f.reason || "");
+      let reasonShown = reasonRaw;
+      const neutralTarget = reasonRaw.match(/mode=neutral target_net=([+-]?\d+(?:\.\d+)?)/);
+      if (neutralTarget) {
+        const target = Number(neutralTarget[1]);
+        if (!Number.isNaN(target)) {
+          reasonShown = `neutral (target ${target.toFixed(2)} kWh)`;
+        }
+      }
       const cmd = (f.cmd_enabled === null) ? "—" : `${f.cmd_enabled ? "On" : "Off"} ${fmt(f.cmd_pct)}% ${fmt(f.cmd_duration_s)}s`;
       const closing = f.closing_prev_hour_kwh;
       const balCell = (closing !== null && closing !== undefined)
         ? `<td title="bilans końcowy poprzedniej godziny (∑)">${fmt(closing)} <span class="muted">∑</span></td>`
         : `<td>${fmt(f.remaining_kwh)}</td>`;
-      return `<tr><td>${fmt(f.ts)}</td>${balCell}<td>${fmt(f.grid_kw)}</td><td>${fmt(f.pv_kw)}</td><td>${fmt(f.house_w)}</td><td>${fmt(f.soc_pct)}</td><td>${fmt(f.p_bat_w)}</td><td class="muted">${fmt(f.reason)}</td><td class="muted">${cmd}</td></tr>`;
+      return `<tr><td>${fmt(f.ts)}</td>${balCell}<td>${fmt(f.grid_kw)}</td><td>${fmt(f.pv_kw)}</td><td>${fmt(f.house_w)}</td><td>${fmt(f.soc_pct)}</td><td>${fmt(f.p_bat_w)}</td><td class="muted">${fmt(reasonShown)}</td><td class="muted">${cmd}</td></tr>`;
     }).join("");
     pageLoaded.history = true;
     st.textContent = "OK";
@@ -264,7 +273,7 @@ async function saveEvChargingPlan() {
   }
   const max_power_kw = parseFloat(document.getElementById("evMaxPowerKw").value) || 11;
   const st = document.getElementById("evChargingStatus");
-  if (st) st.textContent = "Zapisuję…";
+  if (st) st.textContent = "Zapisuję i przeliczam plan…";
   const r = await fetch("/api/ev-charging/plan", {
     method: "PUT",
     headers: { "Content-Type": "application/json", "X-Guardian-Api-Key": key },
@@ -278,7 +287,15 @@ async function saveEvChargingPlan() {
     return;
   }
   renderEvChargingPanel(j);
-  if (st) st.textContent = "Zapisano — planer uwzględni przy następnym przeplanowaniu.";
+  if (st) {
+    if (j.planner && j.planner.replanned) {
+      st.textContent = "Zapisano — planer przeliczony.";
+    } else if (j.planner && j.planner.reason) {
+      st.textContent = "Zapisano deklarację EV, ale planer nie przeliczony: " + j.planner.reason;
+    } else {
+      st.textContent = "Zapisano.";
+    }
+  }
   pageLoaded.forecast = false;
   await loadForecast(true);
 }
@@ -298,7 +315,15 @@ async function clearEvChargingPlan() {
   }
   document.getElementById("evTargetKwh").value = "";
   document.getElementById("evPreferredHour").value = "";
-  if (st) st.textContent = "Wyczyszczono deklarację EV.";
+  if (st) {
+    if (j.planner && j.planner.replanned) {
+      st.textContent = "Wyczyszczono — planer przeliczony.";
+    } else if (j.planner && j.planner.reason) {
+      st.textContent = "Wyczyszczono deklarację EV, ale planer nie przeliczony: " + j.planner.reason;
+    } else {
+      st.textContent = "Wyczyszczono deklarację EV.";
+    }
+  }
   await loadEvChargingPlan();
   pageLoaded.forecast = false;
   await loadForecast(true);

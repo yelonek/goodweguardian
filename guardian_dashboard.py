@@ -51,6 +51,7 @@ from load_forecast import (
 )
 from pv_forecast import fetch_hourly_pv_forecast, fetch_hourly_pv_forecast_with_history
 from planner.plan_store import load_latest_plan, load_plan
+from planner.service import build_rolling_plan
 from planner.day_audit import build_day_audit, get_day_audit
 from planner.models import DayAudit
 from planner.policy_output import (
@@ -590,9 +591,12 @@ _DASHBOARD_JS_PATH = Path(__file__).resolve().parent / "dashboard.js"
 
 
 @app.get("/", response_class=HTMLResponse)
-def index() -> str:
+def index() -> HTMLResponse:
     try:
-        return _DASHBOARD_UI_PATH.read_text(encoding="utf-8")
+        return HTMLResponse(
+            _DASHBOARD_UI_PATH.read_text(encoding="utf-8"),
+            headers={"Cache-Control": "no-store, max-age=0"},
+        )
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"dashboard UI missing: {e}") from e
 
@@ -603,6 +607,7 @@ def dashboard_js() -> HTMLResponse:
         return HTMLResponse(
             _DASHBOARD_JS_PATH.read_text(encoding="utf-8"),
             media_type="application/javascript",
+            headers={"Cache-Control": "no-store, max-age=0"},
         )
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"dashboard JS missing: {e}") from e
@@ -1143,6 +1148,21 @@ def _invalidate_combined_forecast_cache() -> None:
     _combined_forecast_cache = None
 
 
+def _replan_rolling_after_ev_change() -> dict[str, Any]:
+    """Po zmianie deklaracji EV — natychmiastowy rolling plan (jak cron co 10 min)."""
+    plan = build_rolling_plan()
+    _invalidate_combined_forecast_cache()
+    if plan is None:
+        return {"replanned": False, "reason": "no_priced_slots"}
+    return {
+        "replanned": True,
+        "plan_id": plan.plan_id,
+        "horizon_start": plan.horizon_start,
+        "horizon_end": plan.horizon_end,
+        "generated_at": plan.generated_at,
+    }
+
+
 def _get_combined_forecast_cached() -> dict[str, Any]:
     global _combined_forecast_cache
     mono = time.monotonic()
@@ -1341,18 +1361,20 @@ async def api_ev_charging_plan_put(
         manual_slots=body.manual_slots,
     )
     write_declaration(decl)
-    _invalidate_combined_forecast_cache()
     try:
-        plan = active_plan()
+        ev_plan = active_plan()
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    return JSONResponse(plan.model_dump())
+    replan_meta = await _run_heavy(_replan_rolling_after_ev_change)
+    payload = ev_plan.model_dump()
+    payload["planner"] = replan_meta
+    return JSONResponse(payload)
 
 
 @app.delete("/api/ev-charging/plan")
-def api_ev_charging_plan_delete(
+async def api_ev_charging_plan_delete(
     _: None = Depends(_require_guardian_api_key),
 ) -> JSONResponse:
     clear_declaration()
-    _invalidate_combined_forecast_cache()
-    return JSONResponse({"cleared": True})
+    replan_meta = await _run_heavy(_replan_rolling_after_ev_change)
+    return JSONResponse({"cleared": True, "planner": replan_meta})
