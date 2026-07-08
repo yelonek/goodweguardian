@@ -7,13 +7,13 @@ MILP w środku godziny operuje na slocie przeskalowanym ``hour_fraction``; pola
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import datetime
 
 from planner.models import HourInputs, HourPlan
 from planner.telemetry import net_kwh_so_far_for_hour
 
-# Import z początku h (np. EV) nie kotwiczy celu po replanowaniu — reszta slotu może wyrównać.
-_OBSOLETE_IMPORT_ANCHOR_EPS = 1e-9
+# Gdy MILP nie planuje wymiany z siecią na resztę h — cel z planu, nie kotwica telemetrii.
+_REMAINDER_NET_EPS = 1e-9
 
 
 def _full_hour_target_net_kwh(
@@ -28,7 +28,8 @@ def _full_hour_target_net_kwh(
     extrapolated = remainder_net / frac
     if not is_current_hour or net_so_far is None:
         return extrapolated
-    if net_so_far < 0.0 and remainder_net >= -_OBSOLETE_IMPORT_ANCHOR_EPS:
+    # Reszta slotu bez importu/eksportu → nie utrwalaj net_so_far (+0,05 / −0,24 z początku h).
+    if abs(remainder_net) <= _REMAINDER_NET_EPS:
         return extrapolated
     return net_so_far + remainder_net
 
@@ -44,11 +45,12 @@ def normalize_hour_plans_for_policy(
 
     ``target_net_kwh`` = plan na pełną godzinę dla Guardiana / dashboardu.
 
-    Gdy w środku h jest już import z **przestarzałego** planu (ujemny ``net_so_far``),
-    a MILP na resztę nie dokłada importu (``remainder_net ≥ 0``), cel to ekstrapolacja
-    ``remainder / hour_fraction`` — replan może wyrównać zamiast utrwalać −0,24 kWh.
+    Gdy MILP na **resztę** bieżącej h nie planuje wymiany z siecią
+    (``remainder_net ≈ 0``), cel to ``remainder_net / hour_fraction`` — zwykle 0.
+    Telemetria ``net_so_far`` **nie kotwiczy** setpointu (ani import, ani eksport
+    z pierwszych minut po replanowaniu).
 
-    W pozostałych przypadkach z telemetrią: ``net_so_far + remainder_net``.
+    Gdy MILP planuje resztę h z siecią (``|remainder_net| > ε``): ``net_so_far + remainder_net``.
     Bez telemetrii: ``remainder_net / hour_fraction``.
     ``battery_delta_kwh``: ``remainder_bd / hour_fraction`` (ekwiwalent % mocy/h).
     """
