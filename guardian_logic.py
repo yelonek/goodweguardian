@@ -19,7 +19,7 @@ from planner.models import ExecMode
 PLAN_CHARGE_INTENT_EPS_KWH = 0.05
 _EXEC_SKIP_SOC_FULL: frozenset[ExecMode] = frozenset({"export_profit"})
 _EXEC_SOC_LOW_ACTIVE: frozenset[ExecMode] = frozenset(
-    {"export_pv_surplus", "export_profit", "neutral"}
+    {"export_pv_surplus", "neutral"}
 )
 
 
@@ -366,10 +366,10 @@ def decide_soc_defenses(
 
     Z planem:
     - **Pełna bateria** — wyłączona w ``export_profit`` (celowe rozładowanie).
-    - **Niska bateria** — tylko w ``export_pv_surplus``, ``neutral`` (limit loadu);
-      ``export_profit``: max powyżej progu, poniżej — taper LFP do ``soc_floor``.
+    - **Niska bateria** — tylko w ``export_pv_surplus``, ``neutral`` (limit loadu).
+    - **``export_profit``** — bez ``soc_low_*``; pacing i taper LFP w ``guardian_execution``.
 
-    Przy niskim SOC i nadwyżce PV (``load ≤ PV``):
+    Przy niskim SOC i nadwyżce PV (``load ≤ PV``), tylko ``export_pv_surplus`` / ``neutral``:
     - ``remaining_kwh ≥ 0`` → ``soc_low_pv_soak`` (CHARGE −1%, PV do baterii);
     - ``remaining_kwh < 0`` → ``soc_low_pv_surplus_balance_priority`` (DISCHARGE +1%
       tylko na korektę ujemnego bilansu godziny — bez ciężkiego rozładowania magazynu).
