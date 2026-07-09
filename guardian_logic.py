@@ -525,6 +525,7 @@ def decide_flappy_relative(
     """Flappy Bird względem ``target_net_kwh`` (tryb ``neutral`` planera)."""
     net = float(inp.remaining_kwh)
     target = float(target_net_kwh)
+    in_end_hour_window = inp.time_to_end_s <= float(cfg.end_hour_window_s)
 
     if float(inp.consumption_w) > float(inp.pv_w) and net >= target:
         return _neutral_decision("neutral_wait_above_target")
@@ -535,7 +536,7 @@ def decide_flappy_relative(
         if net >= 0.0:
             # Poniżej planowanego eksportu, ale bez ujemnego bilansu godzinowego —
             # nie gonimy target_net baterią (§13.5 / regresja 2026-07-09).
-            if pv_surplus_w > 0.0:
+            if pv_surplus_w > 0.0 and not in_end_hour_window:
                 pct = max(1, int(cfg.flappy_buffer_discharge_pct))
                 return _steady_decision(
                     power_pct=pct,
@@ -586,7 +587,11 @@ def decide_flappy_relative(
             inp, cfg, target_kwh=target, reason="neutral_pv_soak"
         )
 
-    if float(inp.pv_w) > float(inp.consumption_w) and net < target + float(cfg.soak_target_kwh):
+    if (
+        not in_end_hour_window
+        and float(inp.pv_w) > float(inp.consumption_w)
+        and net < target + float(cfg.soak_target_kwh)
+    ):
         pct = max(1, int(cfg.flappy_buffer_discharge_pct))
         return _steady_decision(
             power_pct=pct,

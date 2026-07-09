@@ -55,6 +55,41 @@ def test_export_pv_surplus_deficit_only_below_zero() -> None:
     assert "deficit" in d.reason
 
 
+def test_neutral_end_hour_no_buffer_build_oscillation() -> None:
+    """Regresja 2026-07-09: pod koniec h nie przeplataj soak z neutral_buffer_build."""
+    cfg = WatchdogConfig(
+        end_hour_window_s=1200,
+        end_hour_max_remaining_kwh=0.05,
+        soak_target_kwh=0.1,
+    )
+    below_cap = decide_plan_execution(
+        _inp(
+            remaining_kwh=0.04,
+            pv_w=1900.0,
+            consumption_w=700.0,
+            time_to_end_s=480.0,
+        ),
+        _row("neutral", target_net_kwh=0.0),
+        cfg=cfg,
+    )
+    assert below_cap.write_slot is False
+    assert below_cap.reason == "neutral_hold"
+
+    above_cap = decide_plan_execution(
+        _inp(
+            remaining_kwh=0.06,
+            pv_w=1900.0,
+            consumption_w=700.0,
+            time_to_end_s=360.0,
+        ),
+        _row("neutral", target_net_kwh=0.0),
+        cfg=cfg,
+    )
+    assert above_cap.write_slot is True
+    assert above_cap.mode == "charge"
+    assert above_cap.reason == "end_hour_battery_soak"
+
+
 def test_neutral_no_chase_large_target_at_hour_start() -> None:
     """Regresja 2026-07-09: actual≈0, target=+1.58 → 1% PV, nie deficit_recovery ~28%."""
     d = decide_plan_execution(
