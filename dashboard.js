@@ -600,10 +600,13 @@ async function loadSettings(force) {
     refreshControl().catch(console.error);
     refreshPlanner().catch(console.error);
   }
-  if (!force && pageLoaded.ecoslots) return;
-  await refreshEcoslots(false);
-  pageLoaded.ecoslots = true;
   pageLoaded.settings = true;
+}
+
+async function loadSlots(force) {
+  if (!force && pageLoaded.slots) return;
+  await refreshEcoslots(false);
+  pageLoaded.slots = true;
 }
 
 async function refreshControl() {
@@ -860,7 +863,7 @@ async function refreshEcoslots(live = false) {
     return;
   }
   const st = document.getElementById("ecoSlotsStatus");
-  if (!pageLoaded.ecoslots || live) st.textContent = live ? "odczyt z inwertera…" : "ładowanie snapshot…";
+  if (!pageLoaded.slots || live) st.textContent = live ? "odczyt z inwertera…" : "ładowanie snapshot…";
   try {
     const url = live ? "/api/ecoslots?refresh=1" : "/api/ecoslots";
     const j = await fetchJson(url, live ? 20000 : 5000);
@@ -880,7 +883,7 @@ async function saveEcoslot(slotId, btn) {
     _ecoSaveInFlight = false;
     showEcoStatus("Ustaw klucz API powyżej");
     document.getElementById("apiKey").focus();
-    alert("Ustaw klucz API w sekcji Guardian control (ten sam co na laptopie).");
+    alert("Ustaw klucz API w zakładce Ustawienia (ten sam co na laptopie).");
     return;
   }
   const label = btn && btn.textContent;
@@ -947,6 +950,7 @@ const PAGE_LOADERS = {
   history: loadHistory,
   forecast: loadForecast,
   kpi: loadKpi,
+  slots: loadSlots,
   settings: loadSettings,
 };
 
@@ -956,6 +960,7 @@ const PAGE_POLL_MS = {
   history: 15000,
   forecast: 60000,
   kpi: 60000,
+  slots: 20000,
   settings: 20000,
 };
 
