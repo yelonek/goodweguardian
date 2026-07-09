@@ -1023,7 +1023,7 @@ def _combined_forecast_payload() -> dict[str, Any]:
 
         net_kwh: float | None
         soc_pct: float | None
-        if tel_h is not None and (hour_complete or tel_h.get("samples", 0) > 0):
+        if tel_h is not None and hour_complete:
             net_kwh = float(tel_h["net_kwh"])
             soc_pct = float(tel_h["last_soc_pct"])
         elif plan_h is not None:
@@ -1128,8 +1128,8 @@ def _combined_forecast_payload() -> dict[str, Any]:
             "z Solcast zagregowane do godziny). Prognoza obciążenia: baseline z historii; "
             "dla slotów od „teraz” w przód — wartości z API z korektą nowcast (jeśli włączona). "
             "Δ load = act − p50; Δ PV = act − mean tylko gdy jest prognoza mean w tym wierszu. "
-            "net kWh / SOC %: po zakończeniu godziny (lub bieżąca z telemetrii) — fakty; "
-            "w przód — target_net_kwh i soc_end_pct z rolling planu (plan_latest.json). "
+            "net kWh / SOC %: po zakończeniu godziny — fakty z telemetrii; "
+            "bieżąca godzina i przyszłość — target_net_kwh i soc_end_pct z rolling planu (plan_latest.json). "
             "policy: intencja sterowania z planera (hold/charge/discharge) — "
             "plik state/planner_output.json; na razie tylko podgląd, bez watchdog. "
             "bat Δ = battery_delta_kwh; grid = allow_grid_charge przy ładowaniu. "
