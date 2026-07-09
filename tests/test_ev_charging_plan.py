@@ -167,7 +167,7 @@ def test_build_horizon_slot_rows_uses_plan_export(
     d = "2026-06-11"
     plan = _minimal_plan(d, 8, target_net_kwh=1.5)
     monkeypatch.setattr(
-        "ev_charging_plan.load_latest_plan",
+        "planner.plan_store.load_latest_plan",
         lambda: plan,
     )
     monkeypatch.setattr(
