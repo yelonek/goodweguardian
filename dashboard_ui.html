@@ -19,6 +19,51 @@
     .grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; }
     .grid4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
     .card { border: 1px solid rgba(127,127,127,0.35); border-radius: 10px; padding: 10px 12px; }
+    .status-compact { margin-bottom: 16px; max-width: 960px; padding: 12px 14px; }
+    .status-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 10px; }
+    .status-ts { font-size: 12px; opacity: 0.8; font-variant-numeric: tabular-nums; }
+    .status-cols {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 12px;
+    }
+    @media (min-width: 700px) {
+      .status-cols { grid-template-columns: 1fr 1fr; }
+    }
+    @media (min-width: 960px) {
+      .status-cols { grid-template-columns: 1fr 1fr 1.4fr; }
+    }
+    .status-col {
+      padding: 10px 12px;
+      border-radius: 8px;
+      background: rgba(127,127,127,0.06);
+      border: 1px solid rgba(127,127,127,0.18);
+    }
+    .status-col h4 { margin: 0 0 8px; font-size: 0.85rem; opacity: 0.85; }
+    .status-nums { display: flex; flex-wrap: wrap; gap: 10px 16px; }
+    .status-nums-inline .status-metric { min-width: 8rem; }
+    .status-metric { min-width: 5.5rem; }
+    .status-metric .label { font-size: 11px; opacity: 0.72; line-height: 1.25; }
+    .status-metric .val {
+      font-size: 1.15rem;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      line-height: 1.25;
+    }
+    .status-metric.hero .val { font-size: 1.45rem; color: #0d8050; }
+    .status-metric.val-pos .val { color: #0d8050; }
+    .status-metric.val-neg .val { color: #b32d2d; }
+    .status-reason {
+      font-size: 11px;
+      line-height: 1.35;
+      opacity: 0.88;
+      margin-bottom: 8px;
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      word-break: break-word;
+    }
     .k { opacity: 0.75; font-size: 12px; }
     .v { font-size: 18px; font-weight: 700; }
     .row { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
@@ -203,7 +248,7 @@
   <main>
     <section id="page-overview" class="page active">
       <div class="page-hdr"><h2>Stan bieżący</h2></div>
-      <div class="grid" id="cards"></div>
+      <div class="status-compact card" id="statusBlock"></div>
       <div class="pv-pyramid-block card" id="pvPyramidBlock" style="display:none;">
         <h3>Tania energia PV (RCE &lt;60 gr)</h3>
         <p class="muted setting-lead" style="font-size:12px; margin:0 0 8px;">

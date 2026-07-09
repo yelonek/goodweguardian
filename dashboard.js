@@ -3,6 +3,94 @@ const fmt = (v) => (v === null || v === undefined) ? "—" : v;
 function card(key, val) {
   return `<div class="card"><div class="k">${key}</div><div class="v">${fmt(val)}</div></div>`;
 }
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/"/g, "&quot;");
+}
+
+function fmtW(w) {
+  if (w === null || w === undefined) return "—";
+  const n = Number(w);
+  if (Number.isNaN(n)) return String(w);
+  if (Math.abs(n) >= 1000) return `${(n / 1000).toFixed(2)} kW`;
+  return `${n.toFixed(0)} W`;
+}
+
+function fmtPowerKw(kw) {
+  if (kw === null || kw === undefined) return "—";
+  const n = Number(kw);
+  return Number.isNaN(n) ? String(kw) : `${n.toFixed(2)} kW`;
+}
+
+function fmtTimeLeft(sec) {
+  if (sec === null || sec === undefined) return "—";
+  const n = Math.round(Number(sec));
+  if (Number.isNaN(n)) return String(sec);
+  if (n < 60) return `${n} s`;
+  const m = Math.floor(n / 60);
+  const s = n % 60;
+  return s ? `${m} min ${s} s` : `${m} min`;
+}
+
+function statusMetric(label, value, extraClass = "") {
+  return `<div class="status-metric ${extraClass}"><div class="label">${label}</div><div class="val">${value}</div></div>`;
+}
+
+function signedMetricClass(n, invert) {
+  if (n === null || n === undefined || Number.isNaN(Number(n))) return "";
+  const v = Number(n);
+  if (Math.abs(v) < 1e-6) return "";
+  const pos = invert ? v < 0 : v > 0;
+  return pos ? "val-pos" : "val-neg";
+}
+
+function renderStatus(f) {
+  const el = document.getElementById("statusBlock");
+  if (!el) return;
+  const reason = fmt(f.reason);
+  const intervene = f.intervene === true || f.intervene === "true";
+  const cmdOn = f.cmd_enabled === true || f.cmd_enabled === "true";
+  const soc = f.soc_pct != null && !Number.isNaN(Number(f.soc_pct)) ? `${Number(f.soc_pct).toFixed(0)} %` : "—";
+  const balKwh = f.remaining_kwh != null && !Number.isNaN(Number(f.remaining_kwh))
+    ? `${Number(f.remaining_kwh).toFixed(2)} kWh` : "—";
+  const cmdLabel = cmdOn
+    ? `On ${fmt(f.cmd_pct)} % · ${fmt(f.cmd_duration_s)} s`
+    : "wyłączone";
+
+  el.innerHTML =
+    `<div class="status-head">` +
+    `<span class="status-ts">Odczyt: ${fmt(f.ts)}</span>` +
+    `<span class="status-pill ${intervene ? "status-on" : "status-off"}">${intervene ? "interwencja" : "auto"}</span>` +
+    `</div>` +
+    `<div class="status-cols">` +
+    `<div class="status-col">` +
+    `<h4>Energia</h4>` +
+    `<div class="status-nums">` +
+    statusMetric("PV", fmtPowerKw(f.pv_kw)) +
+    statusMetric("Dom", fmtW(f.house_w)) +
+    statusMetric("Sieć", fmtPowerKw(f.grid_kw), signedMetricClass(f.grid_kw)) +
+    statusMetric("Bilans net", balKwh, signedMetricClass(f.remaining_kwh)) +
+    `</div></div>` +
+    `<div class="status-col">` +
+    `<h4>Bateria</h4>` +
+    `<div class="status-nums">` +
+    statusMetric("SOC", soc, "hero") +
+    statusMetric("Moc", fmtW(f.p_bat_w), signedMetricClass(f.p_bat_w, true)) +
+    statusMetric("Balancing", fmtPowerKw(f.balancing_kw)) +
+    statusMetric("Eco slot", f.ecoslot_read_pct != null ? `${fmt(f.ecoslot_read_pct)} %` : "—") +
+    `</div></div>` +
+    `<div class="status-col status-col-wide">` +
+    `<h4>Guardian</h4>` +
+    `<div class="status-reason" title="${escapeHtml(reason)}">${reason}</div>` +
+    `<div class="status-nums status-nums-inline">` +
+    statusMetric("Do końca slotu", fmtTimeLeft(f.time_to_end_s)) +
+    statusMetric("Polecenie", cmdLabel) +
+    `</div></div>` +
+    `</div>`;
+}
 function getKey() { return (localStorage.getItem("guardianApiKey") || "").trim(); }
 
 function formatConfigSource(source) {
@@ -73,14 +161,7 @@ async function loadOverview(force) {
       fetchJson("/api/pv-pyramid", 60000).catch((e) => ({ _error: String(e) })),
     ]);
     document.getElementById("logPath").textContent = status.log_path || "—";
-    const f = status.fields || {};
-    document.getElementById("cards").innerHTML = [
-      ["ts", f.ts], ["remaining_kwh", f.remaining_kwh], ["balancing_kw", f.balancing_kw],
-      ["grid_kw", f.grid_kw], ["pv_kw", f.pv_kw], ["house_w", f.house_w],
-      ["soc_pct", f.soc_pct], ["p_bat_w", f.p_bat_w], ["time_to_end_s", f.time_to_end_s],
-      ["ecoslot_read_pct", f.ecoslot_read_pct], ["intervene", f.intervene], ["reason", f.reason],
-      ["cmd_enabled", f.cmd_enabled], ["cmd_pct", f.cmd_pct], ["cmd_duration_s", f.cmd_duration_s],
-    ].map(([k, v]) => card(k, v)).join("");
+    renderStatus(status.fields || {});
     renderPvPyramid(pyramid);
     pageLoaded.overview = true;
     setUpdated(true);
