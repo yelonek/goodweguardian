@@ -35,8 +35,9 @@ function fmtTimeLeft(sec) {
   return s ? `${m} min ${s} s` : `${m} min`;
 }
 
-function statusMetric(label, value, extraClass = "") {
-  return `<div class="status-metric ${extraClass}"><div class="label">${label}</div><div class="val">${value}</div></div>`;
+function statusMetric(label, value, extraClass = "", title = "") {
+  const t = title ? ` title="${escapeHtml(title)}"` : "";
+  return `<div class="status-metric ${extraClass}"${t}><div class="label">${label}</div><div class="val">${value}</div></div>`;
 }
 
 function signedMetricClass(n, invert) {
@@ -72,14 +73,24 @@ function renderStatus(f) {
     statusMetric("PV", fmtPowerKw(f.pv_kw)) +
     statusMetric("Dom", fmtW(f.house_w)) +
     statusMetric("Sieć", fmtPowerKw(f.grid_kw), signedMetricClass(f.grid_kw)) +
-    statusMetric("Bilans net", balKwh, signedMetricClass(f.remaining_kwh)) +
+    statusMetric(
+      "Bilans godz.",
+      balKwh,
+      signedMetricClass(f.remaining_kwh),
+      "Δeksport − Δimport w bieżącej godzinie (kWh)"
+    ) +
     `</div></div>` +
     `<div class="status-col">` +
     `<h4>Bateria</h4>` +
     `<div class="status-nums">` +
     statusMetric("SOC", soc, "hero") +
     statusMetric("Moc", fmtW(f.p_bat_w), signedMetricClass(f.p_bat_w, true)) +
-    statusMetric("Balancing", fmtPowerKw(f.balancing_kw)) +
+    statusMetric(
+      "Moc domknięcia",
+      fmtPowerKw(f.balancing_kw),
+      signedMetricClass(f.balancing_kw),
+      "Średnia moc do wyzerowania bilansu do końca godziny; znak jak bilans (+ = eksport)"
+    ) +
     statusMetric("Eco slot", f.ecoslot_read_pct != null ? `${fmt(f.ecoslot_read_pct)} %` : "—") +
     `</div></div>` +
     `<div class="status-col status-col-wide">` +
