@@ -11,6 +11,9 @@ from pydantic import BaseModel, Field, field_validator
 
 from energy_pricing import pricing_day_breakdown
 from guardian_config import TELEMETRY_TZ, TESLA_WC_MAX_KW
+from load_forecast import forecast_load_hours
+from planner.models import DailyPlan
+from planner.plan_store import hour_plan_from, load_latest_plan
 from pv_forecast import fetch_hourly_pv_forecast
 from pv_pyramid import CHEAP_THRESHOLD_PLN
 from tariff_g12 import G12TariffConfig, g12_tariff_from_env
@@ -49,7 +52,7 @@ class EvChargingDeclaration(BaseModel):
 
 
 class CheapBudget(BaseModel):
-    cheap_pv_kwh: float
+    cheap_export_kwh: float
     cheap_import_kwh: float
     recommendable_kwh: float
 
@@ -120,26 +123,42 @@ def _hour_power_cap(
     return cap
 
 
+def export_kwh_for_slot(
+    d_iso: str,
+    hour: int,
+    *,
+    pv_kwh: float,
+    load_base_kwh: float,
+    plan: DailyPlan | None,
+) -> float:
+    """Planowany eksport netto (planer) lub heurystyka PV − load_base."""
+    if plan is not None:
+        hp = hour_plan_from(plan, date.fromisoformat(d_iso), hour)
+        if hp is not None:
+            return max(0.0, float(hp.target_net_kwh))
+    return max(0.0, pv_kwh - load_base_kwh)
+
+
 def is_cheap_slot(
     *,
     hour: int,
     rce_pln: float,
-    pv_kwh: float,
+    export_kwh: float,
     tariff: G12TariffConfig,
 ) -> bool:
     is_night = hour in tariff.night_hours
-    cheap_pv = rce_pln < CHEAP_THRESHOLD_PLN and pv_kwh >= CHEAP_PV_MIN_KWH
-    return is_night or cheap_pv
+    cheap_export = rce_pln < CHEAP_THRESHOLD_PLN and export_kwh >= CHEAP_PV_MIN_KWH
+    return is_night or cheap_export
 
 
 def slot_score(
     *,
     import_pln: float,
     rce_pln: float,
-    pv_kwh: float,
+    export_kwh: float,
 ) -> float:
     """Niższy = lepszy slot do ładowania."""
-    opportunity = rce_pln * pv_kwh if pv_kwh > CHEAP_PV_MIN_KWH else 0.0
+    opportunity = rce_pln * export_kwh if export_kwh > CHEAP_PV_MIN_KWH else 0.0
     return import_pln + opportunity
 
 
@@ -147,18 +166,34 @@ def build_horizon_slot_rows(
     slots: list[tuple[str, int]],
     *,
     pv_by_key: dict[tuple[str, int], dict[str, Any]] | None = None,
+    load_by_key: dict[tuple[str, int], dict[str, Any]] | None = None,
+    plan: DailyPlan | None = None,
 ) -> list[dict[str, Any]]:
     tariff = g12_tariff_from_env()
     pricing_cache: dict[str, dict[str, Any]] = {}
     pv_map = pv_by_key or {}
+    load_map = load_by_key or {}
 
-    if not pv_map and slots:
-        try:
-            pack = fetch_hourly_pv_forecast(hours=max(len(slots) + 2, 48))
-            for r in pack.get("hours", []):
-                pv_map[(str(r["date"]), int(r["hour"]))] = r
-        except Exception as e:
-            log.warning("EV plan: PV forecast unavailable: %s", e)
+    if slots:
+        n_hours = max(len(slots) + 2, 48)
+        if not pv_map:
+            try:
+                pack = fetch_hourly_pv_forecast(hours=n_hours)
+                for r in pack.get("hours", []):
+                    pv_map[(str(r["date"]), int(r["hour"]))] = r
+            except Exception as e:
+                log.warning("EV plan: PV forecast unavailable: %s", e)
+        if not load_map:
+            try:
+                first_d, first_h = slots[0]
+                first_dt = datetime.fromisoformat(f"{first_d}T{first_h:02d}:00:00")
+                load_pack = forecast_load_hours(start_dt=first_dt, hours=n_hours)
+                for r in load_pack.get("hours", []):
+                    load_map[(str(r["date"]), int(r["hour"]))] = r
+            except Exception as e:
+                log.warning("EV plan: load forecast unavailable: %s", e)
+
+    rolling_plan = plan if plan is not None else load_latest_plan()
 
     rows: list[dict[str, Any]] = []
     for d_iso, hour in slots:
@@ -170,8 +205,21 @@ def build_horizon_slot_rows(
         rce_pln = float(ph["rce_pln_kwh"])
         pv_row = pv_map.get((d_iso, hour))
         pv_kwh = float(pv_row.get("pv_kw") or 0.0) if pv_row else 0.0
+        lr = load_map.get((d_iso, hour), {})
+        load_base_kwh = float(
+            lr.get("load_base_kwh_p50") or lr.get("load_kwh_p50") or 0.0
+        )
+        export_kwh = export_kwh_for_slot(
+            d_iso,
+            hour,
+            pv_kwh=pv_kwh,
+            load_base_kwh=load_base_kwh,
+            plan=rolling_plan,
+        )
         is_night = hour in tariff.night_hours
-        cheap = is_cheap_slot(hour=hour, rce_pln=rce_pln, pv_kwh=pv_kwh, tariff=tariff)
+        cheap = is_cheap_slot(
+            hour=hour, rce_pln=rce_pln, export_kwh=export_kwh, tariff=tariff
+        )
         rows.append(
             {
                 "date": d_iso,
@@ -179,9 +227,13 @@ def build_horizon_slot_rows(
                 "import_pln_per_kwh": import_pln,
                 "rce_pln_kwh": rce_pln,
                 "pv_kwh": pv_kwh,
+                "load_base_kwh": load_base_kwh,
+                "export_kwh": export_kwh,
                 "is_g12_night": is_night,
                 "is_cheap": cheap,
-                "score": slot_score(import_pln=import_pln, rce_pln=rce_pln, pv_kwh=pv_kwh),
+                "score": slot_score(
+                    import_pln=import_pln, rce_pln=rce_pln, export_kwh=export_kwh
+                ),
             }
         )
     return rows
@@ -198,8 +250,8 @@ def compute_cheap_budget(
         for r in slot_rows
         if _slot_is_future_or_current(str(r["date"]), int(r["hour"]), now)
     ]
-    cheap_pv = sum(
-        float(r["pv_kwh"])
+    cheap_export = sum(
+        float(r["export_kwh"])
         for r in remaining
         if float(r["rce_pln_kwh"]) < CHEAP_THRESHOLD_PLN
     )
@@ -207,9 +259,9 @@ def compute_cheap_budget(
         max_power_kw for r in remaining if bool(r.get("is_g12_night"))
     )
     return CheapBudget(
-        cheap_pv_kwh=round(cheap_pv, 4),
+        cheap_export_kwh=round(cheap_export, 4),
         cheap_import_kwh=round(cheap_import, 4),
-        recommendable_kwh=round(cheap_pv + cheap_import, 4),
+        recommendable_kwh=round(cheap_export + cheap_import, 4),
     )
 
 
@@ -280,11 +332,16 @@ def _preferred_start_allocate(
             cheaper_before.append(row)
 
     if cheaper_before:
-        pv_kwh = sum(float(r["pv_kwh"]) for r in cheaper_before if float(r["rce_pln_kwh"]) < CHEAP_THRESHOLD_PLN)
-        if pv_kwh > 0.5:
+        export_kwh = sum(
+            float(r["export_kwh"])
+            for r in cheaper_before
+            if float(r["rce_pln_kwh"]) < CHEAP_THRESHOLD_PLN
+        )
+        if export_kwh > 0.5:
             hrs = ", ".join(f"{int(r['hour']):02d}" for r in cheaper_before[:4])
             warnings.append(
-                f"Godz. {hrs}: ~{pv_kwh:.1f} kWh taniego PV (<60 gr) — rozważ wcześniejsze ładowanie."
+                f"Godz. {hrs}: ~{export_kwh:.1f} kWh taniego eksportu (<60 gr) — "
+                "rozważ wcześniejsze ładowanie."
             )
 
     remaining = remaining_kwh
