@@ -167,12 +167,14 @@ function localNowParts() {
 async function loadOverview(force) {
   if (!force && pageLoaded.overview) return;
   try {
-    const [status, pyramid] = await Promise.all([
+    const [status, pyramid, planViz] = await Promise.all([
       fetchJson("/api/status", 10000),
       fetchJson("/api/pv-pyramid", 60000).catch((e) => ({ _error: String(e) })),
+      fetchJson("/api/plan/visualization", 60000).catch((e) => ({ _error: String(e) })),
     ]);
     document.getElementById("logPath").textContent = status.log_path || "—";
     renderStatus(status.fields || {});
+    renderPlanTimeline(planViz);
     renderPvPyramid(pyramid);
     pageLoaded.overview = true;
     setUpdated(true);
@@ -180,6 +182,149 @@ async function loadOverview(force) {
     setUpdated(false);
     console.error(e);
   }
+}
+
+const PLAN_MODE_SHORT = {
+  export_pv_surplus: "PV",
+  export_profit: "EXP",
+  neutral: "0",
+  import_grid: "IMP",
+  charge_grid: "ŁAD",
+};
+
+const PLAN_MODE_LEGEND = [
+  ["mode-export_pv_surplus", "eksport PV"],
+  ["mode-export_profit", "eksport zarobkowy"],
+  ["mode-neutral", "neutralny"],
+  ["mode-import_grid", "import z sieci"],
+  ["mode-charge_grid", "ładowanie z sieci"],
+];
+
+const PLAN_RCE_CHEAP = 0.60;
+
+function planHourTooltip(h) {
+  const parts = [
+    `Godz. ${String(h.hour).padStart(2, "0")}:00`,
+    h.exec_mode_label ? `Tryb: ${h.exec_mode_label}` : null,
+    h.target_net_kwh != null ? `Net plan: ${Number(h.target_net_kwh).toFixed(2)} kWh` : null,
+    h.soc_end_pct != null ? `SOC koniec: ${Number(h.soc_end_pct).toFixed(0)} %` : null,
+    h.sell_pln_kwh != null ? `RCE: ${Number(h.sell_pln_kwh).toFixed(3)} PLN/kWh` : null,
+    h.pv_kwh != null ? `PV: ${Number(h.pv_kwh).toFixed(2)} kWh` : null,
+    h.load_kwh_p50 != null ? `Load p50: ${Number(h.load_kwh_p50).toFixed(2)} kWh` : null,
+  ].filter(Boolean);
+  return parts.join(" · ");
+}
+
+function renderPlanSocSvg(hours, svgId) {
+  const pts = hours
+    .map((h, i) => ({ x: i, y: h.soc_end_pct != null ? Number(h.soc_end_pct) : null }))
+    .filter((p) => p.y != null && !Number.isNaN(p.y));
+  if (pts.length < 2) {
+    return `<svg class="plan-soc-chart" id="${svgId}" viewBox="0 0 100 72" preserveAspectRatio="none"></svg>`;
+  }
+  const ys = pts.map((p) => p.y);
+  const minY = Math.max(0, Math.min(...ys) - 5);
+  const maxY = Math.min(100, Math.max(...ys) + 5);
+  const span = maxY - minY || 1;
+  const w = 100;
+  const h = 72;
+  const toX = (i) => (i / 23) * w;
+  const toY = (y) => h - ((y - minY) / span) * (h - 8) - 4;
+  const linePts = hours.map((hr, i) => {
+    const y = hr.soc_end_pct != null ? Number(hr.soc_end_pct) : null;
+    if (y == null || Number.isNaN(y)) return null;
+    return `${toX(i).toFixed(1)},${toY(y).toFixed(1)}`;
+  }).filter(Boolean);
+  const area = linePts.length
+    ? `M ${toX(0).toFixed(1)},${h} L ${linePts.join(" L ")} L ${toX(23).toFixed(1)},${h} Z`
+    : "";
+  return (
+    `<svg class="plan-soc-chart" id="${svgId}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">` +
+    (area ? `<path class="area" d="${area}"/>` : "") +
+    `<path class="line" d="M ${linePts.join(" L ")}"/>` +
+    `</svg>`
+  );
+}
+
+function renderPlanHourCell(h) {
+  const mode = h.exec_mode ? String(h.exec_mode) : "";
+  const cls = [
+    "plan-hour-cell",
+    h.hour_complete ? "past" : "",
+    h.is_now ? "now" : "",
+    mode ? "" : "empty",
+    h.sell_pln_kwh != null && Number(h.sell_pln_kwh) < PLAN_RCE_CHEAP ? "rce-cheap" : "",
+  ].filter(Boolean).join(" ");
+  const short = mode ? (PLAN_MODE_SHORT[mode] || mode.slice(0, 3)) : "—";
+  const net = h.target_net_kwh != null ? Number(h.target_net_kwh) : null;
+  let netHtml;
+  if (net != null && !Number.isNaN(net)) {
+    const netCls = net > 0.02 ? "pos" : net < -0.02 ? "neg" : "";
+    netHtml = `<div class="plan-hour-net ${netCls}">${net >= 0 ? "+" : ""}${net.toFixed(1)}</div>`;
+  } else {
+    netHtml = `<div class="plan-hour-net">—</div>`;
+  }
+  const modeCls = mode ? `mode-${mode}` : "";
+  return (
+    `<div class="${cls}" title="${escapeHtml(planHourTooltip(h))}">` +
+    `<div class="plan-hour-mode ${modeCls}">${short}</div>` +
+    netHtml +
+    `<div class="plan-hour-label">${String(h.hour).padStart(2, "0")}</div>` +
+    `</div>`
+  );
+}
+
+function renderPlanDayBoard(day, dimmed) {
+  const hours = day.hours || [];
+  const date = String(day.date || "");
+  const label = String(day.label || date);
+  const cells = hours.map((h) => renderPlanHourCell(h)).join("");
+  const svgId = `planSoc-${date.replace(/-/g, "")}`;
+  return (
+    `<div class="plan-day-board${dimmed ? " dimmed" : ""}">` +
+    `<h4>${label} <span class="muted" style="font-weight:400;font-size:11px;">${date.slice(5)}</span></h4>` +
+    `<div class="plan-hour-grid">${cells}</div>` +
+    renderPlanSocSvg(hours, svgId) +
+    `</div>`
+  );
+}
+
+function renderPlanTimeline(p) {
+  const block = document.getElementById("planTimelineBlock");
+  const content = document.getElementById("planTimelineContent");
+  if (!block || !content) return;
+  if (!p || p._error || !p.available) {
+    block.style.display = "none";
+    return;
+  }
+  block.style.display = "block";
+  const meta = p.meta || {};
+  const policy = meta.policy || {};
+  const execOn = Boolean(meta.execution_enabled);
+  const cash = meta.expected_cashflow_pln != null
+    ? `${Number(meta.expected_cashflow_pln).toFixed(2)} PLN` : "—";
+  const socStart = meta.soc_start_pct != null ? `${Number(meta.soc_start_pct).toFixed(0)}%` : "—";
+  const socEnd = meta.soc_end_pct != null ? `${Number(meta.soc_end_pct).toFixed(0)}%` : "—";
+  const planId = meta.plan_id ? String(meta.plan_id).slice(0, 8) : "—";
+  const validUntil = policy.valid_until ? String(policy.valid_until).slice(0, 19) : "—";
+  const hero =
+    `<div class="plan-hero">` +
+    `<div><div class="plan-hero-key">Plan</div><div>${planId}… · ważny do ${validUntil}</div></div>` +
+    `<div><div class="plan-hero-key">Σ cashflow</div><div class="plan-hero-val">${cash}</div></div>` +
+    `<div><div class="plan-hero-key">SOC plan</div><div>${socStart} → ${socEnd}</div></div>` +
+    `<span class="status-pill ${execOn ? "status-on" : "status-off"}">egzekucja: ${execOn ? "tak" : "nie"}</span>` +
+    `</div>`;
+  const days = p.days || [];
+  const tomorrowDim = !p.pricing_tomorrow_available;
+  const boards = days.map((d, i) => renderPlanDayBoard(d, i === 1 && tomorrowDim)).join("");
+  const legend = PLAN_MODE_LEGEND.map(([cls, label]) =>
+    `<span><i class="plan-hour-mode ${cls}"></i>${label}</span>`
+  ).join("");
+  content.innerHTML =
+    hero +
+    `<div class="plan-day-boards">${boards}</div>` +
+    `<div class="plan-legend">${legend}</div>` +
+    (tomorrowDim ? `<p class="muted" style="font-size:11px;margin:8px 0 0;">Jutro: RCE jeszcze nieopublikowane — panel przygaszony.</p>` : "");
 }
 
 function renderPvPyramidTable(segment, tbodyId) {

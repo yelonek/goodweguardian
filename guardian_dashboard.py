@@ -1178,6 +1178,114 @@ def _get_combined_forecast_cached() -> dict[str, Any]:
         return payload
 
 
+def _plan_visualization_payload(combined: dict[str, Any]) -> dict[str, Any]:
+    """Slim 48h plan view for overview UI (dziś + jutro, 24h each)."""
+    plan_latest = load_latest_plan()
+    if plan_latest is None:
+        return {
+            "available": False,
+            "reason": "brak plan_latest.json — uruchom: uv run python -m planner plan",
+        }
+
+    today_iso = str(combined.get("today", ""))
+    tomorrow_iso = str(combined.get("tomorrow", ""))
+    now_raw = str(combined.get("now", ""))
+    try:
+        now_dt = datetime.fromisoformat(now_raw)
+        now_hour = now_dt.hour
+        now_date = now_dt.date().isoformat()
+    except ValueError:
+        now_dt = datetime.now(ZoneInfo(TELEMETRY_TZ)).replace(tzinfo=None)
+        now_hour = now_dt.hour
+        now_date = now_dt.date().isoformat()
+
+    row_map: dict[str, dict[int, dict[str, Any]]] = {}
+    for row in combined.get("rows", []):
+        d = str(row.get("date", ""))
+        h = int(row.get("hour", -1))
+        if 0 <= h <= 23:
+            row_map.setdefault(d, {})[h] = row
+
+    def _empty_hour(h: int) -> dict[str, Any]:
+        return {
+            "hour": h,
+            "hour_complete": False,
+            "is_now": False,
+            "exec_mode": None,
+            "exec_mode_label": None,
+            "target_net_kwh": None,
+            "soc_end_pct": None,
+            "sell_pln_kwh": None,
+            "buy_pln_kwh": None,
+            "pv_kwh": None,
+            "load_kwh_p50": None,
+            "battery_delta_kwh": None,
+        }
+
+    def _build_day(date_iso: str, label: str) -> dict[str, Any]:
+        by_hour = row_map.get(date_iso, {})
+        hours: list[dict[str, Any]] = []
+        for h in range(24):
+            row = by_hour.get(h)
+            if row is None:
+                slot = _empty_hour(h)
+                slot["is_now"] = date_iso == now_date and h == now_hour
+                hours.append(slot)
+                continue
+            hours.append(
+                {
+                    "hour": h,
+                    "hour_complete": bool(row.get("hour_complete")),
+                    "is_now": date_iso == now_date and h == now_hour,
+                    "exec_mode": row.get("exec_mode"),
+                    "exec_mode_label": row.get("exec_mode_label"),
+                    "target_net_kwh": row.get("net_kwh"),
+                    "soc_end_pct": row.get("soc_pct"),
+                    "sell_pln_kwh": row.get("sell_pln_kwh"),
+                    "buy_pln_kwh": row.get("buy_pln_kwh"),
+                    "pv_kwh": row.get("pv_kwh"),
+                    "load_kwh_p50": row.get("load_kwh_p50"),
+                    "battery_delta_kwh": row.get("policy_battery_delta_kwh"),
+                }
+            )
+        return {"date": date_iso, "label": label, "hours": hours}
+
+    plan_exec, plan_exec_src = effective_planner_execution_enabled()
+    policy_meta = combined.get("planner_policy")
+    soc_end_pct: float | None = None
+    if plan_latest.hours:
+        soc_end_pct = float(plan_latest.hours[-1].soc_end_pct)
+
+    return {
+        "available": True,
+        "today": today_iso,
+        "tomorrow": tomorrow_iso,
+        "pricing_tomorrow_available": bool(combined.get("pricing_tomorrow_available")),
+        "meta": {
+            "plan_id": plan_latest.plan_id,
+            "generated_at": plan_latest.generated_at,
+            "horizon_start": plan_latest.horizon_start,
+            "horizon_end": plan_latest.horizon_end,
+            "expected_cashflow_pln": plan_latest.expected_total_cashflow_pln,
+            "soc_start_pct": plan_latest.soc_start_pct,
+            "soc_end_pct": soc_end_pct,
+            "execution_enabled": plan_exec,
+            "execution_source": plan_exec_src,
+            "policy": policy_meta,
+        },
+        "days": [
+            _build_day(today_iso, "Dziś"),
+            _build_day(tomorrow_iso, "Jutro"),
+        ],
+    }
+
+
+@app.get("/api/plan/visualization")
+async def api_plan_visualization() -> JSONResponse:
+    combined = await _run_heavy(_get_combined_forecast_cached)
+    return JSONResponse(_plan_visualization_payload(combined))
+
+
 @app.get("/api/forecast/combined")
 async def api_forecast_combined() -> JSONResponse:
     payload = await _run_heavy(_get_combined_forecast_cached)
