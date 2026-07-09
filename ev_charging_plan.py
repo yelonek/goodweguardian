@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, Field, field_validator
@@ -12,12 +12,13 @@ from pydantic import BaseModel, Field, field_validator
 from energy_pricing import pricing_day_breakdown
 from guardian_config import TELEMETRY_TZ, TESLA_WC_MAX_KW
 from load_forecast import forecast_load_hours
-from planner.models import DailyPlan
-from planner.plan_store import hour_plan_from, load_latest_plan
 from pv_forecast import fetch_hourly_pv_forecast
 from pv_pyramid import CHEAP_THRESHOLD_PLN
 from tariff_g12 import G12TariffConfig, g12_tariff_from_env
 from tesla_wall_charger import hourly_ev_kwh_from_telemetry, twc_enabled
+
+if TYPE_CHECKING:
+    from planner.models import DailyPlan
 
 log = logging.getLogger("guardian")
 
@@ -133,6 +134,8 @@ def export_kwh_for_slot(
 ) -> float:
     """Planowany eksport netto (planer) lub heurystyka PV − load_base."""
     if plan is not None:
+        from planner.plan_store import hour_plan_from
+
         hp = hour_plan_from(plan, date.fromisoformat(d_iso), hour)
         if hp is not None:
             return max(0.0, float(hp.target_net_kwh))
@@ -193,7 +196,11 @@ def build_horizon_slot_rows(
             except Exception as e:
                 log.warning("EV plan: load forecast unavailable: %s", e)
 
-    rolling_plan = plan if plan is not None else load_latest_plan()
+    rolling_plan = plan
+    if rolling_plan is None:
+        from planner.plan_store import load_latest_plan
+
+        rolling_plan = load_latest_plan()
 
     rows: list[dict[str, Any]] = []
     for d_iso, hour in slots:
