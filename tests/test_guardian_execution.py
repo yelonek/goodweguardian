@@ -55,6 +55,51 @@ def test_export_pv_surplus_deficit_only_below_zero() -> None:
     assert "deficit" in d.reason
 
 
+def test_neutral_no_chase_large_target_at_hour_start() -> None:
+    """Regresja 2026-07-09: actual≈0, target=+1.58 → 1% PV, nie deficit_recovery ~28%."""
+    d = decide_plan_execution(
+        _inp(
+            remaining_kwh=0.0,
+            pv_w=4000.0,
+            consumption_w=1500.0,
+            time_to_end_s=3540.0,
+        ),
+        _row("neutral", target_net_kwh=1.58),
+        cfg=WatchdogConfig(),
+    )
+    assert d.write_slot is True
+    assert d.power_pct == 1
+    assert d.reason == "neutral_buffer_build"
+    assert d.mode == "discharge"
+
+
+def test_neutral_no_pv_surplus_below_target_holds() -> None:
+    """Bez nadwyżki PV nie rozładowuj baterii tylko po to, by dogonić target_net."""
+    d = decide_plan_execution(
+        _inp(
+            remaining_kwh=0.0,
+            pv_w=800.0,
+            consumption_w=2000.0,
+            time_to_end_s=3600.0,
+        ),
+        _row("neutral", target_net_kwh=1.58),
+        cfg=WatchdogConfig(),
+    )
+    assert d.write_slot is False
+    assert d.reason == "neutral_hold_below_target"
+
+
+def test_neutral_true_deficit_still_recovers() -> None:
+    d = decide_plan_execution(
+        _inp(remaining_kwh=-0.5, pv_w=800.0, consumption_w=2000.0, time_to_end_s=2400.0),
+        _row("neutral", target_net_kwh=1.0),
+        cfg=WatchdogConfig(),
+    )
+    assert d.write_slot is True
+    assert d.mode == "discharge"
+    assert "deficit" in d.reason
+
+
 def test_neutral_negative_target_no_pv_soak_on_import_shortfall() -> None:
     """Regresja 2026-07-08: target importu, bilans za mały → bez neutral_pv_soak."""
     d = decide_plan_execution(
