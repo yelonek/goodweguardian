@@ -199,13 +199,13 @@ async function loadHistory(force) {
 function renderEvChargingPanel(ev) {
   if (!ev) return;
   const budget = ev.cheap_budget || {};
-  const cheapPv = Number(budget.cheap_pv_kwh || 0);
+  const cheapExport = Number(budget.cheap_export_kwh || 0);
   const cheapImp = Number(budget.cheap_import_kwh || 0);
   const rec = Number(budget.recommendable_kwh || 0);
   const hero = document.getElementById("evChargingHero");
   if (hero) {
     hero.innerHTML =
-      `<div class="card"><div class="card-key">Tanio PV (&lt;60 gr)</div><div class="card-val">${cheapPv.toFixed(1)} kWh</div></div>` +
+      `<div class="card"><div class="card-key">Eksport tanio (&lt;60 gr)</div><div class="card-val">${cheapExport.toFixed(1)} kWh</div></div>` +
       `<div class="card"><div class="card-key">Tanio import G12</div><div class="card-val">${cheapImp.toFixed(1)} kWh</div></div>` +
       `<div class="card"><div class="card-key">Razem tanio dziś</div><div class="card-val">${rec.toFixed(1)} kWh</div></div>`;
   }
