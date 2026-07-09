@@ -99,16 +99,27 @@ function renderPvPyramidTable(segment, tbodyId) {
   const tierRows = (segment?.tiers || []).map((t) => {
     const gr = t.threshold_gr;
     const cum = Number(t.cumulative_kwh || 0);
-    const layer = Number(t.layer_kwh || 0);
     const pct = Math.min(100, Math.round((cum / barMax) * 100));
     const cls = gr <= 30 ? "pyramid-cheap" : gr <= 50 ? "pyramid-mid" : "";
-    return `<tr class="${cls}"><td>&lt; ${gr} gr</td><td>${cum.toFixed(2)}</td><td>${layer.toFixed(2)}</td>
+    return `<tr class="${cls}"><td>&lt;${gr} gr</td><td>${cum.toFixed(1)}</td>
       <td class="pv-bar-wrap"><span class="pv-bar" style="width:${pct}%;"></span></td></tr>`;
   }).join("");
   const abovePct = Math.min(100, Math.round((above / barMax) * 100));
   tbody.innerHTML = tierRows +
-    `<tr><td>≥ 60 gr</td><td>${above.toFixed(2)}</td><td>${above.toFixed(2)}</td>
+    `<tr><td>≥60 gr</td><td>${above.toFixed(1)}</td>
       <td class="pv-bar-wrap"><span class="pv-bar" style="width:${abovePct}%; opacity:0.55;"></span></td></tr>`;
+}
+
+function renderPvPyramidNums(segment, elId, cheapGr) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  const cheap = Number(segment?.cheap_kwh || 0);
+  const surplus = Number(segment?.cheap_surplus_kwh || 0);
+  el.innerHTML =
+    `<div class="pv-pyramid-num"><div class="label">PV tanio (&lt;${cheapGr} gr)</div>` +
+    `<div class="val">${cheap.toFixed(1)} kWh</div></div>` +
+    `<div class="pv-pyramid-num net"><div class="label">Po load (nadwyżka)</div>` +
+    `<div class="val">${surplus.toFixed(1)} kWh</div></div>`;
 }
 
 function renderPvPyramid(p) {
@@ -121,45 +132,29 @@ function renderPvPyramid(p) {
   const seg = p.segments || {};
   const today = seg.today || {};
   const tomorrow = seg.tomorrow || {};
-  const past = today.past || {};
   const remaining = today.remaining || {};
-  const todayTotal = today.total || {};
   const tomorrowTotal = tomorrow.total || {};
   const cheapGr = seg.cheap_threshold_gr || 60;
 
-  const remainingCheap = Number(remaining.cheap_kwh || 0);
-  document.getElementById("pvPyramidHero").innerHTML =
-    `<div class="card"><div class="card-key">Tanio zostało dziś (&lt;${cheapGr} gr)</div>` +
-    `<div class="card-val">${remainingCheap.toFixed(1)} kWh</div></div>`;
+  renderPvPyramidNums(remaining, "pvPyramidTodayNums", cheapGr);
+  renderPvPyramidNums(tomorrowTotal, "pvPyramidTomorrowNums", cheapGr);
+  renderPvPyramidTable(remaining, "pvPyramidRowsToday");
+  renderPvPyramidTable(tomorrowTotal, "pvPyramidRowsTomorrow");
 
-  document.getElementById("pvPyramidTodaySummary").innerHTML = [
-    ["Zostało tanio", `${remainingCheap.toFixed(1)} kWh`],
-    ["Zostało PV", `${Number(remaining.pv_total_kwh || 0).toFixed(1)} kWh`],
-    ["Było tanio", `${Number(past.cheap_kwh || 0).toFixed(1)} kWh`],
-    ["Było PV", `${Number(past.pv_total_kwh || 0).toFixed(1)} kWh`],
-    ["Dziś razem tanio", `${Number(todayTotal.cheap_kwh || 0).toFixed(1)} kWh`],
-  ].map(([k, v]) => card(k, v)).join("");
-
-  document.getElementById("pvPyramidTomorrowSummary").innerHTML = [
-    [`Tanio (&lt;${cheapGr} gr)`, `${Number(tomorrowTotal.cheap_kwh || 0).toFixed(1)} kWh`],
-    ["PV razem", `${Number(tomorrowTotal.pv_total_kwh || 0).toFixed(1)} kWh`],
-  ].map(([k, v]) => card(k, v)).join("");
+  const tomorrowCol = document.getElementById("pvPyramidTomorrowCol");
+  if (tomorrowCol) {
+    tomorrowCol.style.opacity = p.pricing_tomorrow_available ? "1" : "0.45";
+  }
 
   const meta = [
-    p.pricing_tomorrow_available ? `jutro RCE: ${p.pricing_tomorrow_source || "ok"}` : "jutro RCE: brak",
-    `dziś zostało: ${remaining.hours_with_pv || 0} h PV`,
-    `dziś było: ${past.hours_with_pv || 0} h PV`,
-    `jutro: ${tomorrowTotal.hours_with_pv || 0} h PV`,
+    p.pricing_tomorrow_available ? `jutro RCE: ${p.pricing_tomorrow_source || "ok"}` : "jutro RCE: jeszcze nieopublikowane",
+    `dziś zostało: ${remaining.hours_with_pv || 0} h z PV`,
+    `jutro: ${tomorrowTotal.hours_with_pv || 0} h z PV`,
   ];
   document.getElementById("pvPyramidMeta").textContent = meta.join(" · ");
   const warns = p.warnings || [];
   document.getElementById("pvPyramidWarnings").textContent = warns.length
     ? `Uwagi: ${warns.slice(0, 4).join(" · ")}` : "";
-
-  renderPvPyramidTable(remaining, "pvPyramidRowsRemaining");
-  renderPvPyramidTable(past, "pvPyramidRowsPast");
-  renderPvPyramidTable(todayTotal, "pvPyramidRowsTodayTotal");
-  renderPvPyramidTable(tomorrowTotal, "pvPyramidRowsTomorrow");
 }
 
 async function loadHistory(force) {

@@ -13,7 +13,7 @@ from energy_pricing import pricing_day_breakdown
 from guardian_config import TELEMETRY_TZ, TESLA_WC_MAX_KW
 from load_forecast import forecast_load_hours
 from pv_forecast import fetch_hourly_pv_forecast
-from pv_pyramid import CHEAP_THRESHOLD_PLN
+from pv_pyramid import CHEAP_THRESHOLD_PLN, export_kwh_for_slot
 from tariff_g12 import G12TariffConfig, g12_tariff_from_env
 from tesla_wall_charger import hourly_ev_kwh_from_telemetry, twc_enabled
 
@@ -122,24 +122,6 @@ def _hour_power_cap(
     if hour == now.hour:
         cap = max(0.0, cap - current_hour_delivered)
     return cap
-
-
-def export_kwh_for_slot(
-    d_iso: str,
-    hour: int,
-    *,
-    pv_kwh: float,
-    load_base_kwh: float,
-    plan: DailyPlan | None,
-) -> float:
-    """Planowany eksport netto (planer) lub heurystyka PV − load_base."""
-    if plan is not None:
-        from planner.plan_store import hour_plan_from
-
-        hp = hour_plan_from(plan, date.fromisoformat(d_iso), hour)
-        if hp is not None:
-            return max(0.0, float(hp.target_net_kwh))
-    return max(0.0, pv_kwh - load_base_kwh)
 
 
 def is_cheap_slot(

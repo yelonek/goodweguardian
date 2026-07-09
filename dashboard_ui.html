@@ -69,17 +69,31 @@
     table.pv-pyramid .pv-bar { display: inline-block; height: 10px; border-radius: 3px; background: rgba(80, 180, 100, 0.75); vertical-align: middle; }
     table.pv-pyramid tr.pyramid-cheap td { background: rgba(120, 220, 140, 0.06); }
     table.pv-pyramid tr.pyramid-mid td { background: rgba(255, 200, 80, 0.06); }
-    .pv-pyramid-block { margin-top: 16px; max-width: 720px; }
+    .pv-pyramid-block { margin-top: 16px; max-width: 960px; }
     .pv-pyramid-block h3 { margin: 0 0 6px; font-size: 1rem; }
-    .pv-pyramid-summary { display: flex; flex-wrap: wrap; gap: 10px; margin: 8px 0 10px; }
-    .pv-pyramid-hero { margin: 10px 0 14px; }
-    .pv-pyramid-hero .card { padding: 14px 18px; background: rgba(13, 128, 80, 0.12); border: 1px solid rgba(13, 128, 80, 0.35); }
-    .pv-pyramid-hero .card-key { font-size: 13px; font-weight: 600; opacity: 0.85; }
-    .pv-pyramid-hero .card-val { font-size: 1.75rem; font-weight: 700; color: #0d8050; line-height: 1.2; }
-    .pv-pyramid-day-section { margin: 14px 0 10px; }
-    .pv-pyramid-day-section h4 { margin: 0 0 8px; font-size: 0.95rem; }
-    .pv-pyramid-subtitle { margin: 16px 0 6px; font-size: 0.9rem; font-weight: 600; }
-    .pv-pyramid-table-block { margin-bottom: 12px; }
+    .pv-pyramid-compact {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 16px;
+      margin-top: 10px;
+    }
+    @media (min-width: 760px) {
+      .pv-pyramid-compact { grid-template-columns: 1fr 1fr; }
+    }
+    .pv-pyramid-col {
+      padding: 12px 14px;
+      border-radius: 10px;
+      background: rgba(127,127,127,0.06);
+      border: 1px solid rgba(127,127,127,0.2);
+    }
+    .pv-pyramid-col h4 { margin: 0 0 10px; font-size: 0.95rem; }
+    .pv-pyramid-nums { display: flex; flex-wrap: wrap; gap: 12px 20px; margin-bottom: 10px; }
+    .pv-pyramid-num { min-width: 7rem; }
+    .pv-pyramid-num .label { font-size: 11px; opacity: 0.75; line-height: 1.3; }
+    .pv-pyramid-num .val { font-size: 1.45rem; font-weight: 700; color: #0d8050; font-variant-numeric: tabular-nums; }
+    .pv-pyramid-num.net .val { font-size: 1.1rem; font-weight: 600; color: inherit; opacity: 0.92; }
+    table.pv-pyramid { width: 100%; font-size: 12px; }
+    table.pv-pyramid .pv-bar-wrap { min-width: 80px; }
     .settings-block { margin-bottom: 28px; }
     .settings-block h3 { margin: 0 0 10px; font-size: 1rem; }
     .setting-lead { font-size: 13px; line-height: 1.45; margin: 0 0 12px; max-width: 640px; }
@@ -191,80 +205,45 @@
       <div class="page-hdr"><h2>Stan bieżący</h2></div>
       <div class="grid" id="cards"></div>
       <div class="pv-pyramid-block card" id="pvPyramidBlock" style="display:none;">
-        <h3>PV a cena RCE (dziś + jutro)</h3>
+        <h3>Tania energia PV (RCE &lt;60 gr)</h3>
         <p class="muted setting-lead" style="font-size:12px; margin:0 0 8px;">
-          Ile energii <strong>wyprodukuje PV</strong> w godzinach z tanim eksportem (RCE).
-          Minione godziny — fakty z telemetrii; reszta — prognoza p50. Pomaga zaplanować CWU, EV, pralkę.
+          Ile <strong>taniego PV</strong> zostało dziś i ile będzie jutro (prognoza p50).
+          <strong>Po load</strong> — nadwyżka po odjęciu domu (load_base p50), jak w planowaniu EV.
         </p>
-        <div class="pv-pyramid-hero" id="pvPyramidHero"></div>
-        <div class="pv-pyramid-day-section">
-          <h4>Dziś</h4>
-          <div class="pv-pyramid-summary" id="pvPyramidTodaySummary"></div>
+        <div class="pv-pyramid-compact">
+          <div class="pv-pyramid-col" id="pvPyramidTodayCol">
+            <h4>Dziś — zostało</h4>
+            <div class="pv-pyramid-nums" id="pvPyramidTodayNums"></div>
+            <table class="pv-pyramid">
+              <thead>
+                <tr>
+                  <th>Próg</th>
+                  <th class="grp-pv">kWh</th>
+                  <th class="grp-pv pv-bar-wrap">udział</th>
+                </tr>
+              </thead>
+              <tbody id="pvPyramidRowsToday"></tbody>
+            </table>
+          </div>
+          <div class="pv-pyramid-col" id="pvPyramidTomorrowCol">
+            <h4>Jutro</h4>
+            <div class="pv-pyramid-nums" id="pvPyramidTomorrowNums"></div>
+            <table class="pv-pyramid">
+              <thead>
+                <tr>
+                  <th>Próg</th>
+                  <th class="grp-pv">kWh</th>
+                  <th class="grp-pv pv-bar-wrap">udział</th>
+                </tr>
+              </thead>
+              <tbody id="pvPyramidRowsTomorrow"></tbody>
+            </table>
+          </div>
         </div>
-        <div class="pv-pyramid-day-section">
-          <h4>Jutro</h4>
-          <div class="pv-pyramid-summary" id="pvPyramidTomorrowSummary"></div>
-        </div>
-        <div class="muted" id="pvPyramidMeta" style="font-size:11px; margin-bottom:6px;"></div>
-        <div class="muted" id="pvPyramidWarnings" style="font-size:11px; margin-bottom:6px;"></div>
-        <div class="pv-pyramid-table-block">
-          <div class="pv-pyramid-subtitle">Dziś — zostało</div>
-          <table class="pv-pyramid">
-            <thead>
-              <tr>
-                <th>Próg RCE</th>
-                <th class="grp-pv">kWh skumul.</th>
-                <th class="grp-pv">w warstwie</th>
-                <th class="grp-pv pv-bar-wrap">udział</th>
-              </tr>
-            </thead>
-            <tbody id="pvPyramidRowsRemaining"></tbody>
-          </table>
-        </div>
-        <div class="pv-pyramid-table-block">
-          <div class="pv-pyramid-subtitle">Dziś — było</div>
-          <table class="pv-pyramid">
-            <thead>
-              <tr>
-                <th>Próg RCE</th>
-                <th class="grp-pv">kWh skumul.</th>
-                <th class="grp-pv">w warstwie</th>
-                <th class="grp-pv pv-bar-wrap">udział</th>
-              </tr>
-            </thead>
-            <tbody id="pvPyramidRowsPast"></tbody>
-          </table>
-        </div>
-        <div class="pv-pyramid-table-block">
-          <div class="pv-pyramid-subtitle">Dziś — razem</div>
-          <table class="pv-pyramid">
-            <thead>
-              <tr>
-                <th>Próg RCE</th>
-                <th class="grp-pv">kWh skumul.</th>
-                <th class="grp-pv">w warstwie</th>
-                <th class="grp-pv pv-bar-wrap">udział</th>
-              </tr>
-            </thead>
-            <tbody id="pvPyramidRowsTodayTotal"></tbody>
-          </table>
-        </div>
-        <div class="pv-pyramid-table-block">
-          <div class="pv-pyramid-subtitle">Jutro</div>
-          <table class="pv-pyramid">
-            <thead>
-              <tr>
-                <th>Próg RCE</th>
-                <th class="grp-pv">kWh skumul.</th>
-                <th class="grp-pv">w warstwie</th>
-                <th class="grp-pv pv-bar-wrap">udział</th>
-              </tr>
-            </thead>
-            <tbody id="pvPyramidRowsTomorrow"></tbody>
-          </table>
-        </div>
+        <div class="muted" id="pvPyramidMeta" style="font-size:11px; margin-top:10px;"></div>
+        <div class="muted" id="pvPyramidWarnings" style="font-size:11px; margin-top:4px;"></div>
         <p class="muted" style="font-size:11px; margin:8px 0 0;">
-          Próg 60 gr ≈ taryfa dzienna G12 (~59 gr). Wiersz ≥60 gr — PV w godzinach droższego eksportu.
+          Próg 60 gr ≈ taryfa dzienna G12 (~59 gr). Zielone paski — warstwy RCE; ≥60 gr — droższy eksport.
         </p>
       </div>
     </section>

@@ -11,9 +11,9 @@ from ev_charging_plan import (
     allocate_ev_schedule,
     build_horizon_slot_rows,
     compute_cheap_budget,
-    export_kwh_for_slot,
     ev_schedule_map,
 )
+from pv_pyramid import export_kwh_for_slot
 from planner.models import DailyPlan, HourPlan
 
 

@@ -105,3 +105,42 @@ def test_pyramid_tier_layers_incremental(fixed_now: datetime) -> None:
 
 def test_pyramid_tiers_count() -> None:
     assert len(PV_PYRAMID_TIERS_GR) == 6
+
+
+def test_pyramid_cheap_surplus_after_load(fixed_now: datetime) -> None:
+    """Tanio po load_base p50: PV − load (bez planu) w godzinach RCE < 60 gr."""
+    today = fixed_now.date().isoformat()
+
+    def pricing(local_date):
+        return _pricing_day(rce_by_hour={h: 0.25 for h in range(24)})
+
+    pv_hours = [{"date": today, "hour": h, "pv_kw": 2.0} for h in range(14, 24)]
+
+    def load_hours(**_kwargs):
+        return {
+            "hours": [
+                {
+                    "date": today,
+                    "hour": h,
+                    "load_kwh_p50": 0.5,
+                    "load_base_kwh_p50": 0.5,
+                }
+                for h in range(14, 24)
+            ]
+        }
+
+    with (
+        patch("pv_pyramid.pricing_day_breakdown", side_effect=pricing),
+        patch("guardian_dashboard._pricing_for_day_quiet", side_effect=pricing),
+        patch("pv_pyramid.fetch_hourly_pv_forecast_with_history", return_value={"hours": pv_hours}),
+        patch("pv_pyramid.forecast_load_hours", side_effect=load_hours),
+        patch("guardian_dashboard._telemetry_hourly_load_pv_actuals", return_value=({}, {})),
+        patch("planner.plan_store.load_latest_plan", return_value=None),
+        patch("tesla_wall_charger.twc_enabled", return_value=False),
+    ):
+        p = build_pv_pyramid_payload(now=fixed_now)
+
+    remaining = p["segments"]["today"]["remaining"]
+    assert remaining["cheap_kwh"] == pytest.approx(10 * 2.0)
+    assert remaining["cheap_surplus_kwh"] == pytest.approx(10 * 1.5)
+    assert remaining["load_base_kwh"] == pytest.approx(10 * 0.5)
