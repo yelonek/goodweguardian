@@ -171,21 +171,12 @@ async function loadHistory(force) {
     const hist = await fetchJson("/api/history?limit=200", 15000);
     document.getElementById("hist").innerHTML = (hist.rows || []).map((r) => {
       const f = r.fields || {};
-      const reasonRaw = String(f.reason || "");
-      let reasonShown = reasonRaw;
-      const neutralTarget = reasonRaw.match(/mode=neutral target_net=([+-]?\d+(?:\.\d+)?)/);
-      if (neutralTarget) {
-        const target = Number(neutralTarget[1]);
-        if (!Number.isNaN(target)) {
-          reasonShown = `neutral (target ${target.toFixed(2)} kWh)`;
-        }
-      }
       const cmd = (f.cmd_enabled === null) ? "—" : `${f.cmd_enabled ? "On" : "Off"} ${fmt(f.cmd_pct)}% ${fmt(f.cmd_duration_s)}s`;
       const closing = f.closing_prev_hour_kwh;
       const balCell = (closing !== null && closing !== undefined)
         ? `<td title="bilans końcowy poprzedniej godziny (∑)">${fmt(closing)} <span class="muted">∑</span></td>`
         : `<td>${fmt(f.remaining_kwh)}</td>`;
-      return `<tr><td>${fmt(f.ts)}</td>${balCell}<td>${fmt(f.grid_kw)}</td><td>${fmt(f.pv_kw)}</td><td>${fmt(f.house_w)}</td><td>${fmt(f.soc_pct)}</td><td>${fmt(f.p_bat_w)}</td><td class="muted">${fmt(reasonShown)}</td><td class="muted">${cmd}</td></tr>`;
+      return `<tr><td>${fmt(f.ts)}</td>${balCell}<td>${fmt(f.grid_kw)}</td><td>${fmt(f.pv_kw)}</td><td>${fmt(f.house_w)}</td><td>${fmt(f.soc_pct)}</td><td>${fmt(f.p_bat_w)}</td><td class="muted">${fmt(f.reason)}</td><td class="muted">${cmd}</td></tr>`;
     }).join("");
     pageLoaded.history = true;
     st.textContent = "OK";
