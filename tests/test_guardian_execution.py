@@ -44,6 +44,25 @@ def test_export_pv_surplus_steady_discharge() -> None:
     assert d.reason == "export_pv_surplus"
 
 
+def test_export_pv_surplus_low_soc_skips_soc_defense_at_hour_start() -> None:
+    """Regresja 2026-07-10: przy niskim SOC i bilansie 0 → eksport PV, nie soc_low_pv_soak."""
+    d = decide_plan_execution(
+        _inp(
+            soc_pct=15.0,
+            remaining_kwh=0.0,
+            pv_w=6000.0,
+            consumption_w=2500.0,
+            low_soc_discharge_target_w=2500.0,
+            time_to_end_s=3600.0,
+        ),
+        _row("export_pv_surplus"),
+        cfg=WatchdogConfig(soc_low_threshold_pct=15.0),
+    )
+    assert d.reason == "export_pv_surplus"
+    assert d.power_pct == 1
+    assert d.mode == "discharge"
+
+
 def test_export_pv_surplus_deficit_only_below_zero() -> None:
     d = decide_plan_execution(
         _inp(remaining_kwh=-0.4, pv_w=500.0, consumption_w=2000.0),
