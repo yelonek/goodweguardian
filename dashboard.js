@@ -48,10 +48,56 @@ function signedMetricClass(n, invert) {
   return pos ? "val-pos" : "val-neg";
 }
 
+function formatGuardianReason(reason) {
+  if (reason === null || reason === undefined || reason === "—") return escapeHtml(fmt(reason));
+  let base = String(reason).trim();
+  if (!base) return "—";
+
+  let controlOff = null;
+  const controlMatch = base.match(/\s+\[control_off:([^\]]+)\]\s*$/);
+  if (controlMatch) {
+    controlOff = controlMatch[1];
+    base = base.slice(0, controlMatch.index);
+  }
+
+  const planMatch = base.match(/\s+\[plan_exec:([^\]]+)\]\s*$/);
+  if (!planMatch) return escapeHtml(base);
+
+  const decision = base.slice(0, planMatch.index).trim();
+  const inside = planMatch[1];
+  const lines = [];
+
+  if (decision) lines.push(`<span class="reason-decision">${escapeHtml(decision)}</span>`);
+
+  if (/\bno_policy\b/.test(inside)) {
+    const src = inside.replace(/\s*no_policy\s*/g, " ").trim();
+    if (src) lines.push(`<span class="reason-meta">plan_exec: ${escapeHtml(src)}</span>`);
+    lines.push(`<span class="reason-meta">brak policy</span>`);
+  } else {
+    const execSrc = inside.match(/^(\S+)/)?.[1];
+    const mode = inside.match(/\bmode=(\S+)/)?.[1];
+    const target = inside.match(/\btarget_net=([+-]?\d+(?:\.\d+)?)/)?.[1];
+    const actual = inside.match(/\bactual_net=([+-]?\d+(?:\.\d+)?)/)?.[1];
+    if (execSrc) lines.push(`<span class="reason-meta">plan_exec: ${escapeHtml(execSrc)}</span>`);
+    if (mode) lines.push(`<span class="reason-meta">mode: ${escapeHtml(mode)}</span>`);
+    if (target != null && actual != null) {
+      lines.push(`<span class="reason-net">net ${escapeHtml(actual)} → ${escapeHtml(target)} kWh</span>`);
+    }
+  }
+
+  if (controlOff) {
+    lines.push(`<span class="reason-meta">control off: ${escapeHtml(controlOff)}</span>`);
+  }
+
+  return lines.join("<br>") || escapeHtml(base);
+}
+
 function renderStatus(f) {
   const el = document.getElementById("statusBlock");
   if (!el) return;
-  const reason = fmt(f.reason);
+  const reasonRaw = f.reason;
+  const reasonHtml = formatGuardianReason(reasonRaw);
+  const reasonTitle = reasonRaw != null && reasonRaw !== "" ? String(reasonRaw) : "—";
   const intervene = f.intervene === true || f.intervene === "true";
   const cmdOn = f.cmd_enabled === true || f.cmd_enabled === "true";
   const soc = f.soc_pct != null && !Number.isNaN(Number(f.soc_pct)) ? `${Number(f.soc_pct).toFixed(0)} %` : "—";
@@ -95,7 +141,7 @@ function renderStatus(f) {
     `</div></div>` +
     `<div class="status-col status-col-wide">` +
     `<h4>Guardian</h4>` +
-    `<div class="status-reason" title="${escapeHtml(reason)}">${reason}</div>` +
+    `<div class="status-reason" title="${escapeHtml(reasonTitle)}">${reasonHtml}</div>` +
     `<div class="status-nums status-nums-inline">` +
     statusMetric("Do końca slotu", fmtTimeLeft(f.time_to_end_s)) +
     statusMetric("Polecenie", cmdLabel) +
