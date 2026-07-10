@@ -64,7 +64,7 @@ from planner.policy_output import (
 from planner.telemetry import hourly_actuals
 from tesla_wall_charger import hourly_ev_kwh_from_telemetry, twc_enabled
 
-app = FastAPI(title="GoodWeGuardian Dashboard", version="0.1.0")
+app = FastAPI(title="GoodWeGuardian Dashboard", version="0.2.0")
 
 logger = logging.getLogger(__name__)
 
