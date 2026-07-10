@@ -723,6 +723,156 @@ async function loadForecast(force) {
   }
 }
 
+function pvCorrMetric(label, value, extraClass = "", title = "") {
+  const t = title ? ` title="${escapeHtml(title)}"` : "";
+  return `<div class="pv-correction-metric ${extraClass}"${t}><div class="label">${label}</div><div class="val">${value}</div></div>`;
+}
+
+function fmtKwh(v, d = 3) {
+  if (v === null || v === undefined || Number.isNaN(Number(v))) return "—";
+  return `${Number(v).toFixed(d)} kWh`;
+}
+
+function renderPvCorrectionChart(curve, alpha) {
+  const svg = document.getElementById("pvCorrectionChart");
+  if (!svg || !curve || !curve.length) {
+    if (svg) svg.innerHTML = "";
+    return;
+  }
+  const w = 600;
+  const h = 220;
+  const pad = { l: 36, r: 12, t: 12, b: 28 };
+  const innerW = w - pad.l - pad.r;
+  const innerH = h - pad.t - pad.b;
+  const ymax = Math.max(
+    0.05,
+    ...curve.map((p) => Math.max(p.solcast_kwh || 0, p.actual_kwh || 0, p.plan_kwh || 0))
+  );
+  const x = (m) => pad.l + (m / 60) * innerW;
+  const y = (v) => pad.t + innerH - (v / ymax) * innerH;
+  const linePath = (key) => {
+    const pts = curve.filter((p) => p[key] != null);
+    if (!pts.length) return "";
+    return pts.map((p, i) => `${i ? "L" : "M"}${x(p.minute).toFixed(1)},${y(p[key]).toFixed(1)}`).join(" ");
+  };
+  const nowX = x(Math.min(60, Math.max(0, alpha * 60)));
+  svg.innerHTML =
+    `<rect x="0" y="0" width="${w}" height="${h}" fill="transparent"/>` +
+    `<text x="${pad.l}" y="${h - 6}" font-size="10" fill="currentColor" opacity="0.6">:00</text>` +
+    `<text x="${w - pad.r - 16}" y="${h - 6}" font-size="10" fill="currentColor" opacity="0.6">:60</text>` +
+    `<path class="line-solcast" d="${linePath("solcast_kwh")}"/>` +
+    `<path class="line-actual" d="${linePath("actual_kwh")}"/>` +
+    `<path class="line-plan" d="${linePath("plan_kwh")}"/>` +
+    `<line class="now-v" x1="${nowX.toFixed(1)}" y1="${pad.t}" x2="${nowX.toFixed(1)}" y2="${h - pad.b}"/>` +
+    `<text x="${Math.min(w - 40, nowX + 4)}" y="${pad.t + 10}" font-size="10" fill="currentColor">teraz</text>`;
+}
+
+function renderPvCorrectionBars(projections) {
+  const el = document.getElementById("pvCorrectionBars");
+  if (!el || !projections) return;
+  const items = [
+    ["Solcast p50", projections.solcast_full_hour_kwh, "base"],
+    ["k_intra only", projections.k_intra_only_kwh, "alt"],
+    ["rate only", projections.rate_only_kwh, "alt"],
+    ["Plan finalny", projections.final_plan_kwh, ""],
+  ].filter(([, v]) => v != null);
+  const max = Math.max(0.05, ...items.map(([, v]) => Number(v)));
+  el.innerHTML = items.map(([label, val, cls]) => {
+    const pct = Math.max(2, (Number(val) / max) * 100);
+    return `<div class="pv-correction-bar-item"><div class="bar-label">${escapeHtml(label)} · ${fmtKwh(val, 2)}</div>` +
+      `<div class="pv-correction-bar"><span class="${cls || ""}" style="width:${pct.toFixed(0)}%"></span></div></div>`;
+  }).join("");
+}
+
+function renderPvCorrectionBlock(payload) {
+  const c = payload.correction || {};
+  const p = payload.projections || {};
+  const alphaPct = c.alpha != null ? `${(Number(c.alpha) * 100).toFixed(0)}%` : "—";
+  const kRaw = c.k_raw != null ? Number(c.k_raw).toFixed(3) : "—";
+  const kIntra = c.k_intra != null ? Number(c.k_intra).toFixed(3) : "—";
+  const clipNow = c.clip_min_effective != null
+    ? `[${Number(c.clip_min_effective).toFixed(2)}, ${Number(c.clip_max_effective).toFixed(2)}]`
+    : "—";
+
+  document.getElementById("pvCorrectionMetrics").innerHTML =
+    pvCorrMetric("Godzina", `${payload.current_hour}:00`, "hero") +
+    pvCorrMetric("α (minuta)", alphaPct) +
+    pvCorrMetric("A_so_far", fmtKwh(c.a_so_far_kwh, 3)) +
+    pvCorrMetric("F50 Solcast", fmtKwh(c.f50_current_kwh, 2)) +
+    pvCorrMetric("k_raw", kRaw) +
+    pvCorrMetric("k_intra", kIntra) +
+    pvCorrMetric("Clip efektywny", clipNow, "", "Dynamiczne granice clipu zależne od α") +
+    pvCorrMetric("recent kW", c.recent_kw != null ? `${Number(c.recent_kw).toFixed(2)} kW` : "—") +
+    pvCorrMetric("Plan h", fmtKwh(p.final_plan_kwh, 2), "hero") +
+    pvCorrMetric("Plan h+1", fmtKwh(c.pv_plan_next_kwh, 2)) +
+    pvCorrMetric("Metoda", fmt(c.plan_method || c.reason));
+
+  renderPvCorrectionChart(payload.projection_curve || [], Number(c.alpha || 0));
+  renderPvCorrectionBars(p);
+
+  const clipRows = document.getElementById("pvCorrectionClipRows");
+  if (clipRows) {
+    clipRows.innerHTML = (payload.clip_timeline || []).map((row) =>
+      `<tr><td>${Number(row.alpha).toFixed(2)}</td><td>${Number(row.clip_min).toFixed(3)}</td><td>${Number(row.clip_max).toFixed(3)}</td></tr>`
+    ).join("");
+  }
+  const clipNowEl = document.getElementById("pvCorrectionClipNow");
+  if (clipNowEl) {
+    const w = c.dynamic_clip_weight != null ? (Number(c.dynamic_clip_weight) * 100).toFixed(0) : "0";
+    clipNowEl.textContent = c.dynamic_clip_enabled
+      ? `Teraz: w=${w}% szerokiego clipu · k_raw=${kRaw} → k_intra=${kIntra}`
+      : "Dynamiczny clip wyłączony — stały clip 0.65–1.35";
+  }
+
+  const dayRows = document.getElementById("pvCorrectionDayRows");
+  if (dayRows) {
+    dayRows.innerHTML = (payload.today_hours || []).map((row) => {
+      const cls = row.in_progress ? "in-progress" : (row.complete ? "complete" : "");
+      const actual = row.complete
+        ? fmtKwh(row.actual_kwh, 2)
+        : (row.in_progress ? fmtKwh(row.actual_so_far_kwh, 3) + "*" : "—");
+      const plan = row.pv_plan_kwh != null ? fmtKwh(row.pv_plan_kwh, 2) : "—";
+      let delta = "—";
+      if (row.delta_kwh != null) {
+        const d = Number(row.delta_kwh);
+        delta = (d >= 0 ? "+" : "") + d.toFixed(2);
+      } else if (row.delta_so_far_kwh != null) {
+        const d = Number(row.delta_so_far_kwh);
+        delta = (d >= 0 ? "+" : "") + d.toFixed(2) + "*";
+      }
+      return `<tr class="${cls}"><td>${String(row.hour).padStart(2, "0")}</td>` +
+        `<td>${fmtKwh(row.f50_kwh, 2)}</td><td>${actual}</td><td>${plan}</td><td>${delta}</td></tr>`;
+    }).join("");
+  }
+
+  const meta = document.getElementById("pvCorrectionMeta");
+  if (meta) {
+    meta.textContent = [
+      `updated: ${payload.now || "—"}`,
+      c.enabled ? "correction on" : "correction off",
+      c.source_current ? `source: ${c.source_current}` : "",
+      p.remaining_kwh != null ? `reszta h: ${Number(p.remaining_kwh).toFixed(3)} kWh` : "",
+      c.rate_blend_weight ? `rate blend w=${(Number(c.rate_blend_weight) * 100).toFixed(0)}%` : "",
+    ].filter(Boolean).join(" · ");
+  }
+}
+
+async function loadPvCorrection(force) {
+  if (!force && pageLoaded["pv-correction"]) return;
+  const st = document.getElementById("pvCorrectionStatus");
+  if (!pageLoaded["pv-correction"] && st) st.textContent = "ładowanie…";
+  try {
+    const payload = await fetchJson("/api/pv-correction", 15000);
+    renderPvCorrectionBlock(payload);
+    pageLoaded["pv-correction"] = true;
+    if (st) st.textContent = "OK";
+    setUpdated(true);
+  } catch (e) {
+    if (st) st.textContent = String(e);
+    setUpdated(false);
+  }
+}
+
 function kpiSelectedDay() {
   const el = document.getElementById("kpiDay");
   return el && el.value ? el.value : new Date().toISOString().slice(0, 10);
@@ -1227,6 +1377,7 @@ const PAGE_LOADERS = {
   overview: loadOverview,
   history: loadHistory,
   forecast: loadForecast,
+  "pv-correction": loadPvCorrection,
   kpi: loadKpi,
   slots: loadSlots,
   settings: loadSettings,
@@ -1237,6 +1388,7 @@ const PAGE_POLL_MS = {
   overview: 15000,
   history: 15000,
   forecast: 60000,
+  "pv-correction": 15000,
   kpi: 60000,
   slots: 20000,
   settings: 20000,

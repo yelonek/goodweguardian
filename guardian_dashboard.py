@@ -62,6 +62,14 @@ from planner.policy_output import (
     policy_rows_by_slot,
 )
 from planner.telemetry import hourly_actuals
+from planner.pv_correction import (
+    apply_pv_correction,
+    build_pv_intra_state,
+    effective_clip_bounds,
+    pv_minute_series_in_hour,
+    pv_plan_current_hour_kwh,
+    pv_plan_next_hour_kwh,
+)
 from tesla_wall_charger import hourly_ev_kwh_from_telemetry, twc_enabled
 
 app = FastAPI(title="GoodWeGuardian Dashboard", version="0.2.0")
@@ -1148,6 +1156,181 @@ def _invalidate_combined_forecast_cache() -> None:
     _combined_forecast_cache = None
 
 
+_PV_CORRECTION_TTL_S = 10.0
+_pv_correction_cache: tuple[float, dict[str, Any]] | None = None
+
+
+def _pv_correction_projection_curve(
+    *,
+    f50_kwh: float,
+    alpha: float,
+    a_so_far_kwh: float,
+    pv_plan_kwh: float | None,
+    minute_series: list[dict[str, float | int]],
+) -> list[dict[str, float]]:
+    """Krzywe kumulatywne [kWh] do wykresu: Solcast vs actual vs plan."""
+    actual_by_min: dict[int, float] = {
+        int(p["minute"]): float(p["cum_kwh"]) for p in minute_series
+    }
+    now_minute = max(0, min(59, int(round(alpha * 60))))
+    points: list[dict[str, float]] = []
+    for minute in range(0, 61):
+        solcast = f50_kwh * minute / 60.0
+        actual = actual_by_min.get(minute)
+        plan: float | None = None
+        if pv_plan_kwh is not None and minute >= now_minute and now_minute < 60:
+            frac = (minute - now_minute) / max(1, 60 - now_minute)
+            plan = a_so_far_kwh + (pv_plan_kwh - a_so_far_kwh) * frac
+        elif actual is not None:
+            plan = actual
+        points.append(
+            {
+                "minute": float(minute),
+                "solcast_kwh": solcast,
+                "actual_kwh": actual if actual is not None else None,
+                "plan_kwh": plan,
+            }
+        )
+    return points
+
+
+def _pv_correction_payload() -> dict[str, Any]:
+    """Stan korekty PV na bieżącą godzinę + kontekst doby (dashboard)."""
+    now = datetime.now(ZoneInfo(TELEMETRY_TZ)).replace(tzinfo=None)
+    today = now.date()
+    d_iso = today.isoformat()
+    current_hour = now.hour
+
+    try:
+        pv_payload = fetch_hourly_pv_forecast_with_history(hours_back=24, hours_forward=4)
+    except (RuntimeError, httpx.HTTPError) as e:
+        logger.warning("pv correction dashboard: forecast unavailable: %s", e)
+        pv_payload = {"hours": []}
+
+    pv_by_key: dict[tuple[str, int], dict] = {}
+    for row in pv_payload.get("hours", []):
+        pv_by_key[(str(row["date"]), int(row["hour"]))] = row
+
+    current_key = (d_iso, current_hour)
+    if current_hour < 23:
+        next_slot: tuple[str, int] = (d_iso, current_hour + 1)
+    else:
+        next_slot = ((today + timedelta(days=1)).isoformat(), 0)
+    slots = [current_key, next_slot]
+
+    f50_row = pv_by_key.get(current_key, {})
+    f50_current = float(f50_row.get("pv_kw") or 0.0)
+
+    state = build_pv_intra_state(now, f50_current_kwh=f50_current)
+    alpha = float(state.get("alpha") or 0.0)
+    a_so_far = state.get("a_so_far_kwh")
+    k_intra = state.get("k_intra")
+    minute_series = pv_minute_series_in_hour(now)
+
+    corrected, sources, apply_meta = apply_pv_correction(slots, pv_by_key, now=now)
+
+    pv_plan_kwh = corrected.get(current_key)
+    pv_plan_next = corrected.get(slots[1])
+    k_plan_only: float | None = None
+    rate_plan_only: float | None = None
+    if k_intra is not None and a_so_far is not None:
+        k_plan_only, _ = pv_plan_current_hour_kwh(
+            f50_kwh=f50_current,
+            a_so_far_kwh=float(a_so_far),
+            alpha=alpha,
+            k_intra=float(k_intra),
+            recent_kw=state.get("recent_kw"),
+            rate_enabled=False,
+        )
+        recent_kw = state.get("recent_kw")
+        if recent_kw is not None:
+            rate_plan_only = max(
+                float(a_so_far),
+                float(a_so_far) + float(recent_kw) * (1.0 - alpha),
+            )
+
+    remaining_kwh: float | None = None
+    if pv_plan_kwh is not None and a_so_far is not None:
+        remaining_kwh = max(0.0, float(pv_plan_kwh) - float(a_so_far))
+
+    clip_samples = [
+        {
+            "alpha": round(a, 2),
+            "clip_min": round(effective_clip_bounds(a)[0], 3),
+            "clip_max": round(effective_clip_bounds(a)[1], 3),
+        }
+        for a in [0.0, 0.15, 0.25, 0.4, 0.55, 0.7, 1.0]
+    ]
+
+    _, pv_actual = _telemetry_hourly_load_pv_actuals(today)
+    today_hours: list[dict[str, Any]] = []
+    for h in range(24):
+        row = pv_by_key.get((d_iso, h))
+        act = pv_actual.get(h)
+        f50_h = float(row.get("pv_kw") or 0.0) if row else None
+        if f50_h is None and act is None:
+            continue
+        if (f50_h or 0.0) < 0.05 and (act or 0.0) < 0.05:
+            continue
+        entry: dict[str, Any] = {
+            "hour": h,
+            "f50_kwh": f50_h,
+            "complete": h < current_hour,
+            "in_progress": h == current_hour,
+        }
+        if h < current_hour and act is not None:
+            entry["actual_kwh"] = act
+            entry["delta_kwh"] = act - float(f50_h or 0.0)
+        if h == current_hour:
+            entry["actual_so_far_kwh"] = a_so_far
+            entry["pv_plan_kwh"] = pv_plan_kwh
+            entry["source"] = sources.get(current_key)
+            if f50_h is not None and a_so_far is not None:
+                entry["delta_so_far_kwh"] = float(a_so_far) - f50_h * alpha
+        today_hours.append(entry)
+
+    return {
+        "now": now.isoformat(timespec="seconds"),
+        "date": d_iso,
+        "current_hour": current_hour,
+        "correction": {
+            **state,
+            **{k: apply_meta.get(k) for k in ("pv_plan_kwh", "rate_plan_kwh", "rate_blend_weight", "plan_method")},
+            "pv_plan_next_kwh": pv_plan_next,
+            "source_current": sources.get(current_key),
+            "source_next": sources.get(slots[1]),
+        },
+        "projections": {
+            "solcast_full_hour_kwh": f50_current,
+            "k_intra_only_kwh": k_plan_only,
+            "rate_only_kwh": rate_plan_only,
+            "final_plan_kwh": pv_plan_kwh,
+            "remaining_kwh": remaining_kwh,
+        },
+        "minute_series": minute_series,
+        "projection_curve": _pv_correction_projection_curve(
+            f50_kwh=f50_current,
+            alpha=alpha,
+            a_so_far_kwh=float(a_so_far or 0.0),
+            pv_plan_kwh=float(pv_plan_kwh) if pv_plan_kwh is not None else None,
+            minute_series=minute_series,
+        ),
+        "clip_timeline": clip_samples,
+        "today_hours": today_hours,
+    }
+
+
+def _get_pv_correction_cached() -> dict[str, Any]:
+    global _pv_correction_cache
+    mono = time.monotonic()
+    cached = _pv_correction_cache
+    if cached is not None and (mono - cached[0]) < _PV_CORRECTION_TTL_S:
+        return cached[1]
+    payload = _pv_correction_payload()
+    _pv_correction_cache = (mono, payload)
+    return payload
+
+
 def _replan_rolling_after_ev_change() -> dict[str, Any]:
     """Po zmianie deklaracji EV — natychmiastowy rolling plan (jak cron co 10 min)."""
     plan = build_rolling_plan()
@@ -1312,6 +1495,12 @@ def _get_pv_pyramid_cached() -> dict[str, Any]:
 @app.get("/api/pv-pyramid")
 async def api_pv_pyramid() -> JSONResponse:
     payload = await _run_heavy(_get_pv_pyramid_cached)
+    return JSONResponse(payload)
+
+
+@app.get("/api/pv-correction")
+async def api_pv_correction() -> JSONResponse:
+    payload = await _run_heavy(_get_pv_correction_cached)
     return JSONResponse(payload)
 
 

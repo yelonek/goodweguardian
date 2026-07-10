@@ -206,6 +206,50 @@
     table.pv-pyramid .pv-bar { display: inline-block; height: 10px; border-radius: 3px; background: rgba(80, 180, 100, 0.75); vertical-align: middle; }
     table.pv-pyramid tr.pyramid-cheap td { background: rgba(120, 220, 140, 0.06); }
     table.pv-pyramid tr.pyramid-mid td { background: rgba(255, 200, 80, 0.06); }
+    .pv-correction-block { max-width: 1100px; }
+    .pv-correction-metrics {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+      gap: 10px;
+      margin: 12px 0 16px;
+    }
+    .pv-correction-metric {
+      padding: 10px 12px;
+      border-radius: 8px;
+      background: rgba(127,127,127,0.06);
+      border: 1px solid rgba(127,127,127,0.2);
+    }
+    .pv-correction-metric .label { font-size: 11px; opacity: 0.75; line-height: 1.3; }
+    .pv-correction-metric .val { font-size: 1.15rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .pv-correction-metric.hero .val { color: #0d8050; font-size: 1.35rem; }
+    .pv-correction-chart-wrap { margin: 16px 0; padding: 12px; border-radius: 10px; background: rgba(127,127,127,0.05); border: 1px solid rgba(127,127,127,0.2); }
+    .pv-correction-chart { width: 100%; height: 220px; display: block; }
+    .pv-correction-chart path.line-solcast { fill: none; stroke: rgba(120, 180, 255, 0.85); stroke-width: 2; stroke-dasharray: 6 4; }
+    .pv-correction-chart path.line-actual { fill: none; stroke: #0d8050; stroke-width: 2.5; }
+    .pv-correction-chart path.line-plan { fill: none; stroke: rgba(200, 120, 40, 0.95); stroke-width: 2; }
+    .pv-correction-chart line.now-v { stroke: rgba(255, 215, 0, 0.9); stroke-width: 1.5; stroke-dasharray: 4 3; }
+    .pv-correction-bars { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; margin: 12px 0; }
+    .pv-correction-bar-item { font-size: 11px; }
+    .pv-correction-bar-item .bar-label { opacity: 0.8; margin-bottom: 4px; }
+    .pv-correction-bar { height: 12px; border-radius: 4px; background: rgba(127,127,127,0.15); overflow: hidden; }
+    .pv-correction-bar > span { display: block; height: 100%; border-radius: 4px; background: rgba(80, 180, 100, 0.8); }
+    .pv-correction-bar > span.alt { background: rgba(200, 120, 40, 0.85); }
+    .pv-correction-bar > span.base { background: rgba(120, 180, 255, 0.75); }
+    .pv-correction-legend { display: flex; flex-wrap: wrap; gap: 12px 18px; font-size: 11px; margin-top: 8px; }
+    .pv-correction-legend i { display: inline-block; width: 18px; height: 3px; vertical-align: middle; margin-right: 4px; }
+    .pv-correction-legend i.solcast { background: rgba(120, 180, 255, 0.85); }
+    .pv-correction-legend i.actual { background: #0d8050; }
+    .pv-correction-legend i.plan { background: rgba(200, 120, 40, 0.95); }
+    table.pv-correction-day td, table.pv-correction-day th { text-align: right; font-variant-numeric: tabular-nums; font-size: 12px; }
+    table.pv-correction-day td:first-child, table.pv-correction-day th:first-child { text-align: left; }
+    table.pv-correction-day tr.in-progress td { background: rgba(255, 215, 0, 0.15); font-weight: 600; }
+    table.pv-correction-day tr.complete td { opacity: 0.85; }
+    table.pv-correction-clip td, table.pv-correction-clip th { text-align: right; font-size: 11px; font-variant-numeric: tabular-nums; }
+    table.pv-correction-clip td:first-child, table.pv-correction-clip th:first-child { text-align: left; }
+    .pv-correction-cols { display: grid; grid-template-columns: 1fr; gap: 16px; }
+    @media (min-width: 900px) {
+      .pv-correction-cols { grid-template-columns: 1.4fr 1fr; }
+    }
     .pv-pyramid-block { margin-top: 16px; max-width: 960px; }
     .pv-pyramid-block h3 { margin: 0 0 6px; font-size: 1rem; }
     .pv-pyramid-compact {
@@ -329,6 +373,7 @@
       <a href="#overview" data-page="overview">Przegląd</a>
       <a href="#history" data-page="history">Historia</a>
       <a href="#forecast" data-page="forecast">Prognoza</a>
+      <a href="#pv-correction" data-page="pv-correction">Korekta PV</a>
       <a href="#kpi" data-page="kpi">KPI</a>
       <a href="#slots" data-page="slots">Sloty</a>
       <a href="#settings" data-page="settings">Ustawienia</a>
@@ -486,6 +531,61 @@
         </thead>
         <tbody id="forecastRows"></tbody>
       </table>
+    </section>
+
+    <section id="page-pv-correction" class="page">
+      <div class="page-hdr">
+        <h2>Korekta PV (k_intra)</h2>
+        <span class="muted" id="pvCorrectionStatus"></span>
+      </div>
+      <p class="muted setting-lead" style="font-size:12px; max-width:960px;">
+        Telemetria bieżącej godziny vs prognoza Solcast p50. Planer używa skorygowanej wartości
+        (<strong>k_intra</strong> + opcjonalnie <strong>rate blend</strong> + <strong>dynamiczny clip</strong>).
+      </p>
+      <div class="pv-correction-block card" id="pvCorrectionBlock">
+        <div class="pv-correction-metrics" id="pvCorrectionMetrics"></div>
+        <div class="pv-correction-cols">
+          <div>
+            <h3 style="margin:0 0 8px; font-size:1rem;">Kumulacja w bieżącej godzinie</h3>
+            <div class="pv-correction-chart-wrap">
+              <svg class="pv-correction-chart" id="pvCorrectionChart" viewBox="0 0 600 220" preserveAspectRatio="none"></svg>
+              <div class="pv-correction-legend">
+                <span><i class="solcast"></i>Solcast p50 (liniowo)</span>
+                <span><i class="actual"></i>Telemetria (skumulowana)</span>
+                <span><i class="plan"></i>Plan skorygowany</span>
+              </div>
+            </div>
+            <div class="pv-correction-bars" id="pvCorrectionBars"></div>
+          </div>
+          <div>
+            <h3 style="margin:0 0 8px; font-size:1rem;">Dynamiczny clip k_intra</h3>
+            <p class="muted" style="font-size:11px; margin:0 0 8px;">
+              Granice clipu rozszerzają się wraz z α (ułamek minuty w godzinie) — wcześniej ostrożnie, później pełna korekta.
+            </p>
+            <table class="pv-correction-clip">
+              <thead>
+                <tr><th>α</th><th>k_min</th><th>k_max</th></tr>
+              </thead>
+              <tbody id="pvCorrectionClipRows"></tbody>
+            </table>
+            <div class="muted" id="pvCorrectionClipNow" style="font-size:11px; margin-top:8px;"></div>
+          </div>
+        </div>
+        <h3 style="margin:16px 0 8px; font-size:1rem;">Dziś — mean vs actual vs plan</h3>
+        <table class="pv-correction-day">
+          <thead>
+            <tr>
+              <th>h</th>
+              <th>Solcast p50</th>
+              <th>actual</th>
+              <th>plan skoryg.</th>
+              <th>Δ</th>
+            </tr>
+          </thead>
+          <tbody id="pvCorrectionDayRows"></tbody>
+        </table>
+        <div class="muted" id="pvCorrectionMeta" style="font-size:11px; margin-top:10px;"></div>
+      </div>
     </section>
 
     <section id="page-kpi" class="page">

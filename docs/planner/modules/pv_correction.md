@@ -31,8 +31,18 @@ Korekta **krótkoterminowa** (`k_intra`) na podstawie telemetrii bieżącej godz
 Gdy **F_elapsed > ε × α**:
 
 ```
-k_intra = clip(A_so_far / F_elapsed, k_min, k_max)
+k_raw = A_so_far / F_elapsed
+k_intra = clip(k_raw, k_min_eff, k_max_eff)
 ```
+
+**Dynamiczny clip** (domyślnie włączony): granice rozszerzają się z α (ułamek godziny):
+
+| α | k_min_eff | k_max_eff |
+|---|-----------|-----------|
+| ≤ 0.15 | 0.65 | 1.35 (stały) |
+| 0.55+ | 0.20 | 3.00 (szeroki) |
+
+Pomiędzy — interpolacja liniowa (`PV_CORRECTION_CLIP_RAMP_*`).
 
 Inaczej: brak korekty (`k_intra = None`, surowy Solcast).
 
@@ -40,11 +50,13 @@ Inaczej: brak korekty (`k_intra = None`, surowy Solcast).
 
 | Slot | pv_plan |
 |------|---------|
-| **bieżąca h** | `A_so_far + (1−α) × F50 × k_intra` |
+| **bieżąca h** | `A_so_far + (1−α) × F50 × k_intra`; opcjonalnie blend z `recent_kw × (1−α)` |
 | **h+1** | `k_intra × F50` |
 | **h+2…** | `F50` (Solcast) |
 
-Domyślnie: **ε = 0,1 kWh/h**, **k_min = 0,65**, **k_max = 1,35**.
+**Rate blend:** `plan = (1−w)×k_intra_plan + w×rate_plan`, `w` rośnie od α=0.2 do 0.7.
+
+Domyślnie: **ε = 0,1 kWh/h**, clip **0.65–1.35** (dynamicznie rozszerzany), rate window **15 min**.
 
 Wyłączenie: `PV_CORRECTION_ENABLED=false`.
 
