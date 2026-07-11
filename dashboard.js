@@ -731,11 +731,14 @@ function renderForecastBlock(forecast) {
     else if (n < -eps) cls = "delta-neg";
     return `<td class="${cls}">${(n >= 0 ? "+" : "") + n.toFixed(d)}</td>`;
   };
-  const isCheapExport = (r) =>
-    r.sell_pln_kwh != null
-    && Number(r.sell_pln_kwh) < RCE_CHEAP_THRESHOLD_PLN
-    && r.net_kwh != null
-    && Number(r.net_kwh) > 0;
+  const cheapNetBarClass = (r) => {
+    if (r.sell_pln_kwh == null || Number(r.sell_pln_kwh) >= RCE_CHEAP_THRESHOLD_PLN) return null;
+    if (r.net_kwh == null) return null;
+    const net = Number(r.net_kwh);
+    if (net > 0) return "net-bar-export";
+    if (net < 0) return "net-bar-import";
+    return "net-bar-neutral";
+  };
   const { date: nowDate, hour: nowHour } = localNowParts();
   let prevDate = null;
   document.getElementById("forecastRows").innerHTML = (forecast.rows || []).map((r) => {
@@ -743,7 +746,8 @@ function renderForecastBlock(forecast) {
     if (prevDate && r.date !== prevDate) cls.push("day-break");
     if (r.date === nowDate && r.hour === nowHour) cls.push("now");
     if (r.date < nowDate || (r.date === nowDate && r.hour < nowHour)) cls.push("past");
-    if (isCheapExport(r)) cls.push("cheap-export");
+    const netBar = cheapNetBarClass(r);
+    if (netBar) cls.push(netBar);
     prevDate = r.date;
     const trClass = cls.length ? ` class="${cls.join(" ")}"` : "";
     return `<tr${trClass}><td>${r.date.slice(5)}</td><td>${String(r.hour).padStart(2, "0")}:00</td>

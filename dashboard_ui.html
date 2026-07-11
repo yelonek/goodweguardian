@@ -211,11 +211,23 @@
     table.forecast tr.day-break td { border-top: 2px solid rgba(127,127,127,0.55); }
     table.forecast tr.now td { background: rgba(255, 215, 0, 0.18); font-weight: 700; }
     table.forecast tr.past td { opacity: 0.55; }
-    table.forecast tr.cheap-export td:nth-last-child(-n+2) {
+    table.forecast tr.net-bar-export td:nth-last-child(-n+2) {
+      background: rgba(255, 215, 0, 0.14);
+    }
+    table.forecast tr.net-bar-export td:last-child {
+      box-shadow: inset -4px 0 0 #c9a000;
+    }
+    table.forecast tr.net-bar-neutral td:nth-last-child(-n+2) {
       background: rgba(13, 128, 80, 0.10);
     }
-    table.forecast tr.cheap-export td:last-child {
+    table.forecast tr.net-bar-neutral td:last-child {
       box-shadow: inset -4px 0 0 #0d8050;
+    }
+    table.forecast tr.net-bar-import td:nth-last-child(-n+2) {
+      background: rgba(179, 45, 45, 0.10);
+    }
+    table.forecast tr.net-bar-import td:last-child {
+      box-shadow: inset -4px 0 0 #b32d2d;
     }
     .nodata { opacity: 0.35; }
     table.forecast td.delta-pos { color: #0d8050; }
