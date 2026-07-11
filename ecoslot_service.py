@@ -189,6 +189,49 @@ def load_ecoslots_payload_from_snapshot() -> dict[str, Any] | None:
     return load_ecoslots_snapshot()
 
 
+def _format_hm(h: int | None, m: int | None) -> str | None:
+    if h is None or m is None:
+        return None
+    return f"{int(h):02d}:{int(m):02d}"
+
+
+def active_override_slots(payload: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Aktywne eco sloty inne niż slot bilansowania Guardiana."""
+    if not payload:
+        return []
+    balancing = payload.get("balancing_slot_id") or balancing_slot_id()
+    out: list[dict[str, Any]] = []
+    for sid, slot in payload.get("slots", {}).items():
+        if sid == balancing or not isinstance(slot, dict):
+            continue
+        if not slot.get("active_now"):
+            continue
+        out.append(
+            {
+                "slot_id": sid,
+                "slot_label": sid.replace("eco_mode_", "slot "),
+                "power_pct": slot.get("power_pct"),
+                "start": _format_hm(slot.get("start_h"), slot.get("start_m")),
+                "end": _format_hm(slot.get("end_h"), slot.get("end_m")),
+                "soc_pct": slot.get("soc_pct"),
+            }
+        )
+    return out
+
+
+def ecoslot_override_alert_payload(*, runner_other_eco: bool | None = None) -> dict[str, Any]:
+    """Stan alertu: inny eco slot nadpisuje egzekucję planu Guardiana."""
+    snap = load_ecoslots_payload_from_snapshot()
+    slots = active_override_slots(snap)
+    runner_flag = bool(runner_other_eco)
+    return {
+        "active": bool(slots) or runner_flag,
+        "runner_other_eco": runner_flag if runner_other_eco is not None else None,
+        "snapshot_at": snap.get("read_at") if snap else None,
+        "slots": slots,
+    }
+
+
 async def _read_one_slot(
     inverter: Any, sid: str, *, now: datetime, supported: bool
 ) -> tuple[str, dict[str, Any]]:

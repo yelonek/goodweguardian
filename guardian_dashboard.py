@@ -28,6 +28,7 @@ from guardian_config import LOG_DIR, TELEMETRY_DIR, TELEMETRY_TZ, TESLA_WC_MAX_K
 from ecoslot_service import (
     balancing_slot_id,
     editable_slot_ids,
+    ecoslot_override_alert_payload,
     fetch_ecoslots_payload,
     load_ecoslots_payload_from_snapshot,
     write_ecoslot,
@@ -641,11 +642,16 @@ def api_baseline() -> JSONResponse:
 def api_status() -> JSONResponse:
     rows = read_history(limit=1)
     row = rows[0] if rows else None
+    fields = row.fields if row else {}
+    runner_other_eco = fields.get("other_eco")
     payload = {
         "log_path": str(LOG_PATH),
-        "fields": (row.fields if row else {}),
+        "fields": fields,
         "raw": (row.raw if row else None),
         "watchdog_soc": watchdog_soc_api_payload(),
+        "ecoslot_override": ecoslot_override_alert_payload(
+            runner_other_eco=runner_other_eco if runner_other_eco is not None else None
+        ),
     }
     return JSONResponse(payload)
 

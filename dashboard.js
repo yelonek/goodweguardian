@@ -92,12 +92,69 @@ function formatGuardianReason(reason) {
   return lines.join("<br>") || escapeHtml(base);
 }
 
+function fmtEcoSlotPower(pct) {
+  if (pct === null || pct === undefined) return "";
+  const n = Number(pct);
+  if (Number.isNaN(n) || n === 0) return "0%";
+  const kind = n < 0 ? "ładowanie" : "rozładowanie";
+  return `${kind} ${Math.abs(n)}%`;
+}
+
+function describeEcoOverrideSlots(slots) {
+  if (!Array.isArray(slots) || !slots.length) return "";
+  return slots.map((s) => {
+    const label = s.slot_label || s.slot_id || "slot";
+    const power = fmtEcoSlotPower(s.power_pct);
+    const end = s.end ? `do ${s.end}` : "";
+    const parts = [label];
+    if (power) parts.push(power);
+    if (end) parts.push(end);
+    return parts.join(", ");
+  }).join(" · ");
+}
+
+function renderEcoOverrideBanner(status) {
+  const el = document.getElementById("ecoOverrideBanner");
+  const detail = document.getElementById("ecoOverrideDetail");
+  if (!el) return;
+  const ov = status && status.ecoslot_override;
+  if (!ov || !ov.active) {
+    el.hidden = true;
+    document.body.classList.remove("eco-override-active");
+    return;
+  }
+  el.hidden = false;
+  document.body.classList.add("eco-override-active");
+  const slotText = describeEcoOverrideSlots(ov.slots);
+  const parts = [];
+  if (slotText) parts.push(slotText);
+  else if (ov.runner_other_eco) parts.push("wykryto w logu Guardiana");
+  if (ov.snapshot_at) parts.push(`snapshot ${ov.snapshot_at.slice(11, 19)}`);
+  if (detail) detail.textContent = parts.length ? `(${parts.join(" · ")})` : "";
+}
+
+async function refreshEcoOverrideBanner() {
+  try {
+    const j = await fetchJson("/api/status", 8000);
+    renderEcoOverrideBanner(j);
+  } catch (e) {
+    console.warn("eco override banner:", e);
+  }
+}
+
+function startGlobalAlertPolling() {
+  refreshEcoOverrideBanner();
+  if (window._ecoBannerTimer) clearInterval(window._ecoBannerTimer);
+  window._ecoBannerTimer = setInterval(refreshEcoOverrideBanner, 15000);
+}
+
 function renderStatus(f) {
   const el = document.getElementById("statusBlock");
   if (!el) return;
   const reasonRaw = f.reason;
   const reasonHtml = formatGuardianReason(reasonRaw);
   const reasonTitle = reasonRaw != null && reasonRaw !== "" ? String(reasonRaw) : "—";
+  const otherEco = f.other_eco === true || f.other_eco === "true";
   const intervene = f.intervene === true || f.intervene === "true";
   const cmdOn = f.cmd_enabled === true || f.cmd_enabled === "true";
   const soc = f.soc_pct != null && !Number.isNaN(Number(f.soc_pct)) ? `${Number(f.soc_pct).toFixed(0)} %` : "—";
@@ -141,6 +198,9 @@ function renderStatus(f) {
     `</div></div>` +
     `<div class="status-col status-col-wide">` +
     `<h4>Guardian</h4>` +
+    (otherEco
+      ? `<div class="status-eco-warn">Inny eco slot — plan wyłączony</div>`
+      : "") +
     `<div class="status-reason" title="${escapeHtml(reasonTitle)}">${reasonHtml}</div>` +
     `<div class="status-nums status-nums-inline">` +
     statusMetric("Do końca slotu", fmtTimeLeft(f.time_to_end_s)) +
@@ -219,6 +279,7 @@ async function loadOverview(force) {
       fetchJson("/api/plan/visualization", 60000).catch((e) => ({ _error: String(e) })),
     ]);
     document.getElementById("logPath").textContent = status.log_path || "—";
+    renderEcoOverrideBanner(status);
     renderStatus(status.fields || {});
     renderPlanTimeline(planViz);
     renderPvPyramid(pyramid);
@@ -1460,5 +1521,6 @@ ecoPanels.addEventListener("click", handleEcoSaveEvent);
 
 document.getElementById("apiKey").value = getKey();
 initKpiDayPicker();
+startGlobalAlertPolling();
 if (!location.hash) location.hash = "overview";
 navigate(parsePageFromHash(), true);
