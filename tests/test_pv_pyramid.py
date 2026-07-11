@@ -64,7 +64,7 @@ def test_pyramid_actual_past_forecast_future(fixed_now: datetime) -> None:
     assert p["above_60_kwh"] == pytest.approx(24 * 2.0)
 
     seg = p["segments"]
-    assert seg["cheap_threshold_gr"] == 60
+    assert seg["cheap_threshold_gr"] == 59
     assert seg["today"]["past"]["cheap_kwh"] == pytest.approx(14 * 0.5)
     assert seg["today"]["past"]["pv_total_kwh"] == pytest.approx(14 * 0.5)
     assert seg["today"]["remaining"]["cheap_kwh"] == pytest.approx(10 * 1.0)
@@ -108,7 +108,7 @@ def test_pyramid_tiers_count() -> None:
 
 
 def test_pyramid_cheap_surplus_after_load(fixed_now: datetime) -> None:
-    """Tanio po load_base p50: PV − load (bez planu) w godzinach RCE < 60 gr."""
+    """Tanio po load_base p50: PV − load (bez planu) w godzinach RCE < 59 gr."""
     today = fixed_now.date().isoformat()
 
     def pricing(local_date):

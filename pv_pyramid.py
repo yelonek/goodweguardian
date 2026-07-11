@@ -40,7 +40,7 @@ def _pv_forecast_kwh(pv_row: dict[str, Any] | None) -> float | None:
     return max(0.0, v)
 
 
-CHEAP_THRESHOLD_PLN = 0.60
+CHEAP_THRESHOLD_PLN = 0.59
 
 
 def export_kwh_for_slot(
@@ -161,7 +161,7 @@ def build_pv_pyramid_payload(now: datetime | None = None) -> dict[str, Any]:
     Horyzont 48 h od północy dziś (dziś + jutro).
 
     Godzina zakończona → PV z telemetrii (Δ E_pv); w trakcie / przyszła → prognoza p50.
-    Progi RCE skumulowane (gr); osobno wiersz ≥ 60 gr.
+    Progi RCE skumulowane (gr); osobno wiersz ≥ progu taniości.
     """
     from guardian_dashboard import (  # noqa: PLC0415 — unik circular import
         _pricing_for_day_quiet,

@@ -211,6 +211,12 @@
     table.forecast tr.day-break td { border-top: 2px solid rgba(127,127,127,0.55); }
     table.forecast tr.now td { background: rgba(255, 215, 0, 0.18); font-weight: 700; }
     table.forecast tr.past td { opacity: 0.55; }
+    table.forecast tr.cheap-export td:nth-last-child(-n+2) {
+      background: rgba(13, 128, 80, 0.10);
+    }
+    table.forecast tr.cheap-export td:last-child {
+      box-shadow: inset -4px 0 0 #0d8050;
+    }
     .nodata { opacity: 0.35; }
     table.forecast td.delta-pos { color: #0d8050; }
     table.forecast td.delta-neg { color: #b32d2d; }
@@ -437,7 +443,7 @@
         <div id="planTimelineContent"></div>
       </div>
       <div class="pv-pyramid-block card" id="pvPyramidBlock" style="display:none;">
-        <h3>Tania energia PV (RCE &lt;60 gr)</h3>
+        <h3>Tania energia PV (RCE &lt;59 gr)</h3>
         <p class="muted setting-lead" style="font-size:12px; margin:0 0 8px;">
           Ile <strong>taniego PV</strong> zostało dziś i ile będzie jutro (prognoza p50).
           <strong>Po load</strong> — nadwyżka po odjęciu domu (load_base p50), jak w planowaniu EV.
@@ -475,7 +481,7 @@
         <div class="muted" id="pvPyramidMeta" style="font-size:11px; margin-top:10px;"></div>
         <div class="muted" id="pvPyramidWarnings" style="font-size:11px; margin-top:4px;"></div>
         <p class="muted" style="font-size:11px; margin:8px 0 0;">
-          Próg 60 gr ≈ taryfa dzienna G12 (~59 gr). Zielone paski — warstwy RCE; ≥60 gr — droższy eksport.
+          Próg 59 gr ≈ taryfa dzienna G12. Zielone paski — warstwy RCE; ≥59 gr — droższy eksport.
         </p>
       </div>
     </section>

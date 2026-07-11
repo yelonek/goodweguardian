@@ -307,7 +307,8 @@ const PLAN_MODE_LEGEND = [
   ["mode-charge_grid", "ładowanie z sieci"],
 ];
 
-const PLAN_RCE_CHEAP = 0.60;
+const RCE_CHEAP_THRESHOLD_PLN = 0.59;
+const RCE_CHEAP_THRESHOLD_GR = 59;
 
 function planHourTooltip(h) {
   const parts = [
@@ -360,7 +361,7 @@ function renderPlanHourCell(h) {
     h.hour_complete ? "past" : "",
     h.is_now ? "now" : "",
     mode ? "" : "empty",
-    h.sell_pln_kwh != null && Number(h.sell_pln_kwh) < PLAN_RCE_CHEAP ? "rce-cheap" : "",
+    h.sell_pln_kwh != null && Number(h.sell_pln_kwh) < RCE_CHEAP_THRESHOLD_PLN ? "rce-cheap" : "",
   ].filter(Boolean).join(" ");
   const short = mode ? (PLAN_MODE_SHORT[mode] || mode.slice(0, 3)) : "—";
   const net = h.target_net_kwh != null ? Number(h.target_net_kwh) : null;
@@ -434,7 +435,7 @@ function renderPlanTimeline(p) {
     (tomorrowDim ? `<p class="muted" style="font-size:11px;margin:8px 0 0;">Jutro: RCE jeszcze nieopublikowane — panel przygaszony.</p>` : "");
 }
 
-function renderPvPyramidTable(segment, tbodyId) {
+function renderPvPyramidTable(segment, tbodyId, cheapGr) {
   const tbody = document.getElementById(tbodyId);
   if (!tbody) return;
   const total = Number(segment?.pv_total_kwh || 0);
@@ -450,7 +451,7 @@ function renderPvPyramidTable(segment, tbodyId) {
   }).join("");
   const abovePct = Math.min(100, Math.round((above / barMax) * 100));
   tbody.innerHTML = tierRows +
-    `<tr><td>≥60 gr</td><td>${above.toFixed(1)}</td>
+    `<tr><td>≥${cheapGr} gr</td><td>${above.toFixed(1)}</td>
       <td class="pv-bar-wrap"><span class="pv-bar" style="width:${abovePct}%; opacity:0.55;"></span></td></tr>`;
 }
 
@@ -478,12 +479,12 @@ function renderPvPyramid(p) {
   const tomorrow = seg.tomorrow || {};
   const remaining = today.remaining || {};
   const tomorrowTotal = tomorrow.total || {};
-  const cheapGr = seg.cheap_threshold_gr || 60;
+  const cheapGr = seg.cheap_threshold_gr || RCE_CHEAP_THRESHOLD_GR;
 
   renderPvPyramidNums(remaining, "pvPyramidTodayNums", cheapGr);
   renderPvPyramidNums(tomorrowTotal, "pvPyramidTomorrowNums", cheapGr);
-  renderPvPyramidTable(remaining, "pvPyramidRowsToday");
-  renderPvPyramidTable(tomorrowTotal, "pvPyramidRowsTomorrow");
+  renderPvPyramidTable(remaining, "pvPyramidRowsToday", cheapGr);
+  renderPvPyramidTable(tomorrowTotal, "pvPyramidRowsTomorrow", cheapGr);
 
   const tomorrowCol = document.getElementById("pvPyramidTomorrowCol");
   if (tomorrowCol) {
@@ -535,7 +536,7 @@ function renderEvChargingPanel(ev) {
   const hero = document.getElementById("evChargingHero");
   if (hero) {
     hero.innerHTML =
-      `<div class="card"><div class="card-key">Eksport tanio (&lt;60 gr)</div><div class="card-val">${cheapExport.toFixed(1)} kWh</div></div>` +
+      `<div class="card"><div class="card-key">Eksport tanio (&lt;${RCE_CHEAP_THRESHOLD_GR} gr)</div><div class="card-val">${cheapExport.toFixed(1)} kWh</div></div>` +
       `<div class="card"><div class="card-key">Tanio import G12</div><div class="card-val">${cheapImp.toFixed(1)} kWh</div></div>` +
       `<div class="card"><div class="card-key">Razem tanio dziś</div><div class="card-val">${rec.toFixed(1)} kWh</div></div>`;
   }
@@ -730,6 +731,11 @@ function renderForecastBlock(forecast) {
     else if (n < -eps) cls = "delta-neg";
     return `<td class="${cls}">${(n >= 0 ? "+" : "") + n.toFixed(d)}</td>`;
   };
+  const isCheapExport = (r) =>
+    r.sell_pln_kwh != null
+    && Number(r.sell_pln_kwh) < RCE_CHEAP_THRESHOLD_PLN
+    && r.net_kwh != null
+    && Number(r.net_kwh) > 0;
   const { date: nowDate, hour: nowHour } = localNowParts();
   let prevDate = null;
   document.getElementById("forecastRows").innerHTML = (forecast.rows || []).map((r) => {
@@ -737,6 +743,7 @@ function renderForecastBlock(forecast) {
     if (prevDate && r.date !== prevDate) cls.push("day-break");
     if (r.date === nowDate && r.hour === nowHour) cls.push("now");
     if (r.date < nowDate || (r.date === nowDate && r.hour < nowHour)) cls.push("past");
+    if (isCheapExport(r)) cls.push("cheap-export");
     prevDate = r.date;
     const trClass = cls.length ? ` class="${cls.join(" ")}"` : "";
     return `<tr${trClass}><td>${r.date.slice(5)}</td><td>${String(r.hour).padStart(2, "0")}:00</td>

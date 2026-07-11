@@ -329,7 +329,7 @@ def _preferred_start_allocate(
         if export_kwh > 0.5:
             hrs = ", ".join(f"{int(r['hour']):02d}" for r in cheaper_before[:4])
             warnings.append(
-                f"Godz. {hrs}: ~{export_kwh:.1f} kWh taniego eksportu (<60 gr) — "
+                f"Godz. {hrs}: ~{export_kwh:.1f} kWh taniego eksportu (<59 gr) — "
                 "rozważ wcześniejsze ładowanie."
             )
 
