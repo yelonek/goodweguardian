@@ -740,13 +740,13 @@ function renderForecastBlock(forecast) {
     prevDate = r.date;
     const trClass = cls.length ? ` class="${cls.join(" ")}"` : "";
     return `<tr${trClass}><td>${r.date.slice(5)}</td><td>${String(r.hour).padStart(2, "0")}:00</td>
-      ${fcell(r.buy_pln_kwh, 4)}${fcell(r.sell_pln_kwh, 4)}
       ${fcell(r.load_kwh_p25, 3)}${fcell(r.load_kwh_p50, 3)}${fcell(r.load_kwh_p75, 3)}${fcell(r.load_kwh_actual, 3)}${fcellDelta(r.load_kwh_delta_p50, 3, 0.03)}
       ${evCell(r.ev_kwh_actual)}${domCell(r.load_base_kwh_actual)}
       ${evPlanCell(r.ev_planned_kwh)}${evPlanCell(r.load_plan_kwh)}
       ${fcell(r.pv_kwh_p10, 3)}${fcell(r.pv_kwh, 3)}${fcell(r.pv_kwh_p90, 3)}${fcell(r.pv_kwh_actual, 3)}${fcellDelta(r.pv_kwh_delta_mean, 3, 0.05)}
-      ${policyCell(r)}${fcell(r.policy_battery_delta_kwh, 3)}${boolCell(r.policy_allow_grid_charge)}
-      ${fcell(r.net_kwh, 3)}${fcell(r.soc_pct, 1)}</tr>`;
+      ${policyCell(r)}${boolCell(r.policy_allow_grid_charge)}${fcell(r.policy_battery_delta_kwh, 3)}
+      ${fcell(r.soc_pct, 1)}${fcell(r.net_kwh, 3)}
+      ${fcell(r.buy_pln_kwh, 4)}${fcell(r.sell_pln_kwh, 4)}</tr>`;
   }).join("");
   const meta = [`today RCE: ${fmt(forecast.pricing_today_source)}`,
     forecast.pricing_tomorrow_available ? `tomorrow RCE: ${fmt(forecast.pricing_tomorrow_source)}` : "tomorrow RCE: not yet published"];
