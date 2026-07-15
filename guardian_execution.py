@@ -13,6 +13,7 @@ from guardian_logic import (
     _neutral_decision,
     _steady_decision,
     battery_discharge_cap_w,
+    clamp_discharge_to_soc_cap,
     compute_export_profit_pace_w,
     decide_flappy_relative,
     decide_soc_defenses,
@@ -33,7 +34,11 @@ def _exec_export_profit(
     cfg: WatchdogConfig,
 ) -> WatchdogDecision:
     s = get_settings()
-    floor = float(params.soc_floor_pct if params.soc_floor_pct is not None else cfg.soc_low_threshold_pct)
+    floor = float(
+        params.soc_floor_pct
+        if params.soc_floor_pct is not None
+        else get_settings().planner_soc_min_pct
+    )
     if float(inp.soc_pct) <= floor + 0.5:
         return _steady_decision(
             power_pct=s.exec_steady_pct,
@@ -175,12 +180,14 @@ def decide_plan_execution(
         plan_battery_delta_kwh=float(policy_row.params.battery_delta_kwh),
     )
     if soc is not None:
-        return soc
+        return clamp_discharge_to_soc_cap(soc, inp, cfg)
 
     mode: ExecMode = policy_row.exec_mode
     handler = _EXEC_HANDLERS.get(mode)
     if handler is None:
-        return _neutral_decision(f"unknown_exec_mode:{mode}")
+        return clamp_discharge_to_soc_cap(
+            _neutral_decision(f"unknown_exec_mode:{mode}"), inp, cfg
+        )
 
     decision = handler(inp, policy_row, cfg)
-    return decision
+    return clamp_discharge_to_soc_cap(decision, inp, cfg)

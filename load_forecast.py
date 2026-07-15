@@ -13,7 +13,7 @@ from guardian_config import TELEMETRY_DIR
 from guardian_settings import get_settings
 from telemetry_store import recent_consumption_average_w
 
-# Stałe modułu strojenia sourcowane z jednolitych ustawień (env → settings.json).
+# Stałe modułu — aliasy z get_settings() (settings.json); proces planera ładuje je przy starcie.
 _s = get_settings()
 LOAD_NOWCAST_ENABLED = _s.load_nowcast_enabled
 LOAD_NOWCAST_WINDOW_MIN = _s.load_nowcast_window_min

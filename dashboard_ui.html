@@ -418,16 +418,36 @@
       .topbar { padding: 10px 12px; gap: 8px; }
     }
     /* --- Data-driven settings form + onboarding --- */
-    .tuning-group { border: 1px solid rgba(127,127,127,0.35); border-radius: 10px; padding: 10px 14px 14px; margin: 0 0 14px; }
-    .tuning-group > legend { font-weight: 700; font-size: 13px; padding: 0 6px; }
-    .tuning-grid { display: grid; grid-template-columns: 1fr; gap: 12px; }
-    @media (min-width: 720px) { .tuning-grid { grid-template-columns: 1fr 1fr; } }
-    .tuning-field { display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
-    .tuning-field .t-name { font-weight: 600; }
-    .tuning-field .t-hint { opacity: 0.75; font-size: 11px; line-height: 1.35; }
-    .tuning-field input[type="number"], .tuning-field input[type="text"] { padding: 5px 6px; width: 100%; box-sizing: border-box; }
-    .tuning-field .t-row { display: flex; align-items: center; gap: 8px; }
-    .tuning-field .t-unit { opacity: 0.7; font-size: 11px; }
+    .tuning-group { border: 1px solid rgba(127,127,127,0.35); border-radius: 8px; padding: 8px 10px 10px; margin: 0 0 10px; }
+    .tuning-group > legend { font-weight: 700; font-size: 12px; padding: 0 4px; }
+    .tuning-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 6px 12px;
+    }
+    @media (min-width: 640px) { .tuning-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    @media (min-width: 960px) { .tuning-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+    @media (min-width: 1280px) { .tuning-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+    .tuning-field { display: flex; flex-direction: column; gap: 2px; font-size: 12px; min-width: 0; }
+    .tuning-field .t-name { font-weight: 600; font-size: 11px; line-height: 1.25; word-break: break-word; }
+    .tuning-field .t-hint { opacity: 0.72; font-size: 10px; line-height: 1.3; margin-top: 1px; }
+    .tuning-field .t-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .tuning-field input.t-input-num {
+      width: 5.5rem;
+      max-width: 100%;
+      padding: 3px 6px;
+      box-sizing: border-box;
+      font-size: 12px;
+    }
+    .tuning-field input.t-input-wide {
+      width: 100%;
+      max-width: 11rem;
+      padding: 3px 6px;
+      box-sizing: border-box;
+      font-size: 12px;
+    }
+    .tuning-field input[type="checkbox"] { margin: 0; }
+    .tuning-field .t-unit { opacity: 0.7; font-size: 10px; white-space: nowrap; }
     .src-badge { font-size: 10px; padding: 1px 6px; border-radius: 6px; border: 1px solid rgba(127,127,127,0.5); opacity: 0.85; }
     .src-badge.override { background: rgba(60,140,60,0.18); border-color: rgba(60,140,60,0.6); }
     #onboardingOverlay { position: fixed; inset: 0; background: rgba(0,0,0,0.62); z-index: 1000; display: flex; align-items: flex-start; justify-content: center; overflow-y: auto; padding: 24px 12px; }
@@ -721,8 +741,8 @@
         <div class="card" style="max-width: 640px;">
           <div class="row">
             <button type="button" id="refreshControl">Odśwież status</button>
-            <button type="button" id="enableControl">Włącz zapisy</button>
-            <button type="button" id="disableControl">Wyłącz zapisy</button>
+            <button type="button" id="enableControl">Włącz</button>
+            <button type="button" id="disableControl">Wyłącz</button>
           </div>
           <div class="setting-status" id="controlStatus">—</div>
           <div class="setting-hint muted">
@@ -746,8 +766,8 @@
         <div class="card" style="max-width: 640px;">
           <div class="row">
             <button type="button" id="refreshPlanner">Odśwież status</button>
-            <button type="button" id="enablePlanner">Włącz stosowanie planu</button>
-            <button type="button" id="disablePlanner">Wyłącz stosowanie planu</button>
+            <button type="button" id="enablePlanner">Włącz</button>
+            <button type="button" id="disablePlanner">Wyłącz</button>
           </div>
           <div class="setting-status" id="plannerStatus">—</div>
           <div class="muted" id="plannerHorizon" style="font-size:12px; margin-top:6px;"></div>
@@ -763,11 +783,12 @@
       </div>
 
       <div class="settings-block">
-        <h3>Watchdog — obrona SOC</h3>
+        <h3>Rezerwa nocna SOC</h3>
         <p class="setting-lead muted">
-          Progi bezpieczeństwa baterii: rezerwa nocna (nie rozładowuj za nisko w nocy) oraz obrona przy
-          bardzo niskim lub bardzo wysokim SOC. Guardian stosuje je <strong>niezależnie od planu</strong>,
-          gdy zapisy do inwertera są włączone. Wyłącz rezerwę nocną, jeśli strategię nocną ma sterować planer.
+          W wybranych godzinach nie rozładowuj baterii poniżej progu — zostaw zapas na poranek.
+          Guardian stosuje to <strong>niezależnie od planu</strong>. Wyłącz, jeśli strategię nocną
+          ma sterować planer. Obrona niskiej / pełnej baterii — w
+          <strong>Zaawansowanym strojeniu</strong> poniżej.
         </p>
         <div class="grid" id="watchdogSummaryCards"></div>
         <div class="card" style="max-width: 640px; margin-top: 10px;">
@@ -781,55 +802,38 @@
               </span>
             </label>
             <div id="wdNightReserveFields">
-            <label class="wd-label">
-              <span class="wd-name">Minimalny SOC w nocy (%)</span>
-              <span class="wd-hint">Poniżej tego progu w godzinach rezerwy — obrona przed rozładowaniem.</span>
-              <input id="wd_soc_night_reserve_pct" type="number" step="0.1" min="0" max="100" />
-            </label>
-            <label class="wd-label">
-              <span class="wd-name">Ładowanie w rezerwie nocnej (%)</span>
-              <span class="wd-hint">Moc ładowania eco slotu w godzinach rezerwy; −1 = wyłączone.</span>
-              <input id="wd_soc_night_reserve_charge_pct" type="number" step="1" min="-1" max="100" />
-            </label>
-            <label class="wd-label">
-              <span class="wd-name">Godziny rezerwy nocnej</span>
-              <span class="wd-hint">Godziny 0–23, po przecinku (np. 22,23,0,1,2,3,4,5).</span>
-              <input id="wd_soc_night_reserve_hours" class="wd-wide" type="text" placeholder="22,23,0,1,2,3,4,5" />
-            </label>
+              <label class="wd-label">
+                <span class="wd-name">Minimalny SOC w nocy (%)</span>
+                <span class="wd-hint">Poniżej tego progu w godzinach rezerwy — obrona przed rozładowaniem.</span>
+                <input id="wd_soc_night_reserve_pct" type="number" step="0.1" min="0" max="100" />
+              </label>
+              <label class="wd-label">
+                <span class="wd-name">Ładowanie w rezerwie nocnej (%)</span>
+                <span class="wd-hint">Moc ładowania eco slotu w godzinach rezerwy; −1 = wyłączone.</span>
+                <input id="wd_soc_night_reserve_charge_pct" type="number" step="1" min="-1" max="100" />
+              </label>
+              <label class="wd-label">
+                <span class="wd-name">Godziny rezerwy nocnej</span>
+                <span class="wd-hint">Godziny 0–23, po przecinku (np. 22,23,0,1,2,3,4,5).</span>
+                <input id="wd_soc_night_reserve_hours" class="wd-wide" type="text" placeholder="22,23,0,1,2,3,4,5" />
+              </label>
             </div>
-            <label class="wd-label">
-              <span class="wd-name">Próg niskiej obrony SOC (%)</span>
-              <span class="wd-hint">Poniżej — Guardian ostro chroni baterię przed rozładowaniem.</span>
-              <input id="wd_soc_low_defense_threshold_pct" type="number" step="0.1" min="0" max="100" />
-            </label>
-            <label class="wd-label">
-              <span class="wd-name">Próg pełnej obrony SOC (%)</span>
-              <span class="wd-hint">Powyżej — ogranicza dalsze ładowanie / eksport (bateria „pełna”).</span>
-              <input id="wd_soc_full_defense_threshold_pct" type="number" step="0.1" min="0" max="100" />
-            </label>
           </div>
           <div class="row" style="margin-top:12px;">
             <button type="button" id="saveWatchdog">Zapisz zmiany</button>
             <button type="button" id="resetWatchdog">Przywróć wartości domyślne</button>
           </div>
           <div class="muted" id="wdSaveStatus" style="margin-top:8px;"></div>
-          <div class="setting-hint muted">
-            <ul>
-              <li>Na kartach powyżej: <strong>wartość</strong> oraz w nawiasie <strong>skąd pochodzi</strong> (panel lub domyślne).</li>
-              <li>Zapis z panelu trafia do <code>state/settings.json</code> — bez restartu procesu.</li>
-              <li>„Przywróć wartości domyślne” usuwa nadpisania z <code>settings.json</code>; wracają wartości domyślne ze schematu.</li>
-            </ul>
-          </div>
         </div>
       </div>
 
       <div class="settings-block">
         <h3>Zaawansowane strojenie</h3>
         <p class="setting-lead muted">
-          Wszystkie pokrętła strojenia (bilans, egzekucja planu, obrony SOC, korekta PV, nowcast,
-          ceny/taryfa, ekonomia planera). To jedno źródło prawdy: wartość z panelu trafia do
-          <code>state/settings.json</code> i działa <strong>bez restartu</strong> pętli Guardiana.
-          Puste nadpisanie = wartość domyślna ze schematu.
+          Wszystkie pokrętła strojenia (bilans, egzekucja planu, obrona niskiej/pełnej baterii,
+          korekta PV, nowcast, ceny/taryfa, ekonomia planera). Rezerwę nocną ustawiasz w sekcji
+          powyżej. Wartość trafia do <code>state/settings.json</code> i działa
+          <strong>bez restartu</strong> pętli Guardiana. Puste nadpisanie = wartość domyślna ze schematu.
         </p>
         <div class="card">
           <div id="tuningContainer"><div class="muted">Ładowanie…</div></div>

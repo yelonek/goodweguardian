@@ -14,7 +14,7 @@ PLANNER_AUDITS_DIR = PLANNER_DIR / "audits"
 PLANNER_LATEST_PLAN_PATH = PLANNER_PLANS_DIR / "plan_latest.json"
 PLANNER_OUTPUT_PATH = STATE_DIR / "planner_output.json"
 
-# Wartości strojenia pochodzą z jednolitego systemu ustawień (env → settings.json).
+# Wartości strojenia z jednolitego systemu ustawień (settings.json via get_settings()).
 # Pozostają stałymi modułu (spójność z konsumentami/testami); świeży proces CLI
 # planera czyta bieżące settings.json przy imporcie.
 _s = get_settings()

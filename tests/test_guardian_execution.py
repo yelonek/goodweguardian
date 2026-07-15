@@ -44,19 +44,18 @@ def test_export_pv_surplus_steady_discharge() -> None:
     assert d.reason == "export_pv_surplus"
 
 
-def test_export_pv_surplus_low_soc_skips_soc_defense_at_hour_start() -> None:
-    """Regresja 2026-07-10: przy niskim SOC i bilansie 0 → eksport PV, nie soc_low_pv_soak."""
+def test_export_pv_surplus_low_soc_still_exports_with_cap() -> None:
+    """Regresja: przy niskim SOC i bilansie 0 → eksport PV (DISCHARGE 1%), nie stary soak."""
     d = decide_plan_execution(
         _inp(
             soc_pct=15.0,
             remaining_kwh=0.0,
             pv_w=6000.0,
             consumption_w=2500.0,
-            low_soc_discharge_target_w=2500.0,
             time_to_end_s=3600.0,
         ),
         _row("export_pv_surplus"),
-        cfg=WatchdogConfig(soc_low_threshold_pct=15.0),
+        cfg=WatchdogConfig(),
     )
     assert d.reason == "export_pv_surplus"
     assert d.power_pct == 1
@@ -237,8 +236,8 @@ def test_export_profit_at_full_soc_not_blocked_by_full_defense() -> None:
     assert d.power_pct == 15
 
 
-def test_export_profit_skips_low_soc_defense() -> None:
-    """Poniżej progu: taper LFP, nie soc_low_discharge_cap."""
+def test_export_profit_clamped_in_soc_low_zone() -> None:
+    """Poniżej strefy: liniowy sufit mocy, nie osobna strategia low-SOC."""
     d = decide_plan_execution(
         _inp(
             soc_pct=18.0,
@@ -247,14 +246,12 @@ def test_export_profit_skips_low_soc_defense() -> None:
             p_inverter_w=8200.0,
             p_battery_w=5200.0,
             watts_per_percent=72.0,
-            low_soc_discharge_target_w=520.0,
         ),
         _row("export_profit", soc_floor_pct=10.0, discharge_pct=100),
-        cfg=WatchdogConfig(soc_low_threshold_pct=22.0),
+        cfg=WatchdogConfig(),
     )
-    assert d.reason == "export_profit_pace"
-    assert d.reason != "soc_low_discharge_cap"
-    assert d.power_pct == 11  # ~814 W liniowy taper przy 18% SOC / 72 W na 1%
+    assert "export_profit_pace" in d.reason
+    assert d.power_pct == 11  # ~814 W / 72 W/%
 
 
 def test_export_profit_full_power_above_threshold() -> None:
@@ -264,10 +261,9 @@ def test_export_profit_full_power_above_threshold() -> None:
             p_inverter_w=8200.0,
             p_battery_w=5200.0,
             watts_per_percent=72.0,
-            low_soc_discharge_target_w=520.0,
         ),
         _row("export_profit", soc_floor_pct=10.0, discharge_pct=46),
-        cfg=WatchdogConfig(soc_low_threshold_pct=20.0),
+        cfg=WatchdogConfig(),
     )
     assert d.reason == "export_profit_pace"
     assert d.power_pct == 46
@@ -277,7 +273,7 @@ def test_export_profit_pace_caps_at_plan_discharge_pct() -> None:
     d = decide_plan_execution(
         _inp(soc_pct=80.0, time_to_end_s=3600.0, pv_w=0.0, consumption_w=500.0),
         _row("export_profit", soc_floor_pct=10.0, discharge_pct=10),
-        cfg=WatchdogConfig(soc_low_threshold_pct=22.0),
+        cfg=WatchdogConfig(),
     )
     assert d.reason == "export_profit_pace"
     assert d.power_pct == 10
@@ -293,83 +289,72 @@ def test_export_pv_surplus_at_full_soc_uses_full_defense() -> None:
     assert d.power_pct == -1
 
 
-def test_import_grid_low_soc_skips_low_defense() -> None:
+def test_import_grid_low_soc_unchanged() -> None:
     d = decide_plan_execution(
         _inp(soc_pct=15.0, remaining_kwh=-0.5),
         _row("import_grid", target_net_kwh=-1.0),
-        cfg=WatchdogConfig(soc_low_threshold_pct=22.0, soc_low_defense_charge_pct=-1),
+        cfg=WatchdogConfig(),
     )
     assert d.reason == "import_grid"
     assert d.power_pct == -1
 
 
-def test_neutral_low_soc_uses_low_defense() -> None:
+def test_neutral_low_soc_uses_flappy_not_old_hold() -> None:
     d = decide_plan_execution(
-        _inp(soc_pct=15.0, remaining_kwh=0.5),
+        _inp(soc_pct=15.0, remaining_kwh=0.5, pv_w=3000.0, consumption_w=1500.0),
         _row("neutral", target_net_kwh=0.0),
-        cfg=WatchdogConfig(
-            soc_low_threshold_pct=22.0,
-            soc_low_defense_charge_pct=-1,
-            soc_low_defense_release_remaining_kwh=0.0,
-        ),
+        cfg=WatchdogConfig(),
     )
-    assert d.reason == "soc_low_defense_hold"
+    assert d.mode == "charge"
+    assert d.reason == "neutral_pv_soak"
 
 
-def test_neutral_at_soc_floor_with_load_deficit_charges_not_discharges() -> None:
-    """SOC na minimum + plan ładuje → deficyt loadu z sieci, nie rozładowanie baterii."""
+def test_neutral_at_soc_floor_with_load_deficit_holds_below_target() -> None:
+    """Load > PV, bilans poniżej targetu ale ≥ 0 — Flappy hold, bez rozładowania."""
     d = decide_plan_execution(
         _inp(
             soc_pct=10.0,
             remaining_kwh=0.34,
             pv_w=3100.0,
             consumption_w=3908.0,
-            low_soc_discharge_target_w=1200.0,
         ),
         _row("neutral", target_net_kwh=0.42, battery_delta_kwh=4.15),
-        cfg=WatchdogConfig(
-            soc_low_threshold_pct=20.0,
-            soc_low_defense_charge_pct=-1,
-        ),
+        cfg=WatchdogConfig(),
     )
     assert d.mode == "neutral"
     assert d.write_slot is False
-    assert d.reason == "soc_low_grid_covers_load"
+    assert d.reason == "neutral_hold_below_target"
 
 
-def test_neutral_low_soc_pv_surplus_soak_when_plan_charges() -> None:
-    """Nadwyżka PV + plan ładuje → CHARGE -1%, nie eksport DISCHARGE 1%."""
+def test_neutral_low_soc_pv_surplus_buffer_build() -> None:
+    """Nadwyżka PV poniżej targetu → Flappy buffer DISCHARGE 1% (clamp nie rusza 1%)."""
     d = decide_plan_execution(
         _inp(
             soc_pct=15.0,
             remaining_kwh=0.05,
             pv_w=5950.0,
             consumption_w=1335.0,
-            low_soc_discharge_target_w=1200.0,
         ),
         _row("neutral", target_net_kwh=1.49, battery_delta_kwh=4.15),
-        cfg=WatchdogConfig(
-            soc_low_threshold_pct=20.0,
-            soc_low_defense_charge_pct=-1,
-        ),
+        cfg=WatchdogConfig(),
     )
-    assert d.mode == "charge"
-    assert d.power_pct == -1
-    assert d.reason == "soc_low_pv_soak"
+    assert d.mode == "discharge"
+    assert d.power_pct == 1
+    assert d.reason == "neutral_buffer_build"
 
 
 def test_export_profit_respects_soc_floor() -> None:
     d = decide_plan_execution(
         _inp(soc_pct=12.0),
         _row("export_profit", soc_floor_pct=15.0, discharge_pct=20),
-        cfg=WatchdogConfig(soc_low_threshold_pct=10.0),
+        cfg=WatchdogConfig(),
     )
     assert d.power_pct == 1
     assert d.reason == "export_profit_soc_floor"
 
 
-def test_export_profit_linear_taper_at_11_pct() -> None:
-    """SOC w strefie taperu: cap ~163 W, bez podbijania do min_discharge 2%."""
+def test_export_profit_soc_low_cap_at_11_pct() -> None:
+    """SOC w strefie: cap ~163 W, bez podbijania do min_discharge 2%."""
     d = decide_plan_execution(
         _inp(
             soc_pct=11.0,
@@ -381,11 +366,29 @@ def test_export_profit_linear_taper_at_11_pct() -> None:
         ),
         _row("export_profit", soc_floor_pct=10.0, discharge_pct=100),
         cfg=WatchdogConfig(
-            discharge_taper_soc_high_pct=20.0,
-            discharge_taper_soc_low_pct=10.0,
-            discharge_taper_max_w_high=1000.0,
-            discharge_taper_max_w_low=70.0,
+            soc_low_cap_soc_high_pct=20.0,
+            soc_low_cap_soc_low_pct=10.0,
+            soc_low_cap_w_high=1000.0,
+            soc_low_cap_w_low=70.0,
         ),
     )
-    assert d.reason == "export_profit_pace"
+    assert "export_profit_pace" in d.reason
     assert d.power_pct == 2
+
+
+def test_neutral_deficit_clamped_at_low_soc() -> None:
+    d = decide_plan_execution(
+        _inp(
+            soc_pct=12.0,
+            remaining_kwh=-0.5,
+            pv_w=800.0,
+            consumption_w=2000.0,
+            time_to_end_s=2400.0,
+        ),
+        _row("neutral", target_net_kwh=1.0),
+        cfg=WatchdogConfig(),
+    )
+    assert d.write_slot is True
+    assert d.mode == "discharge"
+    assert "deficit" in d.reason
+    assert d.power_pct == 3  # ~256 W // 70

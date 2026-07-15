@@ -18,7 +18,7 @@ Planer **co 10 min** → `state/planner_output.json` (**policy** + parametry). G
 
 4. **Wyjście:** **policy + parametry**; optimizer → wektor `e_bat_kwh[h]` w granicach **battery_model**; **policy_output** → enum + JSON. Guardian **nie** goni `target_net_kwh` co minutę — wykonuje **strategię** przypisaną do policy (§13).
 
-5. **Bateria w solverze:** `soc_kwh`, limity z `.env`, **jedno η** round-trip (`η_rt`).
+5. **Bateria w solverze:** `soc_kwh`, limity z Ustawień (`planner_soc_*`, `battery_capacity_kwh`), **jedno η** round-trip (`η_rt`).
 
 6. **Korekta PV (`k_intra`):**
    - **ε = 0,1 kWh/h** — próg znaczącej prognozy w ułamku godziny.
@@ -92,7 +92,7 @@ Planer wybiera **`exec_mode`** + parametry. Guardian utrzymia odpowiedni bieg; *
 | Obrona | Działa w trybach |
 |--------|------------------|
 | **Pełna bateria** (blokada rozładowania) | wszystkie **oprócz** `export_profit` |
-| **Niska bateria** | tylko `export_pv_surplus`, `export_profit`, `neutral` (nie w `import_grid` / `charge_grid` — slot już CHARGE) |
+| **Niska bateria** (liniowy sufit mocy DISCHARGE) | clamp na każdej decyzji `mode=discharge` (wszystkie tryby z rozładowaniem); nie osobna strategia trybu |
 | **Rezerwa nocna** | zawsze (jak dotychczas) |
 
 Przy `export_profit` i SOC 99% planer **może** rozładowywać — obrona pełnej nie blokuje. Podłogę SOC w tym trybie pilnuje `soc_floor_pct` w strategii, nie `soc_full_defense`.
@@ -117,7 +117,7 @@ Brak osobnego `anchor_net_kwh` — **Ockham:** jedno pole, różna interpretacja
 
 - Aktywne rozładowanie baterii do sieci (wysokie RCE); `discharge_pct` z planu lub wyliczone.
 - **`soc_floor_pct`:** po osiągnięciu podłogi zmniejszyć discharge do **1%** lub wyjść w neutral w ramach strategii.
-- **Liniowy taper LFP** (`DISCHARGE_TAPER_SOC_LOW/HIGH`, `DISCHARGE_TAPER_MAX_W_LOW/HIGH`): między podłogą a ~20% SOC sufit mocy maleje liniowo (domyślnie 10%→70 W, 20%→1000 W), bez podbijania do loadu — reszta z sieci/PV.
+- **Obrona niskiego SOC** (`soc_low_cap_*`): między dolnym a górnym SOC strefy sufit mocy maleje liniowo (domyślnie 10%→70 W, 20%→1000 W), bez podbijania do loadu — reszta z sieci/PV. Clamp na każdej decyzji DISCHARGE.
 
 #### `export_pv_surplus` — eksport nadwyżek PV
 

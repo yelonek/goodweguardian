@@ -66,7 +66,7 @@ load_base = total − EV  →   load_plan = base + ev_slot    →   piramida PV 
 
 **Co potem usunąć / uprościć:**
 - blok `night_soc_reserve` w `guardian_logic.decide_soc_defenses`
-- `SOC_NIGHT_RESERVE_*` (`.env`, dashboard override)
+- `soc_night_reserve_*` w Ustawieniach / panelu rezerwy nocnej
 - testy `test_night_soc_reserve_*`, wpis w `PLANNING_SYSTEM.md` §13
 
 **Uzasadnienie:** rezerwa nocna to airbag na ślepe zaufanie planowi; gdy planer sam dba o SOC w nocy, warstwa w Guardienie jest zbędna.
@@ -380,7 +380,7 @@ Implementacja może być prosta na start (reguły + progi), później DSPy / ma�
 
 ### Lookback 28 dni — zostaje
 
-Rozważane było skrócenie do 14–21 d (szybsze wygaszenie sezonu / EV sprzed miesiąca). **Decyzja:** **4 tygodnie (`PLANNER_LOAD_LOOKBACK_DAYS = 28`) zostają** — zmiana sezonu i tak jest **przejściowa** (grzejnik stopniowo znika z próbek), a dłuższe okno daje **więcej próbek** na slot i stabilniejszy split weekday/weekend.
+Rozważane było skrócenie do 14–21 d (szybsze wygaszenie sezonu / EV sprzed miesiąca). **Decyzja:** **4 tygodnie (`planner_load_lookback_days = 28`) zostają** — zmiana sezonu i tak jest **przejściowa** (grzejnik stopniowo znika z próbek), a dłuższe okno daje **więcej próbek** na slot i stabilniejszy split weekday/weekend.
 
 Skrócenie lookback **nie priorytet**; sensowniejsze docelowo: klasyfikator shiftable + ewent. floor standby, nie cięcie okna.
 
@@ -426,7 +426,7 @@ Rezerwa nocna w Guardianie = **airbag** przy deterministycznym planie p50. Stoch
 2. `optimize_horizon_scenarios(...)` — ten sam MILP, bilans/cashflow × S scenariuszy w funkcji celu.
 3. Backtest wag `π_s` na `reconcile` / `day_review`.
 
-**Status:** wdrożone w `planner/scenario_optimizer.py` (`PLANNER_SCENARIO_OPTIMIZER=1` domyślnie; `off` = p50).
+**Status:** wdrożone w `planner/scenario_optimizer.py` (`planner_scenario_optimizer` w Ustawieniach: włączony domyślnie; wyłączenie = p50).
 
 ---
 
@@ -468,7 +468,7 @@ Optimizer **może** zaplanować `ch > pv` (ładowanie magazynu z importu) albo p
 
 1. **Ograniczenia per tryb** (albo pre-label godzin): w `import_grid` → `ch ≤ pv`, `imp ≥ load − ε`, zakaz `dis`.
 2. **Mapper:** `(net < 0, ch ≈ pv, imp ≈ load)` → `import_grid`, nie `charge_grid`.
-3. **SOC slot 10%** w trajektorii planera (osobno od `PLANNER_SOC_MIN_PCT`).
+3. **SOC slot 10%** w trajektorii planera (osobno od `planner_soc_min_pct`).
 4. Ewentualnie **osobne zmienne** `ch_pv` / `ch_grid` w MILP.
 
 **Status:** świadoma luka — **nie** naprawiamy teraz; Guardian i §13 wystarczają na produkcję.

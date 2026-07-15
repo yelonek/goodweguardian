@@ -5,7 +5,7 @@
 | Co chcesz zmienić | Gdzie | Uwaga |
 |-------------------|--------|--------|
 | **Włączyć / wyłączyć zapisy do inwertera** (`set_ecoslot`) | Albo **`.env`** → `GUARDIAN_CONTROL_ENABLED`, albo **plik** `state/guardian_control_override.json` z `{"control_enabled": true}` / `false` | **Jeśli plik override istnieje i ma `control_enabled` — zawsze on wygrywa** (czytany co cykl). Dashboard i API tylko **zapisują ten sam plik** — to nie jest trzeci przełącznik. Żeby znów obowiązywało tylko `.env`, **usuń** plik override (lub usuń z niego klucz i napraw JSON — prościej skasować plik). Zmiana `.env` wymaga **restartu** procesu. |
-| **Pokrętła strojenia** (SOC defense, taper, soak, nowcast, korekta PV, ceny/taryfa, ekonomia planera) | **Tylko dashboard → Ustawienia / onboarding** (zapis do `state/settings.json`) | **Jedno źródło prawdy = `settings.json`.** `.env` NIE jest już warstwą strojenia. Pętla Guardiana czyta **na żywo** (bez restartu) — patrz sekcja niżej. |
+| **Pokrętła strojenia** (SOC defense, sufit mocy przy niskim SOC, soak, nowcast, korekta PV, ceny/taryfa, ekonomia planera) | **Tylko dashboard → Ustawienia / onboarding** (zapis do `state/settings.json`) | **Jedno źródło prawdy = `settings.json`.** `.env` NIE jest już warstwą strojenia. Pętla Guardiana czyta **na żywo** (bez restartu) — patrz sekcja niżej. |
 | **Telemetria** | **`TELEMETRY_ENABLED` w `.env`** | **Restart**. |
 | **Klucz do API dashboardu** | **`GUARDIAN_API_KEY` w `.env`** | Bez klucza endpointy kontroli/zapisu zwracają 401/503. |
 
@@ -138,9 +138,7 @@ Skrót hierarchii włączenia zapisów: tabela **„Skąd brać ustawienia”** 
 - Sprawdzaj, czy watchdog nie łamie „guard kierunku” (np. `remaining<0` i `cmd=On -%`).
 
 
-## Liniowy taper rozładowania (LFP)
+## Obrona niskiego SOC (sufit mocy)
 
-Przy niskim SOC (domyślnie **10%–20%**) wszystkie ścieżki **DISCHARGE** Guardiana mają liniowy sufit mocy: **70 W przy 10%** → **1000 W przy 20%** (env: `DISCHARGE_TAPER_*`). W tej strefie **nie** podbijamy do mocy domu — reszta idzie z sieci/PV. Uzasadnienie: duży prąd przy podłodze LFP obniża napięcie ogniwa; BMS wymusza doładowanie do ~15% (~0,5 kWh straty). Powyżej 20% SOC — bez tego limitu (tylko inwerter/bateria).
-
-**Nadwyżka PV przy niskim SOC:** gdy `PV ≥ load` i bilans godziny **≥ 0** → **CHARGE −1%** (`soc_low_pv_soak`, PV do baterii). **DISCHARGE +1%** (`soc_low_pv_surplus_balance_priority`) tylko przy **ujemnym** bilansie godziny — korekta straty, nie eksport produkcji. Usunięto błędną gałąź `soc_low_pv_surplus_no_discharge`, która przy dodatnim bilansie pchała PV na sieć.
+Przy niskim SOC (domyślnie **10%–20%**) wszystkie decyzje **DISCHARGE** Guardiana mają liniowy sufit mocy: **70 W przy 10%** → **1000 W przy 20%** (`soc_low_cap_*` w Ustawieniach). Clamp jest centralny (po Flappy / planie / deficit) — w tej strefie **nie** podbijamy do mocy domu; reszta idzie z sieci/PV. Uzasadnienie: duży prąd przy podłodze LFP obniża napięcie ogniwa; BMS wymusza doładowanie do ~15% (~0,5 kWh straty). Powyżej 20% SOC — bez tego limitu (tylko inwerter/bateria). Nie ma już osobnej strategii trybu (soak / load-cover / hold) przy niskim SOC.
 

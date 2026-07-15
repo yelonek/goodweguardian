@@ -10,15 +10,12 @@ Egzekucja planu: ``guardian_execution`` + tryb ``exec_mode`` (§13 PLANNING_SYST
 Moc baterii: dodatnia = rozładowanie, ujemna = ładowanie.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
-from guardian_settings import get_settings
 from planner.models import ExecMode
 
 # Obrony SOC a exec_mode (§13 PLANNING_SYSTEM.md)
-PLAN_CHARGE_INTENT_EPS_KWH = 0.05
 _EXEC_SKIP_SOC_FULL: frozenset[ExecMode] = frozenset({"export_profit"})
-_EXEC_SOC_LOW_ACTIVE: frozenset[ExecMode] = frozenset({"neutral"})
 
 
 @dataclass
@@ -34,7 +31,6 @@ class BalanceInputs:
     p_battery_w: float
     watts_per_percent: float = 70.0
     other_eco_slot_active: bool = False
-    low_soc_discharge_target_w: float | None = None
 
 
 @dataclass
@@ -52,18 +48,16 @@ class WatchdogConfig:
     soc_full_threshold_pct: float = 99.5
     soc_full_defense_charge_pct: int = -1
     soc_full_defense_release_power_kw: float = 0.5
-    soc_low_threshold_pct: float = 22.0
-    soc_low_defense_charge_pct: int = -1
-    soc_low_defense_release_remaining_kwh: float = 0.0
     soc_night_reserve_enabled: bool = True
     soc_night_reserve_pct: float = 0.0
     soc_night_reserve_charge_pct: int = -1
     night_reserve_hours: frozenset[int] = frozenset({22, 23, 0, 1, 2, 3, 4, 5})
     soc_full_defense_carryover_minutes: int = 5
-    discharge_taper_soc_high_pct: float = 20.0
-    discharge_taper_soc_low_pct: float = 10.0
-    discharge_taper_max_w_high: float = 1000.0
-    discharge_taper_max_w_low: float = 70.0
+    # Obrona niskiego SOC: liniowy sufit mocy DISCHARGE
+    soc_low_cap_soc_high_pct: float = 20.0
+    soc_low_cap_soc_low_pct: float = 10.0
+    soc_low_cap_w_high: float = 1000.0
+    soc_low_cap_w_low: float = 70.0
 
 
 @dataclass
@@ -149,16 +143,16 @@ def battery_discharge_cap_w(
     full_max_w: float | None = None,
 ) -> float | None:
     """
-    Liniowy sufit mocy rozładowania [W] w strefie ``soc_low .. soc_high``.
+    Liniowy sufit mocy rozładowania [W] w strefie obrony niskiego SOC
+    (``soc_low_cap_soc_low_pct`` .. ``soc_low_cap_soc_high_pct``).
 
     Powyżej ``soc_high``: ``None`` (brak limitu SOC). Poniżej ``soc_low``: clamp ``w_low``.
-    Bez podbijania do loadu — dom dopełnia sieć/PV.
     """
     soc = float(inp.soc_pct)
-    soc_high = float(cfg.discharge_taper_soc_high_pct)
-    soc_low = float(cfg.discharge_taper_soc_low_pct)
-    w_high = float(cfg.discharge_taper_max_w_high)
-    w_low = float(cfg.discharge_taper_max_w_low)
+    soc_high = float(cfg.soc_low_cap_soc_high_pct)
+    soc_low = float(cfg.soc_low_cap_soc_low_pct)
+    w_high = float(cfg.soc_low_cap_w_high)
+    w_low = float(cfg.soc_low_cap_w_low)
 
     if soc > soc_high:
         return None
@@ -176,6 +170,27 @@ def battery_discharge_cap_w(
     return max(0.0, cap)
 
 
+def clamp_discharge_to_soc_cap(
+    decision: WatchdogDecision,
+    inp: BalanceInputs,
+    cfg: WatchdogConfig,
+) -> WatchdogDecision:
+    """Ogranicz ``power_pct`` decyzji DISCHARGE do liniowego sufitu mocy vs SOC."""
+    if decision.mode != "discharge" or not decision.write_slot:
+        return decision
+    if int(decision.power_pct) <= 0:
+        return decision
+    cap_w = battery_discharge_cap_w(inp, cfg)
+    if cap_w is None:
+        return decision
+    max_pct = max(0, int(cap_w // float(inp.watts_per_percent)))
+    if int(decision.power_pct) <= max_pct:
+        return decision
+    if max_pct <= 0:
+        return _neutral_decision(f"{decision.reason}+soc_low_cap_hold")
+    return replace(decision, power_pct=max_pct, reason=f"{decision.reason}+soc_low_cap")
+
+
 def compute_export_profit_pace_w(
     inp: BalanceInputs,
     *,
@@ -186,8 +201,8 @@ def compute_export_profit_pace_w(
     """
     Moc rozładowania [W] dla ``export_profit``.
 
-    Powyżej progu niskiego SOC: max (plan, bateria, inwerter).
-    Poniżej: ``taper_max_w`` z ``battery_discharge_cap_w`` (LFP / taper rozładowania).
+    Powyżej strefy niskiego SOC: max (plan, bateria, inwerter).
+    Poniżej: ``taper_max_w`` z ``battery_discharge_cap_w`` (obrona niskiego SOC).
     Podłoga energii = ``soc_floor_pct`` (osobna gałąź w ``_exec_export_profit``).
     """
     cap_w = _discharge_cap_w(inp.p_inverter_w, inp.pv_w, inp.p_battery_w)
@@ -240,10 +255,6 @@ def _deficit_recovery_decision(
         target_battery_w = max(0.0, min(inp.p_battery_w, target_battery_w))
         target_battery_w = min(target_battery_w, cap_w)
         reason = "deficit_recovery"
-
-    taper_cap = battery_discharge_cap_w(inp, cfg)
-    if taper_cap is not None:
-        target_battery_w = min(target_battery_w, taper_cap)
 
     target_pct = _battery_pct_from_w(target_battery_w, inp.watts_per_percent)
     if target_pct <= 0 and min_assist > 0:
@@ -328,27 +339,14 @@ def decide_soc_defenses(
     """
     Obrony SOC / rezerwa nocna — warstwa nadrzędna; ``None`` = brak interwencji.
 
-    ``exec_mode=None`` (fallback bez planera): pełne obrony jak dotychczas.
-
-    Z planem:
+    - **Rezerwa nocna** — hold CHARGE poniżej progu w godzinach nocnych.
     - **Pełna bateria** — wyłączona w ``export_profit`` (celowe rozładowanie).
-    - **Niska bateria** — tylko w ``neutral`` (limit loadu). W ``export_pv_surplus``
-      bilans ma priorytet — strategia trybu bez ``soc_low_*``.
-    - **``export_profit``** — bez ``soc_low_*``; pacing i taper LFP w ``guardian_execution``.
-
-    W ``neutral`` przy niskim SOC i nadwyżce PV (``load ≤ PV``):
-    - ``remaining_kwh ≥ 0`` → ``soc_low_pv_soak`` (CHARGE −1%, PV do baterii);
-    - ``remaining_kwh < 0`` → ``soc_low_pv_surplus_balance_priority`` (DISCHARGE +1%
-      tylko na korektę ujemnego bilansu godziny — bez ciężkiego rozładowania magazynu).
+    - **Niska bateria** — nie jest strategią trybu; liniowy sufit mocy DISCHARGE
+      nakłada ``clamp_discharge_to_soc_cap`` po decyzji (Flappy / plan / deficit).
     """
+    del plan_battery_delta_kwh  # zachowane w sygnaturze dla kompatybilności callerów
 
-    low_soc_discharge_cap_active = (
-        float(inp.soc_pct) <= float(cfg.soc_low_threshold_pct)
-        and inp.low_soc_discharge_target_w is not None
-        and float(inp.low_soc_discharge_target_w) > 0.0
-    )
-
-    if inp.other_eco_slot_active and not low_soc_discharge_cap_active:
+    if inp.other_eco_slot_active:
         return _neutral_decision("other_eco_slot_active")
 
     if (
@@ -369,9 +367,7 @@ def decide_soc_defenses(
         )
 
     power_kw = power_needed_kw(inp.remaining_kwh, inp.time_to_end_s)
-
     skip_soc_full = exec_mode is not None and exec_mode in _EXEC_SKIP_SOC_FULL
-    apply_soc_low = exec_mode is None or exec_mode in _EXEC_SOC_LOW_ACTIVE
 
     if not skip_soc_full:
         carryover_min = max(1, int(cfg.soc_full_defense_carryover_minutes))
@@ -411,74 +407,6 @@ def decide_soc_defenses(
                     mode="charge",
                     reason="soc_full_defense_hold",
                 )
-
-    if apply_soc_low and float(inp.soc_pct) <= float(cfg.soc_low_threshold_pct):
-        low_soc_target_w = inp.low_soc_discharge_target_w
-        planner_soc_min_pct = get_settings().planner_soc_min_pct
-        at_soc_floor = float(inp.soc_pct) <= float(planner_soc_min_pct) + 0.5
-        plan_wants_charge = (
-            plan_battery_delta_kwh is not None
-            and float(plan_battery_delta_kwh) > PLAN_CHARGE_INTENT_EPS_KWH
-        )
-        prefer_charge_over_export = at_soc_floor or plan_wants_charge
-        hour_export_surplus = float(inp.remaining_kwh) >= 0.0
-
-        if low_soc_discharge_cap_active:
-            load_deficit_w = float(inp.consumption_w) - float(inp.pv_w)
-            if load_deficit_w <= 0.0:
-                # PV ≥ load: domyślnie PV → bateria; DISCHARGE +1% tylko gdy godzina w deficycie.
-                if prefer_charge_over_export or hour_export_surplus:
-                    duration_s = min(inp.time_to_end_s, max(60.0, inp.time_to_end_s))
-                    return WatchdogDecision(
-                        write_slot=True,
-                        enabled=True,
-                        power_pct=int(cfg.soc_low_defense_charge_pct),
-                        duration_s=duration_s,
-                        mode="charge",
-                        reason="soc_low_pv_soak",
-                    )
-                target_pct = max(1, int(cfg.min_discharge_assist_pct))
-                duration_s = min(inp.time_to_end_s, max(60.0, inp.time_to_end_s))
-                return WatchdogDecision(
-                    write_slot=True,
-                    enabled=True,
-                    power_pct=target_pct,
-                    duration_s=duration_s,
-                    mode="discharge",
-                    reason="soc_low_pv_surplus_balance_priority",
-                )
-            # Deficyt loadu przy niskim SOC: sieć dopełnia dom gdy godzina na plusie
-            # lub plan/SOC wymaga ładowania — nie rozładowuj baterii (LFP / import).
-            if prefer_charge_over_export or hour_export_surplus:
-                return _neutral_decision("soc_low_grid_covers_load")
-            target_w = min(float(low_soc_target_w), load_deficit_w, float(inp.p_battery_w))
-            taper_cap = battery_discharge_cap_w(inp, cfg)
-            if taper_cap is not None:
-                target_w = min(target_w, taper_cap)
-            target_pct = max(
-                1,
-                min(100, int(round(target_w / float(inp.watts_per_percent)))),
-            )
-            duration_s = min(inp.time_to_end_s, max(60.0, inp.time_to_end_s))
-            return WatchdogDecision(
-                write_slot=True,
-                enabled=True,
-                power_pct=target_pct,
-                duration_s=duration_s,
-                mode="discharge",
-                reason="soc_low_discharge_cap",
-            )
-        release_kwh = float(cfg.soc_low_defense_release_remaining_kwh)
-        if float(inp.remaining_kwh) > release_kwh:
-            duration_s = min(inp.time_to_end_s, max(60.0, inp.time_to_end_s))
-            return WatchdogDecision(
-                write_slot=True,
-                enabled=True,
-                power_pct=int(cfg.soc_low_defense_charge_pct),
-                duration_s=duration_s,
-                mode="charge",
-                reason="soc_low_defense_hold",
-            )
 
     return None
 
@@ -524,19 +452,7 @@ def decide_flappy_relative(
                 reason="neutral_pv_first",
                 time_to_end_s=inp.time_to_end_s,
             )
-        deficit_inp = BalanceInputs(
-            remaining_kwh=net,
-            time_to_end_s=inp.time_to_end_s,
-            pv_w=inp.pv_w,
-            consumption_w=inp.consumption_w,
-            soc_pct=inp.soc_pct,
-            p_inverter_w=inp.p_inverter_w,
-            p_battery_w=inp.p_battery_w,
-            watts_per_percent=inp.watts_per_percent,
-            other_eco_slot_active=inp.other_eco_slot_active,
-            low_soc_discharge_target_w=inp.low_soc_discharge_target_w,
-        )
-        return _deficit_recovery_decision(deficit_inp, cfg)
+        return _deficit_recovery_decision(inp, cfg)
 
     # target_net < 0 = planowany import; net > target → brakuje importu — nie soakuj PV do baterii.
     if target < 0.0 and net > target:
@@ -592,37 +508,38 @@ def decide_watchdog(
         soc_full_defense_carryover=soc_full_defense_carryover,
     )
     if soc is not None:
-        return soc
+        return clamp_discharge_to_soc_cap(soc, inp, cfg)
 
     if float(inp.remaining_kwh) < 0.0:
-        return _deficit_recovery_decision(inp, cfg)
+        decision = _deficit_recovery_decision(inp, cfg)
+    else:
+        soak = _end_hour_soak_decision(inp, cfg)
+        if soak is not None:
+            decision = soak
+        else:
+            cont = _continuous_soak_decision(inp, cfg)
+            if cont is not None:
+                decision = cont
+            else:
+                target = float(cfg.soak_target_kwh)
+                in_end_hour_window = inp.time_to_end_s <= float(cfg.end_hour_window_s)
+                if (
+                    not in_end_hour_window
+                    and float(inp.pv_w) > float(inp.consumption_w)
+                    and float(inp.remaining_kwh) < target
+                ):
+                    pct = max(1, int(cfg.flappy_buffer_discharge_pct))
+                    decision = WatchdogDecision(
+                        write_slot=True,
+                        enabled=True,
+                        power_pct=pct,
+                        duration_s=_slot_duration_s(inp.time_to_end_s),
+                        mode="discharge",
+                        reason="flappy_buffer_build",
+                    )
+                elif float(inp.remaining_kwh) >= target:
+                    decision = _neutral_decision("flappy_buffer_hold")
+                else:
+                    decision = _neutral_decision("flappy_neutral")
 
-    soak = _end_hour_soak_decision(inp, cfg)
-    if soak is not None:
-        return soak
-
-    cont = _continuous_soak_decision(inp, cfg)
-    if cont is not None:
-        return cont
-
-    target = float(cfg.soak_target_kwh)
-    in_end_hour_window = inp.time_to_end_s <= float(cfg.end_hour_window_s)
-    if (
-        not in_end_hour_window
-        and float(inp.pv_w) > float(inp.consumption_w)
-        and float(inp.remaining_kwh) < target
-    ):
-        pct = max(1, int(cfg.flappy_buffer_discharge_pct))
-        return WatchdogDecision(
-            write_slot=True,
-            enabled=True,
-            power_pct=pct,
-            duration_s=_slot_duration_s(inp.time_to_end_s),
-            mode="discharge",
-            reason="flappy_buffer_build",
-        )
-
-    if float(inp.remaining_kwh) >= target:
-        return _neutral_decision("flappy_buffer_hold")
-
-    return _neutral_decision("flappy_neutral")
+    return clamp_discharge_to_soc_cap(decision, inp, cfg)

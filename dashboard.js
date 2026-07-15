@@ -229,8 +229,6 @@ const WD_FIELD_LABELS = {
   soc_night_reserve_pct: "Min. SOC w nocy",
   soc_night_reserve_charge_pct: "Ładowanie w rezerwie",
   soc_night_reserve_hours: "Godziny rezerwy",
-  soc_low_defense_threshold_pct: "Próg niskiej obrony",
-  soc_full_defense_threshold_pct: "Próg pełnej obrony",
 };
 
 function formatWatchdogSource(source) {
@@ -1061,18 +1059,27 @@ function setNightReserveFieldsEnabled(on) {
 function renderWatchdogSoc(wds) {
   if (!wds || !wds.effective) return;
   const eff = wds.effective, src = wds.sources || {};
-  document.getElementById("wdPathLine").textContent = wds.override_exists
-    ? "Nadpisania z panelu: aktywne (niektóre progi różnią się od domyślnych)"
-    : "Tylko wartości domyślne — brak nadpisań w settings.json";
-  document.getElementById("watchdogSummaryCards").innerHTML = [
-    ["soc_night_reserve_enabled", eff.soc_night_reserve_enabled ? "włączona" : "wyłączona (planer)", formatWatchdogSource(src.soc_night_reserve_enabled)],
-    ["soc_night_reserve_pct", `${fmt(eff.soc_night_reserve_pct)}%`, formatWatchdogSource(src.soc_night_reserve_pct)],
-    ["soc_night_reserve_charge_pct", `${fmt(eff.soc_night_reserve_charge_pct)}%`, formatWatchdogSource(src.soc_night_reserve_charge_pct)],
-    ["soc_night_reserve_hours", (eff.soc_night_reserve_hours || []).join(", "), formatWatchdogSource(src.soc_night_reserve_hours)],
-    ["soc_low_defense_threshold_pct", `${fmt(eff.soc_low_defense_threshold_pct)}%`, formatWatchdogSource(src.soc_low_defense_threshold_pct)],
-    ["soc_full_defense_threshold_pct", `${fmt(eff.soc_full_defense_threshold_pct)}%`, formatWatchdogSource(src.soc_full_defense_threshold_pct)],
-  ].map(([k, v, s]) => {
+  const nightKeys = [
+    "soc_night_reserve_enabled",
+    "soc_night_reserve_pct",
+    "soc_night_reserve_charge_pct",
+    "soc_night_reserve_hours",
+  ];
+  const nightOverride = nightKeys.some((k) => src[k] === "override");
+  document.getElementById("wdPathLine").textContent = nightOverride
+    ? "Nadpisania z panelu: aktywne"
+    : "Tylko wartości domyślne — brak nadpisań rezerwy nocnej";
+  document.getElementById("watchdogSummaryCards").innerHTML = nightKeys.map((k) => {
+    let v;
+    if (k === "soc_night_reserve_enabled") {
+      v = eff.soc_night_reserve_enabled ? "włączona" : "wyłączona (planer)";
+    } else if (k === "soc_night_reserve_hours") {
+      v = (eff.soc_night_reserve_hours || []).join(", ");
+    } else {
+      v = `${fmt(eff[k])}%`;
+    }
     const title = WD_FIELD_LABELS[k] || k;
+    const s = formatWatchdogSource(src[k]);
     return `<div class="card"><div class="k">${title}</div><div class="v" style="font-size:16px;">${v}</div><div class="muted" style="font-size:11px;margin-top:4px;">źródło: ${s}</div></div>`;
   }).join("");
   const nightOn = Boolean(eff.soc_night_reserve_enabled);
@@ -1081,8 +1088,6 @@ function renderWatchdogSoc(wds) {
   document.getElementById("wd_soc_night_reserve_pct").value = eff.soc_night_reserve_pct;
   document.getElementById("wd_soc_night_reserve_charge_pct").value = eff.soc_night_reserve_charge_pct;
   document.getElementById("wd_soc_night_reserve_hours").value = (eff.soc_night_reserve_hours || []).join(",");
-  document.getElementById("wd_soc_low_defense_threshold_pct").value = eff.soc_low_defense_threshold_pct;
-  document.getElementById("wd_soc_full_defense_threshold_pct").value = eff.soc_full_defense_threshold_pct;
 }
 
 async function loadSettings(force) {
@@ -1120,8 +1125,8 @@ async function refreshControl() {
   const j = await r.json().catch(() => ({}));
   if (!r.ok) { el.textContent = j.detail || "error"; return; }
   renderToggleStatus(el, j.control_enabled, j.source, {
-    on: "Zapisy włączone",
-    off: "Zapisy wyłączone",
+    on: "Steruje inwerterem",
+    off: "Tylko podgląd",
   });
 }
 
@@ -1136,8 +1141,8 @@ async function putControl(enabled) {
   const j = await r.json().catch(() => ({}));
   if (!r.ok) { alert(j.detail || "error"); return; }
   renderToggleStatus(document.getElementById("controlStatus"), j.control_enabled, j.source, {
-    on: "Zapisy włączone",
-    off: "Zapisy wyłączone",
+    on: "Steruje inwerterem",
+    off: "Tylko podgląd",
   });
 }
 
@@ -1150,8 +1155,8 @@ async function refreshPlanner() {
   const j = await r.json().catch(() => ({}));
   if (!r.ok) { el.textContent = j.detail || "error"; hz.textContent = ""; return; }
   renderToggleStatus(el, j.planner_execution_enabled, j.source, {
-    on: "Plan stosowany w Guardianie",
-    off: "Plan tylko podgląd (nie stosowany)",
+    on: "Plan stosowany",
+    off: "Plan tylko podgląd",
   });
   if (!j.horizon_start) {
     hz.textContent = "Brak plan_latest.json — uruchom: uv run python -m planner plan";
@@ -1176,8 +1181,8 @@ async function putPlanner(enabled) {
   const j = await r.json().catch(() => ({}));
   if (!r.ok) { alert(j.detail || "error"); return; }
   renderToggleStatus(document.getElementById("plannerStatus"), j.planner_execution_enabled, j.source, {
-    on: "Plan stosowany w Guardianie",
-    off: "Plan tylko podgląd (nie stosowany)",
+    on: "Plan stosowany",
+    off: "Plan tylko podgląd",
   });
 }
 
@@ -1191,13 +1196,9 @@ async function saveWatchdog() {
   body.soc_night_reserve_enabled = nightEnabled === eb.soc_night_reserve_enabled ? null : nightEnabled;
   const snr = parseFloat(document.getElementById("wd_soc_night_reserve_pct").value);
   const src = parseInt(document.getElementById("wd_soc_night_reserve_charge_pct").value, 10);
-  const slow = parseFloat(document.getElementById("wd_soc_low_defense_threshold_pct").value);
-  const sfull = parseFloat(document.getElementById("wd_soc_full_defense_threshold_pct").value);
-  if ([snr, slow, sfull].some(Number.isNaN) || Number.isNaN(src)) { st.textContent = "Złe liczby"; return; }
+  if (Number.isNaN(snr) || Number.isNaN(src)) { st.textContent = "Złe liczby"; return; }
   body.soc_night_reserve_pct = flEq(snr, eb.soc_night_reserve_pct) ? null : snr;
   body.soc_night_reserve_charge_pct = src === eb.soc_night_reserve_charge_pct ? null : src;
-  body.soc_low_defense_threshold_pct = flEq(slow, eb.soc_low_defense_threshold_pct) ? null : slow;
-  body.soc_full_defense_threshold_pct = flEq(sfull, eb.soc_full_defense_threshold_pct) ? null : sfull;
   const hrs = document.getElementById("wd_soc_night_reserve_hours").value.split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => !Number.isNaN(n));
   body.soc_night_reserve_hours = hourArraysEqual(hrs, eb.soc_night_reserve_hours || []) ? null : hrs;
   const r = await fetch("/api/guardian/watchdog-soc", {
@@ -1214,10 +1215,20 @@ async function saveWatchdog() {
 async function resetWatchdog() {
   const key = getKey(), st = document.getElementById("wdSaveStatus");
   if (!key) { st.textContent = "Ustaw klucz API"; return; }
-  const r = await fetch("/api/guardian/watchdog-soc", { method: "DELETE", headers: { "X-Guardian-Api-Key": key } });
+  // Tylko pola rezerwy nocnej — progi low/full zostają w Zaawansowanym strojeniu.
+  const body = {
+    soc_night_reserve_enabled: null,
+    soc_night_reserve_pct: null,
+    soc_night_reserve_charge_pct: null,
+    soc_night_reserve_hours: null,
+  };
+  const r = await fetch("/api/guardian/watchdog-soc", {
+    method: "PUT", headers: { "Content-Type": "application/json", "X-Guardian-Api-Key": key },
+    body: JSON.stringify(body),
+  });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) { st.textContent = j.detail || "error"; return; }
-  st.textContent = "Przywrócono wartości domyślne (nadpisania usunięte).";
+  st.textContent = "Przywrócono domyślne rezerwy nocnej.";
   window._lastWds = j;
   renderWatchdogSoc(j);
 }
@@ -1466,7 +1477,7 @@ function settingInputHtml(name, sch, value) {
   }
   if (type === "array") {
     const csv = Array.isArray(value) ? value.join(",") : "";
-    return `<input data-setting="${name}" data-type="array" type="text" value="${csv}" placeholder="np. 22,23,0,1,2,3,4,5" />`;
+    return `<input class="t-input-wide" data-setting="${name}" data-type="array" type="text" value="${csv}" placeholder="np. 22,23,0,1,2,3,4,5" />`;
   }
   const step = type === "integer" ? "1" : "any";
   let min = "";
@@ -1474,16 +1485,29 @@ function settingInputHtml(name, sch, value) {
   else if (sch.exclusiveMinimum !== undefined) min = ` min="${sch.exclusiveMinimum}"`;
   const max = sch.maximum !== undefined ? ` max="${sch.maximum}"` : "";
   const unit = sch.unit ? `<span class="t-unit">${escapeHtml(sch.unit)}</span>` : "";
-  return `<div class="t-row"><input data-setting="${name}" data-type="${type}" type="number" step="${step}"${min}${max} value="${value}" />${unit}</div>`;
+  return `<div class="t-row"><input class="t-input-num" data-setting="${name}" data-type="${type}" type="number" step="${step}"${min}${max} value="${value}" />${unit}</div>`;
 }
 
-function renderSettingsForm(payload, container) {
+// Rezerwa nocna ma dedykowany panel u góry — nie duplikować w Zaawansowanym strojeniu.
+// Obrona pełnej / niskiej baterii (w tym sufit mocy przy niskim SOC) zostaje w grupach na dole.
+const NIGHT_RESERVE_DEDICATED_FIELDS = new Set([
+  "soc_night_reserve_enabled",
+  "soc_night_reserve_pct",
+  "soc_night_reserve_charge_pct",
+  "soc_night_reserve_hours",
+]);
+
+function renderSettingsForm(payload, container, { excludeNightReserve = false } = {}) {
   const props = (payload.schema && payload.schema.properties) || {};
   const groups = payload.groups || [];
   const eff = payload.effective || {};
   const src = payload.sources || {};
   const html = groups.map((g) => {
-    const fields = Object.keys(props).filter((n) => (props[n].group || "") === g.key);
+    const fields = Object.keys(props).filter((n) => {
+      if ((props[n].group || "") !== g.key) return false;
+      if (excludeNightReserve && NIGHT_RESERVE_DEDICATED_FIELDS.has(n)) return false;
+      return true;
+    });
     if (!fields.length) return "";
     const rows = fields.map((n) => {
       const sch = props[n];
@@ -1549,7 +1573,7 @@ async function loadTuning() {
   try {
     const p = await fetchJson("/api/settings", 10000);
     window._lastSettings = p;
-    renderSettingsForm(p, container);
+    renderSettingsForm(p, container, { excludeNightReserve: true });
   } catch (e) {
     container.innerHTML = '<div class="muted">Błąd: ' + escapeHtml(String(e)) + "</div>";
   }
@@ -1563,7 +1587,7 @@ async function saveTuning() {
   st.textContent = "Zapisuję…";
   const overrides = collectSettingsOverrides(container, p);
   const j = await putSettings(overrides, false, st);
-  if (j) { window._lastSettings = j; renderSettingsForm(j, container); st.textContent = "Zapisano."; }
+  if (j) { window._lastSettings = j; renderSettingsForm(j, container, { excludeNightReserve: true }); st.textContent = "Zapisano."; }
 }
 
 async function resetTuning() {
@@ -1574,7 +1598,7 @@ async function resetTuning() {
   const j = await r.json().catch(() => ({}));
   if (!r.ok) { st.textContent = "Błąd resetu"; return; }
   window._lastSettings = j;
-  renderSettingsForm(j, document.getElementById("tuningContainer"));
+  renderSettingsForm(j, document.getElementById("tuningContainer"), { excludeNightReserve: true });
   st.textContent = "Przywrócono wartości domyślne.";
 }
 

@@ -90,9 +90,11 @@ class G12TariffConfig(BaseModel):
 
 def g12_tariff_from_env() -> G12TariffConfig:
     """
-    Składowe taryfy z jednolitych ustawień (env → settings.json), czytane na żywo:
+    Składowe taryfy z ``get_settings()`` (``settings.json``), czytane na żywo:
       tariff_distribution_day_pln_kwh / tariff_distribution_night_pln_kwh
       tariff_energy_day_pln_kwh / tariff_energy_night_pln_kwh
+
+    Nazwa funkcji jest historyczna (kiedyś .env); źródłem nie jest już środowisko.
 
     Strefa dzień/noc wg godzin G12: ``ENEA_G12_NIGHT_HOURS`` (Enea: 22–6 i 13–15 zimą).
     Import netto w godzinie: dystrybucja + energia wg strefy. Eksport netto: rozliczenie RCE (poza tym modelem).

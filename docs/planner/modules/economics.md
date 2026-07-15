@@ -10,7 +10,7 @@
 
 **Cel optimizera:** max **Σ** `cashflow_pln` po godzinach z cenami.
 
-**Wear baterii:** `PLANNER_BATTERY_CYCLE_COST_PLN` × kWh **rozładowania** w godzinie (ład bez kary).
+**Wear baterii:** `planner_battery_cycle_cost_pln` (Ustawienia) × kWh **rozładowania** w godzinie (ład bez kary).
 
 **Wejście:** `net_kwh`, obie stawki dla tej h.
 

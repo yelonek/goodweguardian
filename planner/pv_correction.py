@@ -10,7 +10,7 @@ from typing import Any
 from guardian_config import TELEMETRY_DIR
 from guardian_settings import get_settings
 
-# Stałe modułu strojenia sourcowane z jednolitych ustawień (env → settings.json).
+# Stałe modułu — aliasy z get_settings() (settings.json); proces planera ładuje je przy starcie.
 _s = get_settings()
 PV_CORRECTION_ENABLED = _s.pv_correction_enabled
 PV_CORRECTION_EPS_KWH = _s.pv_correction_eps_kwh

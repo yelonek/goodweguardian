@@ -1,4 +1,4 @@
-"""guardian_watchdog_override: widok 6 pól SOC nad guardian_settings (settings.json)."""
+"""guardian_watchdog_override: widok pól SOC panelu nad guardian_settings (settings.json)."""
 
 from __future__ import annotations
 

@@ -99,23 +99,24 @@ class TestWatchdogPolicy:
         assert d.write_slot is True
         assert d.reason == "flappy_buffer_build"
 
-    def test_flappy_skips_low_soc(self, default_inputs: BalanceInputs) -> None:
+    def test_flappy_buffer_build_still_runs_at_low_soc(
+        self, default_inputs: BalanceInputs
+    ) -> None:
+        """Niski SOC nie blokuje Flappy — clamp ogranicza tylko moc DISCHARGE."""
         default_inputs.remaining_kwh = 0.05
         default_inputs.time_to_end_s = 2400
         default_inputs.pv_w = 3000.0
         default_inputs.consumption_w = 1000.0
-        default_inputs.soc_pct = 20.0
-        cfg = WatchdogConfig(
-            soc_low_threshold_pct=22.0,
-            soc_low_defense_release_remaining_kwh=0.0,
-        )
+        default_inputs.soc_pct = 15.0
         d = decide_watchdog(
             default_inputs,
-            cfg=cfg,
+            cfg=WatchdogConfig(),
             minute_of_hour=3,
         )
         assert d.write_slot is True
-        assert d.reason == "soc_low_defense_hold"
+        assert d.mode == "discharge"
+        assert d.reason == "flappy_buffer_build"
+        assert d.power_pct == 1
 
     def test_flappy_skips_when_soc_full_band(
         self, default_inputs: BalanceInputs
@@ -443,39 +444,41 @@ class TestWatchdogPolicy:
         assert d.reason != "soc_full_defense_hold"
         assert d.mode == "discharge"
 
-    def test_soc_low_defense_holds_while_remaining_above_hour_target(
+    def test_soc_low_cap_limits_deficit_discharge(
         self, default_inputs: BalanceInputs
     ) -> None:
-        default_inputs.soc_pct = 18.0
-        default_inputs.time_to_end_s = 2400
-        default_inputs.remaining_kwh = 0.05
-        cfg = WatchdogConfig(
-            soc_low_threshold_pct=22.0,
-            soc_low_defense_charge_pct=-1,
-            soc_low_defense_release_remaining_kwh=0.0,
-        )
-        d = decide_watchdog(default_inputs, cfg=cfg)
-        assert d.write_slot is True
-        assert d.power_pct == -1
-        assert d.reason == "soc_low_defense_hold"
-
-    def test_soc_low_discharge_cap_uses_recent_average_regardless_of_balance(
-        self, default_inputs: BalanceInputs
-    ) -> None:
-        default_inputs.soc_pct = 18.0
+        default_inputs.soc_pct = 15.0
         default_inputs.time_to_end_s = 2400
         default_inputs.remaining_kwh = -0.20
         default_inputs.pv_w = 100.0
         default_inputs.consumption_w = 1000.0
-        default_inputs.low_soc_discharge_target_w = 420.0
-        cfg = WatchdogConfig(soc_low_threshold_pct=20.0)
+        cfg = WatchdogConfig(
+            soc_low_cap_soc_high_pct=20.0,
+            soc_low_cap_soc_low_pct=10.0,
+            soc_low_cap_w_high=1000.0,
+            soc_low_cap_w_low=70.0,
+        )
         d = decide_watchdog(default_inputs, cfg=cfg)
         assert d.write_slot is True
-        assert d.power_pct == 6
         assert d.mode == "discharge"
-        assert d.reason == "soc_low_discharge_cap"
+        assert "deficit" in d.reason
+        # 15% → 535 W; watts_per_percent=70 → floor 7
+        assert d.power_pct == 7
 
-    def test_soc_low_pv_surplus_soaks_into_battery_when_hour_is_export(
+    def test_other_eco_slot_blocks_even_at_low_soc(
+        self, default_inputs: BalanceInputs
+    ) -> None:
+        default_inputs.soc_pct = 15.0
+        default_inputs.time_to_end_s = 2400
+        default_inputs.remaining_kwh = -0.20
+        default_inputs.pv_w = 100.0
+        default_inputs.consumption_w = 1000.0
+        default_inputs.other_eco_slot_active = True
+        d = decide_watchdog(default_inputs, cfg=WatchdogConfig())
+        assert d.write_slot is False
+        assert d.reason == "other_eco_slot_active"
+
+    def test_continuous_soak_still_charges_at_low_soc_with_pv_surplus(
         self, default_inputs: BalanceInputs
     ) -> None:
         default_inputs.soc_pct = 15.0
@@ -483,30 +486,26 @@ class TestWatchdogPolicy:
         default_inputs.remaining_kwh = 3.0
         default_inputs.pv_w = 6000.0
         default_inputs.consumption_w = 500.0
-        default_inputs.low_soc_discharge_target_w = 500.0
-        cfg = WatchdogConfig(soc_low_threshold_pct=20.0)
-        d = decide_watchdog(default_inputs, cfg=cfg)
+        d = decide_watchdog(default_inputs, cfg=WatchdogConfig())
         assert d.write_slot is True
-        assert d.power_pct == -1
         assert d.mode == "charge"
-        assert d.reason == "soc_low_pv_soak"
+        assert d.reason == "continuous_battery_soak"
 
-    def test_h12_replay_low_soc_pv_soaks_not_exports(self, default_inputs: BalanceInputs) -> None:
-        """Regresja 2026-06-21 h12:00 — SOC 15%, 6 kW PV, 2.5 kW dom, bilans 0 → CHARGE."""
+    def test_h12_replay_low_soc_pv_surplus_uses_flappy_not_old_soak(
+        self, default_inputs: BalanceInputs
+    ) -> None:
+        """Regresja: SOC 15%, 6 kW PV, 2.5 kW dom, bilans 0 → Flappy + clamp, nie soc_low_pv_soak."""
         default_inputs.soc_pct = 15.0
         default_inputs.time_to_end_s = 3600
         default_inputs.remaining_kwh = 0.0
         default_inputs.pv_w = 6340.0
         default_inputs.consumption_w = 2521.0
-        default_inputs.low_soc_discharge_target_w = 2500.0
-        cfg = WatchdogConfig(soc_low_threshold_pct=20.0)
-        d = decide_watchdog(default_inputs, cfg=cfg)
-        assert d.reason == "soc_low_pv_soak"
-        assert d.mode == "charge"
-        assert d.power_pct == -1
-        assert d.reason != "soc_low_pv_surplus_no_discharge"
+        d = decide_watchdog(default_inputs, cfg=WatchdogConfig())
+        assert d.mode == "discharge"
+        assert d.reason == "flappy_buffer_build"
+        assert d.power_pct == 1
 
-    def test_soc_low_pv_surplus_prioritizes_negative_hour_balance(
+    def test_deficit_with_pv_surplus_at_low_soc_is_clamped(
         self, default_inputs: BalanceInputs
     ) -> None:
         default_inputs.soc_pct = 15.0
@@ -514,30 +513,16 @@ class TestWatchdogPolicy:
         default_inputs.remaining_kwh = -0.20
         default_inputs.pv_w = 6000.0
         default_inputs.consumption_w = 500.0
-        default_inputs.low_soc_discharge_target_w = 500.0
-        cfg = WatchdogConfig(soc_low_threshold_pct=20.0, min_discharge_assist_pct=1)
-        d = decide_watchdog(default_inputs, cfg=cfg)
+        d = decide_watchdog(
+            default_inputs,
+            cfg=WatchdogConfig(min_discharge_assist_pct=1),
+        )
         assert d.write_slot is True
-        assert d.power_pct == 1
         assert d.mode == "discharge"
-        assert d.reason == "soc_low_pv_surplus_balance_priority"
+        assert "deficit" in d.reason
+        assert d.power_pct <= 7  # cap 535 W / 70 W/%
 
-    def test_soc_low_discharge_cap_is_limited_by_load_deficit(
-        self, default_inputs: BalanceInputs
-    ) -> None:
-        default_inputs.soc_pct = 18.0
-        default_inputs.time_to_end_s = 2400
-        default_inputs.remaining_kwh = -0.20
-        default_inputs.pv_w = 700.0
-        default_inputs.consumption_w = 1000.0
-        default_inputs.low_soc_discharge_target_w = 700.0
-        cfg = WatchdogConfig(soc_low_threshold_pct=20.0)
-        d = decide_watchdog(default_inputs, cfg=cfg)
-        assert d.write_slot is True
-        assert d.power_pct == 4
-        assert d.reason == "soc_low_discharge_cap"
-
-    def test_soc_low_discharge_cap_can_override_other_eco_slot(
+    def test_night_soc_reserve_has_priority_over_low_soc_discharge(
         self, default_inputs: BalanceInputs
     ) -> None:
         default_inputs.soc_pct = 18.0
@@ -545,41 +530,7 @@ class TestWatchdogPolicy:
         default_inputs.remaining_kwh = -0.20
         default_inputs.pv_w = 100.0
         default_inputs.consumption_w = 1000.0
-        default_inputs.low_soc_discharge_target_w = 350.0
-        default_inputs.other_eco_slot_active = True
-        cfg = WatchdogConfig(soc_low_threshold_pct=20.0)
-        d = decide_watchdog(default_inputs, cfg=cfg)
-        assert d.write_slot is True
-        assert d.power_pct == 5
-        assert d.reason == "soc_low_discharge_cap"
-
-    def test_soc_low_load_spike_does_not_discharge_when_hour_export_surplus(
-        self, default_inputs: BalanceInputs
-    ) -> None:
-        """Reprodukcja 12:44: Tesla spike przy +2.8 kWh eksportu — sieć, nie bateria."""
-        default_inputs.soc_pct = 15.0
-        default_inputs.time_to_end_s = 960
-        default_inputs.remaining_kwh = 2.83
-        default_inputs.pv_w = 6080.0
-        default_inputs.consumption_w = 7251.0
-        default_inputs.low_soc_discharge_target_w = 2500.0
-        default_inputs.other_eco_slot_active = True
-        cfg = WatchdogConfig(soc_low_threshold_pct=20.0)
-        d = decide_watchdog(default_inputs, cfg=cfg)
-        assert d.write_slot is False
-        assert d.reason == "soc_low_grid_covers_load"
-
-    def test_night_soc_reserve_has_priority_over_low_soc_discharge_cap(
-        self, default_inputs: BalanceInputs
-    ) -> None:
-        default_inputs.soc_pct = 18.0
-        default_inputs.time_to_end_s = 2400
-        default_inputs.remaining_kwh = -0.20
-        default_inputs.pv_w = 100.0
-        default_inputs.consumption_w = 1000.0
-        default_inputs.low_soc_discharge_target_w = 420.0
         cfg = WatchdogConfig(
-            soc_low_threshold_pct=20.0,
             soc_night_reserve_pct=20.0,
             soc_night_reserve_charge_pct=-1,
             night_reserve_hours=frozenset({22, 23, 0, 1, 2, 3, 4, 5}),
@@ -594,19 +545,19 @@ class TestWatchdogPolicy:
         assert d.mode == "charge"
         assert d.reason == "night_soc_reserve_hold"
 
-    def test_soc_low_defense_releases_when_remaining_at_or_below_hour_target(
+    def test_soc_low_cap_no_limit_above_high(
         self, default_inputs: BalanceInputs
     ) -> None:
-        default_inputs.soc_pct = 18.0
+        default_inputs.soc_pct = 25.0
         default_inputs.time_to_end_s = 2400
-        default_inputs.remaining_kwh = -0.01
-        cfg = WatchdogConfig(
-            soc_low_threshold_pct=22.0,
-            soc_low_defense_charge_pct=-1,
-            soc_low_defense_release_remaining_kwh=0.0,
-        )
-        d = decide_watchdog(default_inputs, cfg=cfg)
-        assert d.reason != "soc_low_defense_hold"
+        default_inputs.remaining_kwh = -1.0
+        default_inputs.pv_w = 200.0
+        default_inputs.consumption_w = 2000.0
+        d = decide_watchdog(default_inputs, cfg=WatchdogConfig())
+        assert d.write_slot is True
+        assert d.mode == "discharge"
+        assert "soc_low_cap" not in d.reason
+        assert d.power_pct > 7
 
     def test_night_soc_reserve_holds_in_night_hour(
         self, default_inputs: BalanceInputs
@@ -686,8 +637,8 @@ class TestWatchdogPolicy:
         assert d.reason != "night_soc_reserve_hold"
 
 
-class TestLinearDischargeTaper:
-    def test_deficit_recovery_capped_by_linear_taper(
+class TestSocLowDischargeCap:
+    def test_deficit_recovery_capped_by_soc_low_cap(
         self, default_inputs: BalanceInputs
     ) -> None:
         default_inputs.soc_pct = 12.0
@@ -696,34 +647,28 @@ class TestLinearDischargeTaper:
         default_inputs.pv_w = 200.0
         default_inputs.consumption_w = 2000.0
         cfg = WatchdogConfig(
-            soc_low_threshold_pct=25.0,
-            discharge_taper_soc_high_pct=20.0,
-            discharge_taper_soc_low_pct=10.0,
-            discharge_taper_max_w_high=1000.0,
-            discharge_taper_max_w_low=70.0,
+            soc_low_cap_soc_high_pct=20.0,
+            soc_low_cap_soc_low_pct=10.0,
+            soc_low_cap_w_high=1000.0,
+            soc_low_cap_w_low=70.0,
         )
         d = decide_watchdog(default_inputs, cfg=cfg)
         assert d.write_slot is True
         assert d.mode == "discharge"
-        assert d.power_pct == 4  # ~256 W cap przy 12% SOC
+        assert d.power_pct == 3  # ~256 W → floor(256/70)=3; reason may include +soc_low_cap
         assert "deficit" in d.reason
 
-    def test_soc_low_discharge_cap_limited_by_linear_taper(
+    def test_export_pv_path_via_watchdog_clamped_in_zone(
         self, default_inputs: BalanceInputs
     ) -> None:
-        default_inputs.soc_pct = 12.0
+        """Powyżej strefy — bez limitu; w strefie — clamp mocy."""
+        default_inputs.soc_pct = 25.0
         default_inputs.time_to_end_s = 2400
-        default_inputs.remaining_kwh = -0.20
-        default_inputs.pv_w = 100.0
-        default_inputs.consumption_w = 1000.0
-        default_inputs.low_soc_discharge_target_w = 700.0
-        cfg = WatchdogConfig(
-            soc_low_threshold_pct=20.0,
-            discharge_taper_soc_high_pct=20.0,
-            discharge_taper_soc_low_pct=10.0,
-            discharge_taper_max_w_high=1000.0,
-            discharge_taper_max_w_low=70.0,
-        )
-        d = decide_watchdog(default_inputs, cfg=cfg)
-        assert d.reason == "soc_low_discharge_cap"
-        assert d.power_pct == 4  # min(load, avg, taper) ≈ 256 W
+        default_inputs.remaining_kwh = -1.0
+        default_inputs.pv_w = 200.0
+        default_inputs.consumption_w = 2000.0
+        above = decide_watchdog(default_inputs, cfg=WatchdogConfig())
+        default_inputs.soc_pct = 12.0
+        below = decide_watchdog(default_inputs, cfg=WatchdogConfig())
+        assert above.power_pct > below.power_pct
+        assert below.power_pct == 3

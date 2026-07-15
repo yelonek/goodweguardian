@@ -79,7 +79,7 @@ Guardian (`hourly_balance_run.py`) **nie czyta** planu — sterowanie bez zmian 
 
 | Plik | Odpowiedzialność |
 |------|------------------|
-| `config.py` | Ścieżki `data/planner/*`, env (`PLANNER_*`) |
+| `config.py` | Ścieżki `data/planner/*`, aliasy z `get_settings()` |
 | `models.py` | `HourInputs`, `HourPlan`, `DailyPlan`, `AuditEvent`, `DayReview`, … |
 | `inputs.py` | Składanie prognoz + cen na horyzoncie |
 | `pv_correction.py` | `k_intra` z telemetrii vs Solcast p50 (h, h+1) |
@@ -139,26 +139,28 @@ Katalogi wynikowe (w `.gitignore` przez `data/`): `data/planner/plans/`, `audit/
 
 - **Zmienna sterowania:** docs — `e_bat_kwh[h]`; kod — `target_net_kwh` (bilans licznika), pochodna `battery_delta_kwh`.
 - **Solver:** docs — coordinate descent; kod — **programowanie dynamiczne** (SOC dyskretny × siatka net).
-- **Korekta load:** docs — jeden `factor`; kod — nowcast z `load_forecast` (waga malejąca w czasie, env `LOAD_NOWCAST_*`).
+- **Korekta load:** docs — jeden `factor`; kod — nowcast z `load_forecast` (waga malejąca w czasie, pola `load_nowcast_*` w Ustawieniach).
 - **Wyjście:** docs — `state/planner_output.json` + enum policy; kod — plan JSON + audyt, bez mapowania na eco-slot.
 - **Horyzont:** docs — rolling od `now`; kod — **cała doba od 00:00** przy `plan` (parametr `start_dt` w `build_hour_inputs`).
 
 ---
 
-## Zmienne środowiskowe (planer)
+## Strojenie planera (settings.json)
 
-| Zmienna | Domyślnie | Znaczenie |
-|---------|-----------|-----------|
-| `PLANNER_BATTERY_KWH` | 10 | Pojemność magazynu [kWh] |
-| `PLANNER_BATTERY_ETA` | 0.92 | Sprawność round-trip |
-| `PLANNER_SOC_MIN_PCT` / `MAX` | 10 / 100 | Granice SOC |
-| `PLANNER_HORIZON_HOURS` | 24 | Długość horyzontu (legacy API) |
-| `PLANNER_LOAD_LOOKBACK_DAYS` | 28 | Lookback load forecast |
-| `PV_CORRECTION_ENABLED` | true | Włącz korektę `k_intra` |
-| `PV_CORRECTION_EPS_KWH` | 0.1 | Próg ε [kWh/h] |
-| `PV_CORRECTION_K_MIN` / `K_MAX` | 0.65 / 1.35 | Clip `k_intra` |
+Pokrętła poniżej są w **Ustawieniach** (`GuardianSettings` → `state/settings.json`), nie w `.env`. Aliasów modułowych (`PLANNER_*`, `PV_CORRECTION_*`) używa kod — źródło wartości to `get_settings()`.
 
-Współdzielone z Guardianem: `P_BATTERY`, proxy RCE/Solcast, taryfa G12, `data/telemetry/`.
+| Pole (`settings.json`) | Alias w kodzie | Domyślnie | Znaczenie |
+|------------------------|----------------|-----------|-----------|
+| `battery_capacity_kwh` | `PLANNER_BATTERY_KWH` | 10 | Pojemność magazynu [kWh] |
+| `planner_battery_eta` | `PLANNER_BATTERY_ETA` | 0.92 | Sprawność round-trip |
+| `planner_soc_min_pct` / `planner_soc_max_pct` | `PLANNER_SOC_MIN/MAX_PCT` | 10 / 100 | Granice SOC |
+| `planner_horizon_hours` | `PLANNER_HORIZON_HOURS` | 24 | Długość horyzontu |
+| `planner_load_lookback_days` | `PLANNER_LOAD_LOOKBACK_DAYS` | 28 | Lookback load forecast |
+| `pv_correction_enabled` | `PV_CORRECTION_ENABLED` | true | Włącz korektę `k_intra` |
+| `pv_correction_eps_kwh` | `PV_CORRECTION_EPS_KWH` | 0.1 | Próg ε [kWh/h] |
+| `pv_correction_k_min` / `k_max` | `PV_CORRECTION_K_MIN/MAX` | 0.65 / 1.35 | Clip `k_intra` |
+
+Współdzielone z Guardianem (infrastruktura, `.env`): `P_BATTERY`, proxy RCE/Solcast, `data/telemetry/`. Taryfa G12 — też `settings.json` (`tariff_*`).
 
 ---
 

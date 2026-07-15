@@ -35,7 +35,6 @@ GROUP_LABELS: dict[str, str] = {
     "execution": "Egzekucja planu",
     "soc_full": "Obrona SOC — pełna bateria",
     "soc_low": "Obrona SOC — niska bateria",
-    "taper": "Taper rozładowania (niski SOC)",
     "night_reserve": "Rezerwa nocna SOC",
     "nowcast": "Nowcast zużycia (load)",
     "pv_correction": "Korekta prognozy PV",
@@ -143,44 +142,22 @@ class GuardianSettings(BaseModel):
         description="Maksymalna długość okna dla obrony pełnego SOC.",
     )
 
-    # --- Obrona SOC niska ---
-    soc_low_defense_threshold_pct: float = Field(
-        22.0, ge=0.0, le=100.0, json_schema_extra=_meta("soc_low", "%"),
-        description="Próg SOC, poniżej którego ograniczamy discharge do zużycia domu.",
+    # --- Obrona SOC niska (liniowy sufit mocy rozładowania) ---
+    soc_low_cap_soc_high_pct: float = Field(
+        20.0, ge=0.0, le=100.0, json_schema_extra=_meta("soc_low", "%"),
+        description="Górny SOC strefy obrony (powyżej: brak limitu mocy).",
     )
-    soc_low_discharge_avg_minutes: int = Field(
-        60, ge=0, le=240, json_schema_extra=_meta("soc_low", "min"),
-        description="Okno średniej kroczącej zużycia domu. 0 = wyłącz limit (legacy CHARGE).",
+    soc_low_cap_soc_low_pct: float = Field(
+        10.0, ge=0.0, le=100.0, json_schema_extra=_meta("soc_low", "%"),
+        description="Dolny SOC strefy obrony (poniżej: clamp do soc_low_cap_w_low).",
     )
-    soc_low_discharge_max_w: float = Field(
-        0.0, ge=0.0, json_schema_extra=_meta("soc_low", "W"),
-        description="Opcjonalny sufit limitu discharge. 0 = bez dodatkowego sufitu poza baterią.",
+    soc_low_cap_w_high: float = Field(
+        1000.0, ge=0.0, json_schema_extra=_meta("soc_low", "W"),
+        description="Sufit mocy discharge przy górnym SOC strefy.",
     )
-    soc_low_defense_charge_pct: int = Field(
-        -1, ge=-100, le=100, json_schema_extra=_meta("soc_low", "%"),
-        description="Legacy fallback: moc utrzymania (ujemne = ładowanie 1%).",
-    )
-    soc_low_defense_release_remaining_kwh: float = Field(
-        0.0, json_schema_extra=_meta("soc_low", "kWh"),
-        description="Próg bilansu godziny, poniżej którego zwalniamy legacy hold.",
-    )
-
-    # --- Taper rozładowania ---
-    discharge_taper_soc_high_pct: float = Field(
-        20.0, ge=0.0, le=100.0, json_schema_extra=_meta("taper", "%"),
-        description="Górny SOC strefy taperu (powyżej: brak limitu SOC).",
-    )
-    discharge_taper_soc_low_pct: float = Field(
-        10.0, ge=0.0, le=100.0, json_schema_extra=_meta("taper", "%"),
-        description="Dolny SOC strefy taperu (poniżej: clamp do w_low).",
-    )
-    discharge_taper_max_w_high: float = Field(
-        1000.0, ge=0.0, json_schema_extra=_meta("taper", "W"),
-        description="Sufit mocy discharge przy górnym SOC strefy taperu.",
-    )
-    discharge_taper_max_w_low: float = Field(
-        70.0, ge=0.0, json_schema_extra=_meta("taper", "W"),
-        description="Sufit mocy discharge przy dolnym SOC strefy taperu.",
+    soc_low_cap_w_low: float = Field(
+        70.0, ge=0.0, json_schema_extra=_meta("soc_low", "W"),
+        description="Sufit mocy discharge przy dolnym SOC strefy.",
     )
 
     # --- Rezerwa nocna SOC ---
