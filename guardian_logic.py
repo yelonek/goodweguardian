@@ -17,6 +17,12 @@ from planner.models import ExecMode
 # Obrony SOC a exec_mode (§13 PLANNING_SYSTEM.md)
 _EXEC_SKIP_SOC_FULL: frozenset[ExecMode] = frozenset({"export_profit"})
 
+# Hold CHARGE −1% przy pełnej baterii / rezerwie nocnej (kontrakt, nie strojenie).
+SOC_HOLD_CHARGE_PCT = -1
+
+# Domyślna długość zwykłego eco-slotu [min] (nie strojenie UI).
+WATCHDOG_MAX_SLOT_MIN = 5
+
 
 @dataclass
 class BalanceInputs:
@@ -46,11 +52,9 @@ class WatchdogConfig:
     end_hour_window_s: int = 600
     end_hour_max_remaining_kwh: float = 0.2
     soc_full_threshold_pct: float = 99.5
-    soc_full_defense_charge_pct: int = -1
     soc_full_defense_release_power_kw: float = 0.5
     soc_night_reserve_enabled: bool = True
     soc_night_reserve_pct: float = 0.0
-    soc_night_reserve_charge_pct: int = -1
     night_reserve_hours: frozenset[int] = frozenset({22, 23, 0, 1, 2, 3, 4, 5})
     soc_full_defense_carryover_minutes: int = 5
     # Obrona niskiego SOC: liniowy sufit mocy DISCHARGE
@@ -360,7 +364,7 @@ def decide_soc_defenses(
         return WatchdogDecision(
             write_slot=True,
             enabled=True,
-            power_pct=int(cfg.soc_night_reserve_charge_pct),
+            power_pct=int(SOC_HOLD_CHARGE_PCT),
             duration_s=duration_s,
             mode="charge",
             reason="night_soc_reserve_hold",
@@ -388,7 +392,7 @@ def decide_soc_defenses(
                 return WatchdogDecision(
                     write_slot=True,
                     enabled=True,
-                    power_pct=int(cfg.soc_full_defense_charge_pct),
+                    power_pct=int(SOC_HOLD_CHARGE_PCT),
                     duration_s=duration_s,
                     mode="charge",
                     reason="soc_full_defense_carryover",
@@ -402,7 +406,7 @@ def decide_soc_defenses(
                 return WatchdogDecision(
                     write_slot=True,
                     enabled=True,
-                    power_pct=int(cfg.soc_full_defense_charge_pct),
+                    power_pct=int(SOC_HOLD_CHARGE_PCT),
                     duration_s=duration_s,
                     mode="charge",
                     reason="soc_full_defense_hold",

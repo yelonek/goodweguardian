@@ -28,32 +28,32 @@ def test_defaults_when_no_file(tmp_settings) -> None:
 
 
 def test_override_layer_precedence(tmp_settings) -> None:
-    tmp_settings.write_text(json.dumps({"overrides": {"exec_steady_pct": 7}}), encoding="utf-8")
+    tmp_settings.write_text(json.dumps({"overrides": {"soak_target_kwh": 7}}), encoding="utf-8")
     gs.reset_cache()
-    assert gs.get_settings().exec_steady_pct == 7
-    assert gs.sources()["exec_steady_pct"] == "override"
+    assert gs.get_settings().soak_target_kwh == 7
+    assert gs.sources()["soak_target_kwh"] == "override"
     # inne pola nadal domyślne
     assert gs.sources()["battery_capacity_kwh"] == "default"
 
 
 def test_unknown_key_ignored(tmp_settings) -> None:
     tmp_settings.write_text(
-        json.dumps({"overrides": {"exec_steady_pct": 3, "nope": 1}}), encoding="utf-8"
+        json.dumps({"overrides": {"soak_target_kwh": 3, "nope": 1}}), encoding="utf-8"
     )
     gs.reset_cache()
-    assert gs.get_settings().exec_steady_pct == 3
+    assert gs.get_settings().soak_target_kwh == 3
     assert "nope" not in gs.current_overrides()
 
 
 def test_invalid_override_in_file_is_dropped(tmp_settings) -> None:
     tmp_settings.write_text(
-        json.dumps({"overrides": {"soc_night_reserve_pct": 999, "exec_steady_pct": 4}}),
+        json.dumps({"overrides": {"soc_night_reserve_pct": 999, "soak_target_kwh": 4}}),
         encoding="utf-8",
     )
     gs.reset_cache()
     eff = gs.get_settings()
     # zły klucz pominięty, dobry zastosowany
-    assert eff.exec_steady_pct == 4
+    assert eff.soak_target_kwh == 4
     assert eff.soc_night_reserve_pct == gs.GuardianSettings().soc_night_reserve_pct
 
 
@@ -65,11 +65,11 @@ def test_update_validates_range(tmp_settings) -> None:
 
 
 def test_update_and_null_removes(tmp_settings) -> None:
-    gs.update_overrides({"exec_steady_pct": 6})
-    assert gs.get_settings().exec_steady_pct == 6
-    gs.update_overrides({"exec_steady_pct": None})
-    assert "exec_steady_pct" not in gs.current_overrides()
-    assert gs.sources()["exec_steady_pct"] == "default"
+    gs.update_overrides({"soak_target_kwh": 6})
+    assert gs.get_settings().soak_target_kwh == 6
+    gs.update_overrides({"soak_target_kwh": None})
+    assert "soak_target_kwh" not in gs.current_overrides()
+    assert gs.sources()["soak_target_kwh"] == "default"
 
 
 def test_onboarding_marker(tmp_settings) -> None:
@@ -79,34 +79,34 @@ def test_onboarding_marker(tmp_settings) -> None:
 
 
 def test_reset_all_overrides(tmp_settings) -> None:
-    gs.update_overrides({"exec_steady_pct": 6, "battery_capacity_kwh": 12.0})
+    gs.update_overrides({"soak_target_kwh": 6, "battery_capacity_kwh": 12.0})
     assert gs.current_overrides()
     gs.reset_overrides()
     assert gs.current_overrides() == {}
 
 
 def test_hot_reload_on_mtime(tmp_settings) -> None:
-    base_val = gs.get_settings().exec_steady_pct
+    base_val = gs.get_settings().soak_target_kwh
     t = 1_600_000_000
 
-    tmp_settings.write_text(json.dumps({"overrides": {"exec_steady_pct": 7}}), encoding="utf-8")
+    tmp_settings.write_text(json.dumps({"overrides": {"soak_target_kwh": 7}}), encoding="utf-8")
     os.utime(tmp_settings, (t + 10, t + 10))
-    assert gs.get_settings().exec_steady_pct == 7  # przeliczone po zmianie mtime
+    assert gs.get_settings().soak_target_kwh == 7  # przeliczone po zmianie mtime
 
-    tmp_settings.write_text(json.dumps({"overrides": {"exec_steady_pct": 9}}), encoding="utf-8")
+    tmp_settings.write_text(json.dumps({"overrides": {"soak_target_kwh": 9}}), encoding="utf-8")
     os.utime(tmp_settings, (t + 20, t + 20))
-    assert gs.get_settings().exec_steady_pct == 9
+    assert gs.get_settings().soak_target_kwh == 9
 
     tmp_settings.unlink()
-    assert gs.get_settings().exec_steady_pct == base_val  # powrót do domyślnej po usunięciu pliku
+    assert gs.get_settings().soak_target_kwh == base_val  # powrót do domyślnej po usunięciu pliku
 
 
 def test_schema_has_group_and_description(tmp_settings) -> None:
     schema = gs.settings_schema()
     props = schema["properties"]
     assert len(props) == len(gs.GuardianSettings.model_fields)
-    sample = props["exec_steady_pct"]
-    assert sample.get("group") == "execution"
+    sample = props["soak_target_kwh"]
+    assert sample.get("group") == "flappy"
     assert sample.get("description")
 
 
@@ -124,17 +124,17 @@ def test_api_round_trip(monkeypatch: pytest.MonkeyPatch, tmp_settings) -> None:
     assert r.json()["onboarding_completed"] is False
 
     # brak klucza -> 401
-    assert client.put("/api/settings", json={"overrides": {"exec_steady_pct": 5}}).status_code == 401
+    assert client.put("/api/settings", json={"overrides": {"soak_target_kwh": 5}}).status_code == 401
 
     r = client.put(
         "/api/settings",
         headers={"X-Guardian-Api-Key": "k"},
-        json={"overrides": {"exec_steady_pct": 5}, "complete_onboarding": True},
+        json={"overrides": {"soak_target_kwh": 5}, "complete_onboarding": True},
     )
     assert r.status_code == 200
     body = r.json()
-    assert body["effective"]["exec_steady_pct"] == 5
-    assert body["sources"]["exec_steady_pct"] == "override"
+    assert body["effective"]["soak_target_kwh"] == 5
+    assert body["sources"]["soak_target_kwh"] == "override"
     assert body["onboarding_completed"] is True
 
     # walidacja zakresu -> 422
@@ -145,5 +145,5 @@ def test_api_round_trip(monkeypatch: pytest.MonkeyPatch, tmp_settings) -> None:
     ).status_code == 422
 
     # reset jednego klucza
-    r = client.delete("/api/settings?keys=exec_steady_pct", headers={"X-Guardian-Api-Key": "k"})
-    assert r.json()["sources"]["exec_steady_pct"] == "default"
+    r = client.delete("/api/settings?keys=soak_target_kwh", headers={"X-Guardian-Api-Key": "k"})
+    assert r.json()["sources"]["soak_target_kwh"] == "default"

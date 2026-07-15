@@ -10,17 +10,15 @@ from statistics import median
 from typing import Any
 
 from guardian_config import TELEMETRY_DIR
-from guardian_settings import get_settings
 from telemetry_store import recent_consumption_average_w
 
-# Stałe modułu — aliasy z get_settings() (settings.json); proces planera ładuje je przy starcie.
-_s = get_settings()
-LOAD_NOWCAST_ENABLED = _s.load_nowcast_enabled
-LOAD_NOWCAST_WINDOW_MIN = _s.load_nowcast_window_min
-LOAD_NOWCAST_DECAY_HOURS = _s.load_nowcast_decay_hours
-LOAD_NOWCAST_FACTOR_MIN = _s.load_nowcast_factor_min
-LOAD_NOWCAST_FACTOR_MAX = _s.load_nowcast_factor_max
-LOAD_NOWCAST_BASELINE_MIN_W = _s.load_nowcast_baseline_min_w
+# Parametry algorytmu nowcast — const (nie strojenie UI).
+LOAD_NOWCAST_ENABLED = True
+LOAD_NOWCAST_WINDOW_MIN = 45
+LOAD_NOWCAST_DECAY_HOURS = 4
+LOAD_NOWCAST_FACTOR_MIN = 0.65
+LOAD_NOWCAST_FACTOR_MAX = 1.35
+LOAD_NOWCAST_BASELINE_MIN_W = 50.0
 from tesla_wall_charger import hourly_ev_kwh_from_telemetry
 
 

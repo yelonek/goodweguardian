@@ -6,12 +6,15 @@ Jedno źródło prawdy dla pokręteł strojenia to ``state/settings.json``:
   2. ``state/settings.json`` → ``overrides`` (jedyne miejsce, gdzie trafiają zmiany z UI/onboardingu).
 
 Dostęp przez ``get_settings()`` — wartość jest przeliczana po zmianie mtime pliku
-``settings.json`` (bez restartu). To uogólnienie wzorca ``effective_watchdog_soc``.
+``settings.json`` (bez restartu).
 
 Czysty podział źródeł: każda zmienna jest ustawiana **albo** w ``.env`` (infrastruktura/
 sekrety — IP inwertera, klucz API, proxy, ścieżki; patrz ``guardian_config``), **albo**
 w ``settings.json`` przez dashboard (strojenie). Nigdy w obu — ``.env`` nie wpływa na
 pola tego schematu.
+
+Schemat obejmuje wyłącznie fine-tuning. Kontrakty egzekucji (§13), hold −1% i parametry
+algorytmów nowcast/pv_correction są constami w kodzie.
 """
 
 from __future__ import annotations
@@ -31,15 +34,12 @@ logger = logging.getLogger("guardian")
 
 # Kolejność i etykiety grup dla UI (data-driven).
 GROUP_LABELS: dict[str, str] = {
-    "flappy": "Flappy Bird / soak (bilans godzinowy)",
-    "execution": "Egzekucja planu",
+    "flappy": "Soak / bilans godzinowy",
     "soc_full": "Obrona SOC — pełna bateria",
     "soc_low": "Obrona SOC — niska bateria",
     "night_reserve": "Rezerwa nocna SOC",
-    "nowcast": "Nowcast zużycia (load)",
-    "pv_correction": "Korekta prognozy PV",
     "pricing": "Ceny i taryfa",
-    "planner": "Planer (ekonomia i horyzont)",
+    "planner": "Planer / magazyn",
 }
 GROUP_ORDER: list[str] = list(GROUP_LABELS.keys())
 
@@ -52,15 +52,11 @@ def _meta(group: str, unit: str | None = None) -> dict[str, Any]:
 
 
 class GuardianSettings(BaseModel):
-    """Wszystkie pokrętła strojenia. Płaski model — grupowanie w UI przez metadane pola."""
+    """Pokrętła fine-tuningu. Płaski model — grupowanie w UI przez metadane pola."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    # --- Flappy Bird / soak ---
-    flappy_buffer_discharge_pct: int = Field(
-        1, ge=0, le=100, json_schema_extra=_meta("flappy", "%"),
-        description="Bufor eksportu z nadwyżki PV: rozładowanie [%] gdy budujemy zapas bilansu.",
-    )
+    # --- Soak / koniec godziny ---
     soak_target_kwh: float = Field(
         0.1, ge=0.0, json_schema_extra=_meta("flappy", "kWh"),
         description="Dolny próg deadbandu soak — poniżej trzymamy drobny bufor.",
@@ -77,57 +73,11 @@ class GuardianSettings(BaseModel):
         0.2, ge=0.0, json_schema_extra=_meta("flappy", "kWh"),
         description="Docelowy maks. bilans na koniec godziny (soak końcowy dociąga w dół).",
     )
-    recoverable_fraction: float = Field(
-        0.9, ge=0.0, le=1.0, json_schema_extra=_meta("flappy"),
-        description="Margines: deficyt > max_recoverable × fraction → pełna moc do capu inwertera.",
-    )
-    grid_export_bias_w: float = Field(
-        150.0, ge=0.0, json_schema_extra=_meta("flappy", "W"),
-        description="Bias na lekki eksport przy korekcie deficytu.",
-    )
-    watchdog_min_discharge_assist_pct: int = Field(
-        1, ge=0, le=100, json_schema_extra=_meta("flappy", "%"),
-        description="Minimalne rozładowanie [%] gdy bilans ujemny a obliczenia dają 0. 0 = wyłącz.",
-    )
-    watchdog_max_slot_min: int = Field(
-        5, ge=1, le=59, json_schema_extra=_meta("flappy", "min"),
-        description="Maksymalna długość pojedynczego okna zapisu ecoslota.",
-    )
-
-    # --- Egzekucja planu ---
-    import_grid_soc_pct: int = Field(
-        10, ge=0, le=100, json_schema_extra=_meta("execution", "%"),
-        description="Docelowy SOC slotu przy trybie import_grid (ładowanie z sieci).",
-    )
-    exec_min_active_charge_pct: int = Field(
-        2, ge=0, le=100, json_schema_extra=_meta("execution", "%"),
-        description="Minimalne aktywne ładowanie [%] w egzekucji planu.",
-    )
-    exec_min_active_discharge_pct: int = Field(
-        2, ge=0, le=100, json_schema_extra=_meta("execution", "%"),
-        description="Minimalne aktywne rozładowanie [%] w egzekucji planu.",
-    )
-    exec_early_intervention_kw: float = Field(
-        1.0, ge=0.0, json_schema_extra=_meta("execution", "kW"),
-        description="Próg mocy wczesnej interwencji w trybie neutral.",
-    )
-    exec_steady_pct: int = Field(
-        1, ge=0, le=100, json_schema_extra=_meta("execution", "%"),
-        description="Bazowy krok mocy [%] w trybach steady (export/import).",
-    )
-    battery_capacity_kwh: float = Field(
-        10.0, gt=0.0, json_schema_extra=_meta("execution", "kWh"),
-        description="Pojemność magazynu — pacing export_profit oraz symulacja SOC planera.",
-    )
 
     # --- Obrona SOC pełna ---
     soc_full_defense_threshold_pct: float = Field(
         99.5, ge=0.0, le=100.0, json_schema_extra=_meta("soc_full", "%"),
         description="Próg SOC, od którego działa obrona pełnej baterii (blokada discharge).",
-    )
-    soc_full_defense_charge_pct: int = Field(
-        -1, ge=-100, le=100, json_schema_extra=_meta("soc_full", "%"),
-        description="Moc utrzymania przy pełnej baterii (ujemne = ładowanie 1%).",
     )
     soc_full_defense_release_power_kw: float = Field(
         0.5, ge=0.0, json_schema_extra=_meta("soc_full", "kW"),
@@ -169,94 +119,10 @@ class GuardianSettings(BaseModel):
         0.0, ge=0.0, le=100.0, json_schema_extra=_meta("night_reserve", "%"),
         description="Próg SOC rezerwy nocnej. 0 = wyłączone.",
     )
-    soc_night_reserve_charge_pct: int = Field(
-        -1, ge=-100, le=100, json_schema_extra=_meta("night_reserve", "%"),
-        description="Moc utrzymania rezerwy nocnej (ujemne = ładowanie 1%).",
-    )
     soc_night_reserve_hours: list[int] = Field(
         default=[0, 1, 2, 3, 4, 5, 22, 23],
         json_schema_extra=_meta("night_reserve"),
         description="Godziny lokalne (0..23), w których działa rezerwa nocna.",
-    )
-
-    # --- Nowcast zużycia ---
-    load_nowcast_enabled: bool = Field(
-        True, json_schema_extra=_meta("nowcast"),
-        description="Korekta krótkoterminowa prognozy zużycia (recent/baseline).",
-    )
-    load_nowcast_window_min: int = Field(
-        45, ge=1, le=180, json_schema_extra=_meta("nowcast", "min"),
-        description="Okno uśredniania bieżącego zużycia.",
-    )
-    load_nowcast_decay_hours: int = Field(
-        4, ge=1, le=24, json_schema_extra=_meta("nowcast", "h"),
-        description="Zanik wpływu korekty na kolejne godziny horyzontu.",
-    )
-    load_nowcast_factor_min: float = Field(
-        0.65, gt=0.0, json_schema_extra=_meta("nowcast"),
-        description="Dolny clip współczynnika korekty.",
-    )
-    load_nowcast_factor_max: float = Field(
-        1.35, gt=0.0, json_schema_extra=_meta("nowcast"),
-        description="Górny clip współczynnika korekty.",
-    )
-    load_nowcast_baseline_min_w: float = Field(
-        50.0, ge=0.0, json_schema_extra=_meta("nowcast", "W"),
-        description="Minimalny baseline, poniżej którego korekta się nie stosuje.",
-    )
-
-    # --- Korekta PV ---
-    pv_correction_enabled: bool = Field(
-        True, json_schema_extra=_meta("pv_correction"),
-        description="Korekta prognozy PV k_intra na bieżącą godzinę i h+1.",
-    )
-    pv_correction_eps_kwh: float = Field(
-        0.1, ge=0.0, json_schema_extra=_meta("pv_correction", "kWh"),
-        description="Próg energii, poniżej którego nie liczymy stosunku k_intra (noc/początek h).",
-    )
-    pv_correction_k_min: float = Field(
-        0.65, gt=0.0, json_schema_extra=_meta("pv_correction"),
-        description="Dolny clip k_intra (wąski).",
-    )
-    pv_correction_k_max: float = Field(
-        1.35, gt=0.0, json_schema_extra=_meta("pv_correction"),
-        description="Górny clip k_intra (wąski).",
-    )
-    pv_correction_rate_enabled: bool = Field(
-        True, json_schema_extra=_meta("pv_correction"),
-        description="Blend k_intra z estymatą rate (średnia moc z ostatnich minut).",
-    )
-    pv_correction_rate_window_min: int = Field(
-        15, ge=1, le=60, json_schema_extra=_meta("pv_correction", "min"),
-        description="Okno estymaty rate PV.",
-    )
-    pv_correction_rate_blend_start: float = Field(
-        0.2, ge=0.0, le=1.0, json_schema_extra=_meta("pv_correction"),
-        description="α, od której zaczyna rosnąć waga rate.",
-    )
-    pv_correction_rate_blend_end: float = Field(
-        0.7, ge=0.0, le=1.0, json_schema_extra=_meta("pv_correction"),
-        description="α, przy której waga rate = 1.",
-    )
-    pv_correction_dynamic_clip_enabled: bool = Field(
-        True, json_schema_extra=_meta("pv_correction"),
-        description="Dynamiczny clip: wąski na początku h, szeroki pod koniec.",
-    )
-    pv_correction_k_min_wide: float = Field(
-        0.2, gt=0.0, json_schema_extra=_meta("pv_correction"),
-        description="Dolny clip k_intra (szeroki, późna godzina).",
-    )
-    pv_correction_k_max_wide: float = Field(
-        3.0, gt=0.0, json_schema_extra=_meta("pv_correction"),
-        description="Górny clip k_intra (szeroki, późna godzina).",
-    )
-    pv_correction_clip_ramp_start: float = Field(
-        0.15, ge=0.0, le=1.0, json_schema_extra=_meta("pv_correction"),
-        description="α, od której clip zaczyna się rozszerzać.",
-    )
-    pv_correction_clip_ramp_end: float = Field(
-        0.55, ge=0.0, le=1.0, json_schema_extra=_meta("pv_correction"),
-        description="α, przy której clip w pełni szeroki.",
     )
 
     # --- Ceny i taryfa ---
@@ -281,7 +147,11 @@ class GuardianSettings(BaseModel):
         description="Stała cena energii (sprzedawca) w strefie nocnej.",
     )
 
-    # --- Planer ---
+    # --- Planer / magazyn ---
+    battery_capacity_kwh: float = Field(
+        10.0, gt=0.0, json_schema_extra=_meta("planner", "kWh"),
+        description="Pojemność magazynu — pacing export_profit oraz symulacja SOC planera.",
+    )
     planner_policy_valid_minutes: int = Field(
         10, ge=1, le=1440, json_schema_extra=_meta("planner", "min"),
         description="Ważność artefaktu policy od computed_at (gdy brak valid_until).",
@@ -388,7 +258,7 @@ def reset_cache() -> None:
 
 
 def get_settings() -> GuardianSettings:
-    """Efektywne ustawienia (env base + settings.json). Przeliczane po zmianie mtime pliku."""
+    """Efektywne ustawienia (domyślne ∪ settings.json). Przeliczane po zmianie mtime pliku."""
     global _CACHE, _CACHE_KEY
     with _LOCK:
         path = settings_path()

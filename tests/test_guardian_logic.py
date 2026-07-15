@@ -302,7 +302,6 @@ class TestWatchdogPolicy:
         default_inputs.remaining_kwh = 0.05
         cfg = WatchdogConfig(
             soc_full_threshold_pct=99.5,
-            soc_full_defense_charge_pct=-1,
             soc_full_defense_release_power_kw=0.5,
         )
         d = decide_watchdog(default_inputs, cfg=cfg)
@@ -318,7 +317,6 @@ class TestWatchdogPolicy:
         default_inputs.remaining_kwh = -0.5
         cfg = WatchdogConfig(
             soc_full_threshold_pct=99.5,
-            soc_full_defense_charge_pct=-1,
             soc_full_defense_release_power_kw=0.5,
         )
         d = decide_watchdog(default_inputs, cfg=cfg)
@@ -332,7 +330,6 @@ class TestWatchdogPolicy:
         default_inputs.remaining_kwh = 0.0
         cfg = WatchdogConfig(
             soc_full_threshold_pct=99.5,
-            soc_full_defense_charge_pct=-1,
             soc_full_defense_carryover_minutes=5,
         )
         d = decide_watchdog(
@@ -352,7 +349,6 @@ class TestWatchdogPolicy:
         default_inputs.remaining_kwh = 0.0
         cfg = WatchdogConfig(
             soc_full_threshold_pct=99.5,
-            soc_full_defense_charge_pct=-1,
             soc_full_defense_carryover_minutes=5,
         )
         d = decide_watchdog(
@@ -372,7 +368,6 @@ class TestWatchdogPolicy:
         default_inputs.remaining_kwh = 0.0
         cfg = WatchdogConfig(
             soc_full_threshold_pct=99.5,
-            soc_full_defense_charge_pct=-1,
             soc_full_defense_carryover_minutes=5,
         )
         d = decide_watchdog(
@@ -391,7 +386,6 @@ class TestWatchdogPolicy:
         default_inputs.remaining_kwh = -0.01
         cfg = WatchdogConfig(
             soc_full_threshold_pct=99.5,
-            soc_full_defense_charge_pct=-1,
         )
         d = decide_watchdog(
             default_inputs,
@@ -408,7 +402,6 @@ class TestWatchdogPolicy:
         default_inputs.remaining_kwh = 0.0
         cfg = WatchdogConfig(
             soc_full_threshold_pct=99.5,
-            soc_full_defense_charge_pct=-1,
             soc_full_defense_release_power_kw=1.0,
         )
         d = decide_watchdog(default_inputs, cfg=cfg)
@@ -423,7 +416,6 @@ class TestWatchdogPolicy:
         default_inputs.remaining_kwh = -0.1
         cfg = WatchdogConfig(
             soc_full_threshold_pct=99.5,
-            soc_full_defense_charge_pct=-1,
             soc_full_defense_release_power_kw=1.0,
         )
         d = decide_watchdog(default_inputs, cfg=cfg)
@@ -437,7 +429,6 @@ class TestWatchdogPolicy:
         default_inputs.remaining_kwh = -0.1
         cfg = WatchdogConfig(
             soc_full_threshold_pct=99.5,
-            soc_full_defense_charge_pct=-1,
             soc_full_defense_release_power_kw=0.5,
         )
         d = decide_watchdog(default_inputs, cfg=cfg)
@@ -532,7 +523,6 @@ class TestWatchdogPolicy:
         default_inputs.consumption_w = 1000.0
         cfg = WatchdogConfig(
             soc_night_reserve_pct=20.0,
-            soc_night_reserve_charge_pct=-1,
             night_reserve_hours=frozenset({22, 23, 0, 1, 2, 3, 4, 5}),
         )
         d = decide_watchdog(
@@ -567,7 +557,6 @@ class TestWatchdogPolicy:
         default_inputs.remaining_kwh = -0.2
         cfg = WatchdogConfig(
             soc_night_reserve_pct=40.0,
-            soc_night_reserve_charge_pct=-1,
             night_reserve_hours=frozenset({22, 23, 0, 1, 2, 3, 4, 5}),
         )
         d = decide_watchdog(
@@ -590,7 +579,6 @@ class TestWatchdogPolicy:
         cfg = WatchdogConfig(
             soc_night_reserve_enabled=False,
             soc_night_reserve_pct=40.0,
-            soc_night_reserve_charge_pct=-1,
             night_reserve_hours=frozenset({22, 23, 0, 1, 2, 3, 4, 5}),
         )
         d = decide_watchdog(
@@ -608,7 +596,6 @@ class TestWatchdogPolicy:
         default_inputs.remaining_kwh = -0.2
         cfg = WatchdogConfig(
             soc_night_reserve_pct=40.0,
-            soc_night_reserve_charge_pct=-1,
             night_reserve_hours=frozenset({22, 23, 0, 1, 2, 3, 4, 5}),
         )
         d = decide_watchdog(
@@ -626,7 +613,6 @@ class TestWatchdogPolicy:
         default_inputs.remaining_kwh = -0.2
         cfg = WatchdogConfig(
             soc_night_reserve_pct=40.0,
-            soc_night_reserve_charge_pct=-1,
             night_reserve_hours=frozenset({22, 23, 0, 1, 2, 3, 4, 5}),
         )
         d = decide_watchdog(

@@ -8,23 +8,21 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from guardian_config import TELEMETRY_DIR
-from guardian_settings import get_settings
 
-# Stałe modułu — aliasy z get_settings() (settings.json); proces planera ładuje je przy starcie.
-_s = get_settings()
-PV_CORRECTION_ENABLED = _s.pv_correction_enabled
-PV_CORRECTION_EPS_KWH = _s.pv_correction_eps_kwh
-PV_CORRECTION_K_MIN = _s.pv_correction_k_min
-PV_CORRECTION_K_MAX = _s.pv_correction_k_max
-PV_CORRECTION_RATE_ENABLED = _s.pv_correction_rate_enabled
-PV_CORRECTION_RATE_WINDOW_MIN = _s.pv_correction_rate_window_min
-PV_CORRECTION_RATE_BLEND_START = _s.pv_correction_rate_blend_start
-PV_CORRECTION_RATE_BLEND_END = _s.pv_correction_rate_blend_end
-PV_CORRECTION_DYNAMIC_CLIP_ENABLED = _s.pv_correction_dynamic_clip_enabled
-PV_CORRECTION_K_MIN_WIDE = _s.pv_correction_k_min_wide
-PV_CORRECTION_K_MAX_WIDE = _s.pv_correction_k_max_wide
-PV_CORRECTION_CLIP_RAMP_START = _s.pv_correction_clip_ramp_start
-PV_CORRECTION_CLIP_RAMP_END = _s.pv_correction_clip_ramp_end
+# Parametry algorytmu k_intra — const (nie strojenie UI).
+PV_CORRECTION_ENABLED = True
+PV_CORRECTION_EPS_KWH = 0.1
+PV_CORRECTION_K_MIN = 0.65
+PV_CORRECTION_K_MAX = 1.35
+PV_CORRECTION_RATE_ENABLED = True
+PV_CORRECTION_RATE_WINDOW_MIN = 15
+PV_CORRECTION_RATE_BLEND_START = 0.2
+PV_CORRECTION_RATE_BLEND_END = 0.7
+PV_CORRECTION_DYNAMIC_CLIP_ENABLED = True
+PV_CORRECTION_K_MIN_WIDE = 0.2
+PV_CORRECTION_K_MAX_WIDE = 3.0
+PV_CORRECTION_CLIP_RAMP_START = 0.15
+PV_CORRECTION_CLIP_RAMP_END = 0.55
 
 log = logging.getLogger("planner")
 

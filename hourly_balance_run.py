@@ -39,6 +39,7 @@ from guardian_execution import decide_plan_execution
 from guardian_logic import (
     BalanceInputs,
     WatchdogConfig,
+    WATCHDOG_MAX_SLOT_MIN,
     decide_watchdog,
     power_needed_kw,
 )
@@ -321,20 +322,14 @@ async def run_one_cycle() -> None:
     )
 
     wd_cfg = WatchdogConfig(
-        grid_export_bias_w=float(s.grid_export_bias_w),
-        recoverable_fraction=float(s.recoverable_fraction),
-        min_discharge_assist_pct=int(s.watchdog_min_discharge_assist_pct),
-        flappy_buffer_discharge_pct=int(s.flappy_buffer_discharge_pct),
         soak_target_kwh=float(s.soak_target_kwh),
         soak_trigger_kwh=float(s.soak_trigger_kwh),
         end_hour_window_s=int(s.end_hour_window_s),
         end_hour_max_remaining_kwh=float(s.end_hour_max_remaining_kwh),
         soc_full_threshold_pct=float(s.soc_full_defense_threshold_pct),
-        soc_full_defense_charge_pct=int(s.soc_full_defense_charge_pct),
         soc_full_defense_release_power_kw=float(s.soc_full_defense_release_power_kw),
         soc_night_reserve_enabled=bool(s.soc_night_reserve_enabled),
         soc_night_reserve_pct=float(s.soc_night_reserve_pct),
-        soc_night_reserve_charge_pct=int(s.soc_night_reserve_charge_pct),
         night_reserve_hours=frozenset(s.soc_night_reserve_hours),
         soc_full_defense_carryover_minutes=max(1, int(s.soc_full_defense_carryover_minutes)),
         soc_low_cap_soc_high_pct=float(s.soc_low_cap_soc_high_pct),
@@ -514,7 +509,7 @@ async def run_one_cycle() -> None:
     ):
         MAX_SLOT_MIN = max(1, int(s.soc_full_defense_max_slot_min))
     else:
-        MAX_SLOT_MIN = max(1, int(s.watchdog_max_slot_min))
+        MAX_SLOT_MIN = max(1, int(WATCHDOG_MAX_SLOT_MIN))
     duration_min = max(1, int(math.ceil((decision.duration_s or 0.0) / 60.0)))
     duration_min = min(MAX_SLOT_MIN, duration_min)
     end_m = min(59, start_m + duration_min)

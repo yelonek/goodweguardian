@@ -13,7 +13,7 @@ Korekta **krótkoterminowa** (`k_intra`) na podstawie telemetrii bieżącej godz
 - `now` (strefa telemetrii)
 - Solcast `pv_kw` (p50) per slot
 - Telemetria: `pv_w` od początku bieżącej godziny lokalnej
-- **ε**, **k_min**, **k_max** (Ustawienia: `pv_correction_*`)
+- **ε**, **k_min**, **k_max** (const w `planner/pv_correction.py`)
 
 ## Wyjście
 
@@ -42,7 +42,7 @@ k_intra = clip(k_raw, k_min_eff, k_max_eff)
 | ≤ 0.15 | 0.65 | 1.35 (stały) |
 | 0.55+ | 0.20 | 3.00 (szeroki) |
 
-Pomiędzy — interpolacja liniowa (`pv_correction_clip_ramp_*`).
+Pomiędzy — interpolacja liniowa (`PV_CORRECTION_CLIP_RAMP_*` w kodzie).
 
 Inaczej: brak korekty (`k_intra = None`, surowy Solcast).
 
@@ -58,7 +58,7 @@ Inaczej: brak korekty (`k_intra = None`, surowy Solcast).
 
 Domyślnie: **ε = 0,1 kWh/h**, clip **0.65–1.35** (dynamicznie rozszerzany), rate window **15 min**.
 
-Wyłączenie: `pv_correction_enabled=false` w Ustawieniach.
+Wyłączenie: `PV_CORRECTION_ENABLED = False` w `planner/pv_correction.py` (const; nie ma pokrętła w UI).
 
 ## Przykład
 

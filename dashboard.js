@@ -227,7 +227,6 @@ function renderToggleStatus(el, enabled, source, labels) {
 const WD_FIELD_LABELS = {
   soc_night_reserve_enabled: "Rezerwa nocna (Guardian)",
   soc_night_reserve_pct: "Min. SOC w nocy",
-  soc_night_reserve_charge_pct: "Ładowanie w rezerwie",
   soc_night_reserve_hours: "Godziny rezerwy",
 };
 
@@ -1050,7 +1049,7 @@ function flEq(a, b) { return Math.abs(Number(a) - Number(b)) < 1e-6; }
 function setNightReserveFieldsEnabled(on) {
   const wrap = document.getElementById("wdNightReserveFields");
   if (wrap) wrap.classList.toggle("muted", !on);
-  for (const id of ["wd_soc_night_reserve_pct", "wd_soc_night_reserve_charge_pct", "wd_soc_night_reserve_hours"]) {
+  for (const id of ["wd_soc_night_reserve_pct", "wd_soc_night_reserve_hours"]) {
     const el = document.getElementById(id);
     if (el) el.disabled = !on;
   }
@@ -1062,7 +1061,6 @@ function renderWatchdogSoc(wds) {
   const nightKeys = [
     "soc_night_reserve_enabled",
     "soc_night_reserve_pct",
-    "soc_night_reserve_charge_pct",
     "soc_night_reserve_hours",
   ];
   const nightOverride = nightKeys.some((k) => src[k] === "override");
@@ -1086,7 +1084,6 @@ function renderWatchdogSoc(wds) {
   document.getElementById("wd_soc_night_reserve_enabled").checked = nightOn;
   setNightReserveFieldsEnabled(nightOn);
   document.getElementById("wd_soc_night_reserve_pct").value = eff.soc_night_reserve_pct;
-  document.getElementById("wd_soc_night_reserve_charge_pct").value = eff.soc_night_reserve_charge_pct;
   document.getElementById("wd_soc_night_reserve_hours").value = (eff.soc_night_reserve_hours || []).join(",");
 }
 
@@ -1195,10 +1192,8 @@ async function saveWatchdog() {
   const nightEnabled = document.getElementById("wd_soc_night_reserve_enabled").checked;
   body.soc_night_reserve_enabled = nightEnabled === eb.soc_night_reserve_enabled ? null : nightEnabled;
   const snr = parseFloat(document.getElementById("wd_soc_night_reserve_pct").value);
-  const src = parseInt(document.getElementById("wd_soc_night_reserve_charge_pct").value, 10);
-  if (Number.isNaN(snr) || Number.isNaN(src)) { st.textContent = "Złe liczby"; return; }
+  if (Number.isNaN(snr)) { st.textContent = "Złe liczby"; return; }
   body.soc_night_reserve_pct = flEq(snr, eb.soc_night_reserve_pct) ? null : snr;
-  body.soc_night_reserve_charge_pct = src === eb.soc_night_reserve_charge_pct ? null : src;
   const hrs = document.getElementById("wd_soc_night_reserve_hours").value.split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => !Number.isNaN(n));
   body.soc_night_reserve_hours = hourArraysEqual(hrs, eb.soc_night_reserve_hours || []) ? null : hrs;
   const r = await fetch("/api/guardian/watchdog-soc", {
@@ -1219,7 +1214,6 @@ async function resetWatchdog() {
   const body = {
     soc_night_reserve_enabled: null,
     soc_night_reserve_pct: null,
-    soc_night_reserve_charge_pct: null,
     soc_night_reserve_hours: null,
   };
   const r = await fetch("/api/guardian/watchdog-soc", {
@@ -1493,7 +1487,6 @@ function settingInputHtml(name, sch, value) {
 const NIGHT_RESERVE_DEDICATED_FIELDS = new Set([
   "soc_night_reserve_enabled",
   "soc_night_reserve_pct",
-  "soc_night_reserve_charge_pct",
   "soc_night_reserve_hours",
 ]);
 

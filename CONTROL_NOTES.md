@@ -5,7 +5,7 @@
 | Co chcesz zmienić | Gdzie | Uwaga |
 |-------------------|--------|--------|
 | **Włączyć / wyłączyć zapisy do inwertera** (`set_ecoslot`) | Albo **`.env`** → `GUARDIAN_CONTROL_ENABLED`, albo **plik** `state/guardian_control_override.json` z `{"control_enabled": true}` / `false` | **Jeśli plik override istnieje i ma `control_enabled` — zawsze on wygrywa** (czytany co cykl). Dashboard i API tylko **zapisują ten sam plik** — to nie jest trzeci przełącznik. Żeby znów obowiązywało tylko `.env`, **usuń** plik override (lub usuń z niego klucz i napraw JSON — prościej skasować plik). Zmiana `.env` wymaga **restartu** procesu. |
-| **Pokrętła strojenia** (SOC defense, sufit mocy przy niskim SOC, soak, nowcast, korekta PV, ceny/taryfa, ekonomia planera) | **Tylko dashboard → Ustawienia / onboarding** (zapis do `state/settings.json`) | **Jedno źródło prawdy = `settings.json`.** `.env` NIE jest już warstwą strojenia. Pętla Guardiana czyta **na żywo** (bez restartu) — patrz sekcja niżej. |
+| **Pokrętła fine-tuningu** (SOC, soak, rezerwa nocna, ceny/taryfa, planer/magazyn) | **Tylko dashboard → Ustawienia / onboarding** (zapis do `state/settings.json`) | **Jedno źródło prawdy = `settings.json`.** Kontrakty egzekucji (§13) i parametry algorytmów (nowcast, korekta PV) są constami w kodzie. Pętla Guardiana czyta ustawienia **na żywo** (bez restartu). |
 | **Telemetria** | **`TELEMETRY_ENABLED` w `.env`** | **Restart**. |
 | **Klucz do API dashboardu** | **`GUARDIAN_API_KEY` w `.env`** | Bez klucza endpointy kontroli/zapisu zwracają 401/503. |
 

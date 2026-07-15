@@ -147,7 +147,7 @@ Katalogi wynikowe (w `.gitignore` przez `data/`): `data/planner/plans/`, `audit/
 
 ## Strojenie planera (settings.json)
 
-Pokrętła poniżej są w **Ustawieniach** (`GuardianSettings` → `state/settings.json`), nie w `.env`. Aliasów modułowych (`PLANNER_*`, `PV_CORRECTION_*`) używa kod — źródło wartości to `get_settings()`.
+Pokrętła poniżej są w **Ustawieniach** (`GuardianSettings` → `state/settings.json`), nie w `.env`. Aliasów modułowych (`PLANNER_*`) używa kod — źródło wartości to `get_settings()`. Parametry algorytmu PV (`PV_CORRECTION_*`) i nowcastu są **constami w kodzie**.
 
 | Pole (`settings.json`) | Alias w kodzie | Domyślnie | Znaczenie |
 |------------------------|----------------|-----------|-----------|
@@ -155,9 +155,8 @@ Pokrętła poniżej są w **Ustawieniach** (`GuardianSettings` → `state/settin
 | `planner_battery_eta` | `PLANNER_BATTERY_ETA` | 0.92 | Sprawność round-trip |
 | `planner_soc_min_pct` / `planner_soc_max_pct` | `PLANNER_SOC_MIN/MAX_PCT` | 10 / 100 | Granice SOC |
 | `planner_load_lookback_days` | `PLANNER_LOAD_LOOKBACK_DAYS` | 28 | Lookback load forecast |
-| `pv_correction_enabled` | `PV_CORRECTION_ENABLED` | true | Włącz korektę `k_intra` |
-| `pv_correction_eps_kwh` | `PV_CORRECTION_EPS_KWH` | 0.1 | Próg ε [kWh/h] |
-| `pv_correction_k_min` / `k_max` | `PV_CORRECTION_K_MIN/MAX` | 0.65 / 1.35 | Clip `k_intra` |
+| `planner_battery_cycle_cost_pln` | `PLANNER_BATTERY_CYCLE_COST_PLN` | 0.10 | Wear: PLN/kWh discharge |
+| `planner_scenario_optimizer` | — | true | MILP wieloscenariuszowy |
 
 Współdzielone z Guardianem (infrastruktura, `.env`): `P_BATTERY`, proxy RCE/Solcast, `data/telemetry/`. Taryfa G12 — też `settings.json` (`tariff_*`).
 
