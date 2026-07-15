@@ -1,10 +1,19 @@
 """Fixtures dla testów guardiana."""
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+# Izolacja: testy nie czytają produkcyjnego state/settings.json.
+# Ustawiane PRZED importem modułów, które przy imporcie wołają get_settings().
+os.environ.setdefault(
+    "GUARDIAN_SETTINGS_PATH",
+    str(Path(tempfile.gettempdir()) / f"gg_test_settings_{os.getpid()}.json"),
+)
 
 from guardian_logic import BalanceInputs
 

@@ -7,22 +7,24 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any
 
-from guardian_config import (
-    PV_CORRECTION_CLIP_RAMP_END,
-    PV_CORRECTION_CLIP_RAMP_START,
-    PV_CORRECTION_DYNAMIC_CLIP_ENABLED,
-    PV_CORRECTION_ENABLED,
-    PV_CORRECTION_EPS_KWH,
-    PV_CORRECTION_K_MAX,
-    PV_CORRECTION_K_MAX_WIDE,
-    PV_CORRECTION_K_MIN,
-    PV_CORRECTION_K_MIN_WIDE,
-    PV_CORRECTION_RATE_BLEND_END,
-    PV_CORRECTION_RATE_BLEND_START,
-    PV_CORRECTION_RATE_ENABLED,
-    PV_CORRECTION_RATE_WINDOW_MIN,
-    TELEMETRY_DIR,
-)
+from guardian_config import TELEMETRY_DIR
+from guardian_settings import get_settings
+
+# Stałe modułu strojenia sourcowane z jednolitych ustawień (env → settings.json).
+_s = get_settings()
+PV_CORRECTION_ENABLED = _s.pv_correction_enabled
+PV_CORRECTION_EPS_KWH = _s.pv_correction_eps_kwh
+PV_CORRECTION_K_MIN = _s.pv_correction_k_min
+PV_CORRECTION_K_MAX = _s.pv_correction_k_max
+PV_CORRECTION_RATE_ENABLED = _s.pv_correction_rate_enabled
+PV_CORRECTION_RATE_WINDOW_MIN = _s.pv_correction_rate_window_min
+PV_CORRECTION_RATE_BLEND_START = _s.pv_correction_rate_blend_start
+PV_CORRECTION_RATE_BLEND_END = _s.pv_correction_rate_blend_end
+PV_CORRECTION_DYNAMIC_CLIP_ENABLED = _s.pv_correction_dynamic_clip_enabled
+PV_CORRECTION_K_MIN_WIDE = _s.pv_correction_k_min_wide
+PV_CORRECTION_K_MAX_WIDE = _s.pv_correction_k_max_wide
+PV_CORRECTION_CLIP_RAMP_START = _s.pv_correction_clip_ramp_start
+PV_CORRECTION_CLIP_RAMP_END = _s.pv_correction_clip_ramp_end
 
 log = logging.getLogger("planner")
 

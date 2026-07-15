@@ -21,38 +21,17 @@ from ecoslot_service import (
     read_all_eco_settings_raw,
     save_ecoslots_snapshot,
 )
-from guardian_watchdog_override import effective_watchdog_soc
 from guardian_config import (
     BALANCE_POWER_THRESHOLD_KW,
-    DISCHARGE_TAPER_MAX_W_HIGH,
-    DISCHARGE_TAPER_MAX_W_LOW,
-    DISCHARGE_TAPER_SOC_HIGH_PCT,
-    DISCHARGE_TAPER_SOC_LOW_PCT,
-    END_HOUR_MAX_REMAINING_KWH,
-    END_HOUR_WINDOW_S,
-    FLAPPY_BUFFER_DISCHARGE_PCT,
     get_slot_id,
-    GRID_EXPORT_BIAS_W,
     INVERTER_IP,
     P_BATTERY_W,
     P_INVERTER_W,
-    RECOVERABLE_FRACTION,
-    SOAK_TARGET_KWH,
-    SOAK_TRIGGER_KWH,
-    SOC_FULL_DEFENSE_CARRYOVER_MINUTES,
-    SOC_FULL_DEFENSE_CHARGE_PCT,
-    SOC_FULL_DEFENSE_MAX_SLOT_MIN,
-    SOC_FULL_DEFENSE_RELEASE_POWER_KW,
-    SOC_LOW_DEFENSE_CHARGE_PCT,
-    SOC_LOW_DEFENSE_RELEASE_REMAINING_KWH,
-    SOC_LOW_DISCHARGE_AVG_MINUTES,
-    SOC_LOW_DISCHARGE_MAX_W,
     TELEMETRY_ENABLED,
     TELEMETRY_TZ,
     WATTS_PER_PERCENT,
-    WATCHDOG_MAX_SLOT_MIN,
-    WATCHDOG_MIN_DISCHARGE_ASSIST_PCT,
 )
+from guardian_settings import get_settings
 from guardian_control import effective_control_enabled
 from planner_control import effective_planner_execution_enabled
 from planner.guardian_policy import active_policy_row
@@ -329,13 +308,13 @@ async def run_one_cycle() -> None:
         )
     except OSError as e:
         logging.getLogger("guardian").warning("ecoslots snapshot save failed: %s", e)
-    ws = effective_watchdog_soc()
+    s = get_settings()
     low_soc_discharge_target_w = None
-    if soc_pct <= ws.soc_low_defense_threshold_pct:
-        avg_window_min = int(SOC_LOW_DISCHARGE_AVG_MINUTES)
+    if soc_pct <= s.soc_low_defense_threshold_pct:
+        avg_window_min = int(s.soc_low_discharge_avg_minutes)
         recent_avg_w = recent_consumption_average_w(now, avg_window_min)
         if recent_avg_w is not None and recent_avg_w > 0.0:
-            max_w = float(SOC_LOW_DISCHARGE_MAX_W)
+            max_w = float(s.soc_low_discharge_max_w)
             low_soc_discharge_target_w = min(recent_avg_w, max_w) if max_w > 0.0 else recent_avg_w
 
     inp = BalanceInputs(
@@ -352,32 +331,32 @@ async def run_one_cycle() -> None:
     )
 
     wd_cfg = WatchdogConfig(
-        grid_export_bias_w=float(GRID_EXPORT_BIAS_W),
-        recoverable_fraction=float(RECOVERABLE_FRACTION),
-        min_discharge_assist_pct=int(WATCHDOG_MIN_DISCHARGE_ASSIST_PCT),
-        flappy_buffer_discharge_pct=int(FLAPPY_BUFFER_DISCHARGE_PCT),
-        soak_target_kwh=float(SOAK_TARGET_KWH),
-        soak_trigger_kwh=float(SOAK_TRIGGER_KWH),
-        end_hour_window_s=int(END_HOUR_WINDOW_S),
-        end_hour_max_remaining_kwh=float(END_HOUR_MAX_REMAINING_KWH),
-        soc_full_threshold_pct=float(ws.soc_full_defense_threshold_pct),
-        soc_full_defense_charge_pct=int(SOC_FULL_DEFENSE_CHARGE_PCT),
-        soc_full_defense_release_power_kw=float(SOC_FULL_DEFENSE_RELEASE_POWER_KW),
-        soc_low_threshold_pct=float(ws.soc_low_defense_threshold_pct),
-        soc_low_defense_charge_pct=int(SOC_LOW_DEFENSE_CHARGE_PCT),
-        soc_low_defense_release_remaining_kwh=float(SOC_LOW_DEFENSE_RELEASE_REMAINING_KWH),
-        soc_night_reserve_enabled=bool(ws.soc_night_reserve_enabled),
-        soc_night_reserve_pct=float(ws.soc_night_reserve_pct),
-        soc_night_reserve_charge_pct=int(ws.soc_night_reserve_charge_pct),
-        night_reserve_hours=ws.night_reserve_hours,
-        soc_full_defense_carryover_minutes=max(1, int(SOC_FULL_DEFENSE_CARRYOVER_MINUTES)),
-        discharge_taper_soc_high_pct=float(DISCHARGE_TAPER_SOC_HIGH_PCT),
-        discharge_taper_soc_low_pct=float(DISCHARGE_TAPER_SOC_LOW_PCT),
-        discharge_taper_max_w_high=float(DISCHARGE_TAPER_MAX_W_HIGH),
-        discharge_taper_max_w_low=float(DISCHARGE_TAPER_MAX_W_LOW),
+        grid_export_bias_w=float(s.grid_export_bias_w),
+        recoverable_fraction=float(s.recoverable_fraction),
+        min_discharge_assist_pct=int(s.watchdog_min_discharge_assist_pct),
+        flappy_buffer_discharge_pct=int(s.flappy_buffer_discharge_pct),
+        soak_target_kwh=float(s.soak_target_kwh),
+        soak_trigger_kwh=float(s.soak_trigger_kwh),
+        end_hour_window_s=int(s.end_hour_window_s),
+        end_hour_max_remaining_kwh=float(s.end_hour_max_remaining_kwh),
+        soc_full_threshold_pct=float(s.soc_full_defense_threshold_pct),
+        soc_full_defense_charge_pct=int(s.soc_full_defense_charge_pct),
+        soc_full_defense_release_power_kw=float(s.soc_full_defense_release_power_kw),
+        soc_low_threshold_pct=float(s.soc_low_defense_threshold_pct),
+        soc_low_defense_charge_pct=int(s.soc_low_defense_charge_pct),
+        soc_low_defense_release_remaining_kwh=float(s.soc_low_defense_release_remaining_kwh),
+        soc_night_reserve_enabled=bool(s.soc_night_reserve_enabled),
+        soc_night_reserve_pct=float(s.soc_night_reserve_pct),
+        soc_night_reserve_charge_pct=int(s.soc_night_reserve_charge_pct),
+        night_reserve_hours=frozenset(s.soc_night_reserve_hours),
+        soc_full_defense_carryover_minutes=max(1, int(s.soc_full_defense_carryover_minutes)),
+        discharge_taper_soc_high_pct=float(s.discharge_taper_soc_high_pct),
+        discharge_taper_soc_low_pct=float(s.discharge_taper_soc_low_pct),
+        discharge_taper_max_w_high=float(s.discharge_taper_max_w_high),
+        discharge_taper_max_w_low=float(s.discharge_taper_max_w_low),
     )
 
-    carryover_min = max(1, int(SOC_FULL_DEFENSE_CARRYOVER_MINUTES))
+    carryover_min = max(1, int(s.soc_full_defense_carryover_minutes))
     soc_full_carryover = load_soc_full_defense_carryover()
 
     if policy_active is not None:
@@ -404,7 +383,7 @@ async def run_one_cycle() -> None:
         now_minute=now.minute,
         time_to_end_s=time_to_end_s,
         soc_pct=soc_pct,
-        soc_full_threshold_pct=float(ws.soc_full_defense_threshold_pct),
+        soc_full_threshold_pct=float(s.soc_full_defense_threshold_pct),
         carryover_minutes=carryover_min,
     )
     save_soc_full_defense_carryover(soc_full_carryover)
@@ -548,9 +527,9 @@ async def run_one_cycle() -> None:
         "soc_low_defense_hold",
         "soc_low_discharge_cap",
     ):
-        MAX_SLOT_MIN = max(1, int(SOC_FULL_DEFENSE_MAX_SLOT_MIN))
+        MAX_SLOT_MIN = max(1, int(s.soc_full_defense_max_slot_min))
     else:
-        MAX_SLOT_MIN = max(1, int(WATCHDOG_MAX_SLOT_MIN))
+        MAX_SLOT_MIN = max(1, int(s.watchdog_max_slot_min))
     duration_min = max(1, int(math.ceil((decision.duration_s or 0.0) / 60.0)))
     duration_min = min(MAX_SLOT_MIN, duration_min)
     end_m = min(59, start_m + duration_min)

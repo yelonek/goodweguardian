@@ -5,11 +5,42 @@
 | Co chcesz zmienić | Gdzie | Uwaga |
 |-------------------|--------|--------|
 | **Włączyć / wyłączyć zapisy do inwertera** (`set_ecoslot`) | Albo **`.env`** → `GUARDIAN_CONTROL_ENABLED`, albo **plik** `state/guardian_control_override.json` z `{"control_enabled": true}` / `false` | **Jeśli plik override istnieje i ma `control_enabled` — zawsze on wygrywa** (czytany co cykl). Dashboard i API tylko **zapisują ten sam plik** — to nie jest trzeci przełącznik. Żeby znów obowiązywało tylko `.env`, **usuń** plik override (lub usuń z niego klucz i napraw JSON — prościej skasować plik). Zmiana `.env` wymaga **restartu** procesu. |
-| **Progi logiki** (SOC defense, late window, kW, histereza, …) | **Tylko `.env`** | Dashboard tego nie dotyka. **Restart** po zmianie. |
+| **Pokrętła strojenia** (SOC defense, taper, soak, nowcast, korekta PV, ceny/taryfa, ekonomia planera) | **Tylko dashboard → Ustawienia / onboarding** (zapis do `state/settings.json`) | **Jedno źródło prawdy = `settings.json`.** `.env` NIE jest już warstwą strojenia. Pętla Guardiana czyta **na żywo** (bez restartu) — patrz sekcja niżej. |
 | **Telemetria** | **`TELEMETRY_ENABLED` w `.env`** | **Restart**. |
-| **Klucz do API dashboardu** | **`GUARDIAN_API_KEY` w `.env`** | Bez klucza endpointy kontroli zwracają 503. |
+| **Klucz do API dashboardu** | **`GUARDIAN_API_KEY` w `.env`** | Bez klucza endpointy kontroli/zapisu zwracają 401/503. |
 
-W logu / telemetrii: `source=override` = decyzja z pliku JSON; `source=env` = brak (lub nieużywalny) override, używane `GUARDIAN_CONTROL_ENABLED`.
+W logu / telemetrii (przełączniki control/planner): `source=override` = decyzja z pliku JSON; `source=env` = brak (lub nieużywalny) override, używane `GUARDIAN_CONTROL_ENABLED`.
+
+### System ustawień strojenia (`guardian_settings.py`)
+
+Jeden typowany schemat (`GuardianSettings`, Pydantic) obejmuje wszystkie pokrętła strojenia.
+**Jedno źródło prawdy to `state/settings.json`.** Wartość efektywną daje `get_settings()` —
+dwie warstwy, od najniższej:
+
+1. **default** — bezpieczna wartość ze schematu (start / fresh install),
+2. **`state/settings.json` → `overrides`** — jedyne miejsce, gdzie trafiają zmiany z UI/onboardingu.
+
+**Czysty podział:** każda zmienna jest ustawiana **albo** w `.env` (infrastruktura/sekrety),
+**albo** w `settings.json` przez dashboard (strojenie) — nigdy w obu. `.env` nie wpływa na
+pola tego schematu; strojenia nie ma w `.env` ani w `guardian_config`.
+
+- **Hot-reload:** `get_settings()` przelicza wynik po zmianie mtime `settings.json`.
+  Pętla Guardiana (`hourly_balance_run`) czyta ustawienia **co cykl** — zmiana z dashboardu
+  działa bez restartu.
+- **Planer** działa jako świeży proces (cron) — czyta bieżące `settings.json` przy każdym uruchomieniu.
+  Podgląd prognoz/planu w dashboardzie odświeża część pokręteł strojenia dopiero po restarcie uvicorn,
+  ale sterowanie na inwerterze (pętla) i autorytatywny plan (cron) są aktualne.
+- **API:** `GET /api/settings` (publiczne — schemat + wartości + `sources` + `onboarding_completed`),
+  `PUT /api/settings` (`{"overrides": {...}, "complete_onboarding": bool}`, wymaga `X-Guardian-Api-Key`),
+  `DELETE /api/settings[?keys=a,b]` (reset override do wartości domyślnej). `PUT` z wartością `null`
+  usuwa dany override. `source` pola to `override` (z `settings.json`) albo `default` (schemat).
+- **Onboarding:** przy pierwszym starcie (brak/`onboarding_completed=false` w `settings.json`) dashboard
+  pokazuje kreator z domyślnymi wartościami i opisami; zapis ustawia marker `onboarding_completed`.
+- **Watchdog SOC** (rezerwa nocna, progi low/full) to teraz **6 pól tego schematu**; endpointy
+  `/api/guardian/watchdog-soc` to cienki widok nad `settings.json` (`guardian_watchdog_override.py`).
+- **Poza schematem (zostają w `.env`, wymaga restartu):** `INVERTER_IP`, `GUARDIAN_API_KEY`,
+  `*_PROXY_BASE_URL`, `TESLA_WC_HOST`, `P_INVERTER`/`P_BATTERY`, ścieżki, `TELEMETRY_*`,
+  przełączniki operacyjne `GUARDIAN_CONTROL_ENABLED` / `PLANNER_EXECUTION_ENABLED`. Szablon: `.env.example`.
 
 ---
 

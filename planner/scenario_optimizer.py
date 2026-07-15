@@ -1,4 +1,4 @@
-"""MILP wieloscenariuszowy: osobne ch/dis/soc per scenariusz, max ważonego E[cashflow]."""
+"""MILP wieloscenariuszowy: wspólne ch/dis/soc (non-anticipativity), sieć recourse per scenariusz, max ważonego E[cashflow]."""
 
 from __future__ import annotations
 
@@ -29,40 +29,44 @@ class ScenarioOptimizeMeta:
     scenario_cashflow_pln: list[float]
 
 
-def _scenario_block_size(n_hours: int) -> int:
-    """soc[H+1] + ch[H] + dis[H] + imp[H] + exp[H] + z[H]."""
-    return 6 * n_hours + 1
+def _shared_block_size(n_hours: int) -> int:
+    """Wspólne sterowanie baterią: soc[H+1] + ch[H] + dis[H]."""
+    return 3 * n_hours + 1
 
 
 def _scenario_var_layout(n_scenarios: int, n_hours: int) -> tuple[int, dict]:
     """
-    Zmienne per scenariusz ``s``:
-    soc[s,0..H], ch[s,0..H-1], dis[s,0..H-1], imp[s,h], exp[s,h], z[s,h].
+    Non-anticipativity: jedna wspólna trajektoria baterii, sieć jako recourse per scenariusz.
+
+    Zmienne wspólne (jedna decyzja dla wszystkich scenariuszy):
+        soc[0..H], ch[0..H-1], dis[0..H-1].
+    Zmienne recourse per scenariusz ``s`` (blok po ``3·H``):
+        imp[s,h], exp[s,h], z[s,h].
     """
-    block = _scenario_block_size(n_hours)
+    shared = _shared_block_size(n_hours)
+
+    def soc_idx(h: int) -> int:
+        return h
+
+    def ch_idx(h: int) -> int:
+        return (n_hours + 1) + h
+
+    def dis_idx(h: int) -> int:
+        return (n_hours + 1) + n_hours + h
 
     def scenario_base(s: int) -> int:
-        return s * block
-
-    def soc_idx(s: int, h: int) -> int:
-        return scenario_base(s) + h
-
-    def ch_idx(s: int, h: int) -> int:
-        return scenario_base(s) + (n_hours + 1) + h
-
-    def dis_idx(s: int, h: int) -> int:
-        return scenario_base(s) + (n_hours + 1) + n_hours + h
+        return shared + s * (3 * n_hours)
 
     def imp_idx(s: int, h: int) -> int:
-        return scenario_base(s) + (n_hours + 1) + 2 * n_hours + 2 * h
+        return scenario_base(s) + 3 * h
 
     def exp_idx(s: int, h: int) -> int:
         return imp_idx(s, h) + 1
 
     def z_idx(s: int, h: int) -> int:
-        return scenario_base(s) + (n_hours + 1) + 4 * n_hours + h
+        return imp_idx(s, h) + 2
 
-    n_vars = n_scenarios * block
+    n_vars = shared + n_scenarios * (3 * n_hours)
     return n_vars, {
         "n_hours": n_hours,
         "n_scenarios": n_scenarios,
@@ -82,7 +86,7 @@ def _solve_scenario_milp(
     soc_start_pct: float,
     params: BatteryParams,
 ) -> tuple[np.ndarray, ScenarioOptimizeMeta] | None:
-    """max Σ_s π_s·cashflow_s (sieć − wear per scenariusz)."""
+    """max Σ_s π_s·cashflow_s (sieć per scenariusz − wspólny wear baterii)."""
     cycle_cost = float(PLANNER_BATTERY_CYCLE_COST_PLN)
     wear_per_dis = cycle_cost if cycle_cost > 0.0 else 0.0
     n_h = len(hours_in)
@@ -101,40 +105,45 @@ def _solve_scenario_milp(
     big_m = _big_m(hours_in, params)
     c = np.zeros(n_vars)
 
+    # Sieć: recourse per scenariusz, ważona π_s.
     for s, sc in enumerate(scenarios):
         pi = float(sc.weight)
         for h, hin in enumerate(hours_in):
             c[imp_idx(s, h)] += pi * hin.import_pln_per_kwh
             c[exp_idx(s, h)] -= pi * hin.export_pln_per_kwh
-            c[ch_idx(s, h)] += pi * _SIMULTANEOUS_PENALTY
-            c[dis_idx(s, h)] += pi * (_SIMULTANEOUS_PENALTY + wear_per_dis)
+    # Bateria: wspólne sterowanie (Σπ_s = 1) → wear/penalty liczone raz.
+    for h in range(n_h):
+        c[ch_idx(h)] += _SIMULTANEOUS_PENALTY
+        c[dis_idx(h)] += _SIMULTANEOUS_PENALTY + wear_per_dis
 
     eq_rows: list[np.ndarray] = []
     eq_rhs: list[float] = []
     soc0 = soc_kwh(soc_start_pct, params)
     eta = params.eta
 
-    for s in range(n_s):
+    # Wspólna trajektoria SOC (jedna dla wszystkich scenariuszy).
+    row = np.zeros(n_vars)
+    row[soc_idx(0)] = 1.0
+    eq_rows.append(row)
+    eq_rhs.append(soc0)
+
+    for h in range(n_h):
         row = np.zeros(n_vars)
-        row[soc_idx(s, 0)] = 1.0
+        row[soc_idx(h)] = -1.0
+        row[soc_idx(h + 1)] = 1.0
+        row[ch_idx(h)] = -eta
+        row[dis_idx(h)] = 1.0 / eta
         eq_rows.append(row)
-        eq_rhs.append(soc0)
+        eq_rhs.append(0.0)
 
-        for h in range(n_h):
-            row = np.zeros(n_vars)
-            row[soc_idx(s, h)] = -1.0
-            row[soc_idx(s, h + 1)] = 1.0
-            row[ch_idx(s, h)] = -eta
-            row[dis_idx(s, h)] = 1.0 / eta
-            eq_rows.append(row)
-            eq_rhs.append(0.0)
-
+    # Bilans per scenariusz — dzielone ch/dis, recourse imp/exp.
+    for s in range(n_s):
         sc = scenarios[s]
         for h in range(n_h):
             row = np.zeros(n_vars)
-            row[dis_idx(s, h)] = 1.0
+            row[dis_idx(h)] = 1.0
             row[imp_idx(s, h)] = 1.0
-            row[ch_idx(s, h)] = -1.0
+            row[ch_idx(h)] = -1.0
             row[exp_idx(s, h)] = -1.0
             eq_rows.append(row)
             eq_rhs.append(float(sc.load_kwh[h]) - float(sc.pv_kwh[h]))
@@ -168,14 +177,15 @@ def _solve_scenario_milp(
 
     lb = np.zeros(n_vars)
     ub = np.full(n_vars, np.inf)
+    for h in range(n_h + 1):
+        lb[soc_idx(h)] = soc_min
+        ub[soc_idx(h)] = soc_max
+    for h in range(n_h):
+        p_h = max_power_for_hour(hours_in[h], params)
+        ub[ch_idx(h)] = p_h
+        ub[dis_idx(h)] = p_h
     for s in range(n_s):
-        for h in range(n_h + 1):
-            lb[soc_idx(s, h)] = soc_min
-            ub[soc_idx(s, h)] = soc_max
         for h in range(n_h):
-            p_h = max_power_for_hour(hours_in[h], params)
-            ub[ch_idx(s, h)] = p_h
-            ub[dis_idx(s, h)] = p_h
             lb[z_idx(s, h)] = 0.0
             ub[z_idx(s, h)] = 1.0
 
@@ -195,6 +205,15 @@ def _solve_scenario_milp(
         return None
 
     x = res.x
+    # Wear liczony raz na wspólnym sterowaniu — ten sam dla każdego scenariusza.
+    shared_wear = sum(
+        battery_wear_pln_for_hour(
+            float(x[ch_idx(h)]),
+            float(x[dis_idx(h)]),
+            cycle_cost_pln=cycle_cost,
+        )
+        for h in range(n_h)
+    )
     scenario_cf: list[float] = []
     for s in range(n_s):
         grid = 0.0
@@ -206,15 +225,7 @@ def _solve_scenario_milp(
                 rce_pln_per_kwh=hin.export_pln_per_kwh,
                 import_pln_per_kwh=hin.import_pln_per_kwh,
             )
-        wear = sum(
-            battery_wear_pln_for_hour(
-                float(x[ch_idx(s, h)]),
-                float(x[dis_idx(s, h)]),
-                cycle_cost_pln=cycle_cost,
-            )
-            for h in range(n_h)
-        )
-        scenario_cf.append(grid - wear)
+        scenario_cf.append(grid - shared_wear)
 
     expected = sum(sc.weight * cf for sc, cf in zip(scenarios, scenario_cf, strict=True))
     meta = ScenarioOptimizeMeta(
@@ -292,7 +303,7 @@ def _optimize_from_deterministic_milp(
 
 def _scenario_meta_dict(meta: ScenarioOptimizeMeta) -> dict:
     return {
-        "model": "per_scenario_ch_dis_soc",
+        "model": "shared_battery_grid_recourse",
         "expected_cashflow_pln": meta.expected_cashflow_pln,
         "scenario_cashflow_pln": {
             sc.name: cf
@@ -311,7 +322,9 @@ def optimize_horizon_scenarios(
     """
     Wieloscenariuszowy MILP: max ważonego E[cashflow].
 
-    Per scenariusz: osobne ch/dis/soc/imp/exp. Plan wykonawczy ze scenariusza bazowego (p50).
+    Wspólna trajektoria baterii ch/dis/soc (jedna decyzja dla wszystkich scenariuszy);
+    sieć imp/exp/z jako recourse per scenariusz. Miernik netto/cashflow per godzina
+    raportowany ze scenariusza bazowego (p50); total = ważona wartość oczekiwana.
     """
     bp = params or BatteryParams()
     cycle_cost = float(PLANNER_BATTERY_CYCLE_COST_PLN)
@@ -345,17 +358,17 @@ def optimize_horizon_scenarios(
     s_base = base_scenario_index(scenarios)
 
     plans: list[HourPlan] = []
-    traj: list[float] = [_soc_pct(float(x[soc_idx(s_base, 0)]), bp)]
+    traj: list[float] = [_soc_pct(float(x[soc_idx(0)]), bp)]
 
     for h, hin in enumerate(hours_in):
-        soc_start = _soc_pct(float(x[soc_idx(s_base, h)]), bp)
+        soc_start = _soc_pct(float(x[soc_idx(h)]), bp)
         imp = float(x[imp_idx(s_base, h)])
         exp = float(x[exp_idx(s_base, h)])
-        ch = float(x[ch_idx(s_base, h)])
-        dis = float(x[dis_idx(s_base, h)])
+        ch = float(x[ch_idx(h)])
+        dis = float(x[dis_idx(h)])
         net = exp - imp
         bd = battery_delta_from_net(pv_kwh=hin.pv_kwh, load_kwh=hin.load_kwh, net_kwh=net)
-        soc_end = _soc_pct(float(x[soc_idx(s_base, h + 1)]), bp)
+        soc_end = _soc_pct(float(x[soc_idx(h + 1)]), bp)
         grid_cf = cashflow_pln_for_hour(
             net,
             rce_pln_per_kwh=hin.export_pln_per_kwh,

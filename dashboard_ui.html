@@ -417,6 +417,25 @@
       nav a { padding: 10px 14px; font-size: 14px; }
       .topbar { padding: 10px 12px; gap: 8px; }
     }
+    /* --- Data-driven settings form + onboarding --- */
+    .tuning-group { border: 1px solid rgba(127,127,127,0.35); border-radius: 10px; padding: 10px 14px 14px; margin: 0 0 14px; }
+    .tuning-group > legend { font-weight: 700; font-size: 13px; padding: 0 6px; }
+    .tuning-grid { display: grid; grid-template-columns: 1fr; gap: 12px; }
+    @media (min-width: 720px) { .tuning-grid { grid-template-columns: 1fr 1fr; } }
+    .tuning-field { display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
+    .tuning-field .t-name { font-weight: 600; }
+    .tuning-field .t-hint { opacity: 0.75; font-size: 11px; line-height: 1.35; }
+    .tuning-field input[type="number"], .tuning-field input[type="text"] { padding: 5px 6px; width: 100%; box-sizing: border-box; }
+    .tuning-field .t-row { display: flex; align-items: center; gap: 8px; }
+    .tuning-field .t-unit { opacity: 0.7; font-size: 11px; }
+    .src-badge { font-size: 10px; padding: 1px 6px; border-radius: 6px; border: 1px solid rgba(127,127,127,0.5); opacity: 0.85; }
+    .src-badge.override { background: rgba(60,140,60,0.18); border-color: rgba(60,140,60,0.6); }
+    #onboardingOverlay { position: fixed; inset: 0; background: rgba(0,0,0,0.62); z-index: 1000; display: flex; align-items: flex-start; justify-content: center; overflow-y: auto; padding: 24px 12px; }
+    #onboardingOverlay[hidden] { display: none !important; }
+    .onboarding-modal { background: Canvas; color: CanvasText; border-radius: 12px; max-width: 900px; width: 100%; padding: 20px 22px; box-shadow: 0 12px 40px rgba(0,0,0,0.4); }
+    .onboarding-modal h2 { margin: 0 0 6px; }
+    .onboarding-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 8px; position: sticky; bottom: 0; background: Canvas; padding: 12px 0 4px; border-top: 1px solid rgba(127,127,127,0.3); }
+    .onboarding-actions .grow { flex: 1; }
   </style>
 </head>
 <body>
@@ -791,15 +810,33 @@
           </div>
           <div class="row" style="margin-top:12px;">
             <button type="button" id="saveWatchdog">Zapisz zmiany</button>
-            <button type="button" id="resetWatchdog">Przywróć wartości z .env</button>
+            <button type="button" id="resetWatchdog">Przywróć wartości domyślne</button>
           </div>
           <div class="muted" id="wdSaveStatus" style="margin-top:8px;"></div>
           <div class="setting-hint muted">
             <ul>
-              <li>Na kartach powyżej: <strong>wartość</strong> oraz w nawiasie <strong>skąd pochodzi</strong> (panel lub .env).</li>
-              <li>Zapis z panelu trafia do <code>state/guardian_watchdog_override.json</code> — bez restartu procesu.</li>
-              <li>„Przywróć wartości z .env” usuwa nadpisania; z powrotem obowiązują zmienne <code>SOC_*</code> z pliku środowiskowego.</li>
+              <li>Na kartach powyżej: <strong>wartość</strong> oraz w nawiasie <strong>skąd pochodzi</strong> (panel lub domyślne).</li>
+              <li>Zapis z panelu trafia do <code>state/settings.json</code> — bez restartu procesu.</li>
+              <li>„Przywróć wartości domyślne” usuwa nadpisania z <code>settings.json</code>; wracają wartości domyślne ze schematu.</li>
             </ul>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-block">
+        <h3>Zaawansowane strojenie</h3>
+        <p class="setting-lead muted">
+          Wszystkie pokrętła strojenia (bilans, egzekucja planu, obrony SOC, korekta PV, nowcast,
+          ceny/taryfa, ekonomia planera). To jedno źródło prawdy: wartość z panelu trafia do
+          <code>state/settings.json</code> i działa <strong>bez restartu</strong> pętli Guardiana.
+          Puste nadpisanie = wartość domyślna ze schematu.
+        </p>
+        <div class="card">
+          <div id="tuningContainer"><div class="muted">Ładowanie…</div></div>
+          <div class="onboarding-actions">
+            <button type="button" id="saveTuning">Zapisz ustawienia</button>
+            <button type="button" id="resetTuning">Przywróć wartości domyślne</button>
+            <span class="muted" id="tuningStatus"></span>
           </div>
         </div>
       </div>
@@ -821,6 +858,28 @@
       </div>
     </section>
   </main>
+
+  <div id="onboardingOverlay" hidden>
+    <div class="onboarding-modal">
+      <h2>Witaj w GoodWeGuardian</h2>
+      <p class="muted setting-lead">
+        To pierwszy start. Poniżej domyślne ustawienia strojenia z krótkim opisem każdej wartości.
+        Możesz zmienić co chcesz teraz albo zostawić domyślne i dopracować później w zakładce
+        <strong>Ustawienia</strong>. Zmiany zapisują się do <code>state/settings.json</code> i działają bez restartu.
+      </p>
+      <div class="card" style="margin: 6px 0 0;">
+        <label class="muted" style="display:block; font-size:12px; margin-bottom:4px;">Klucz API (GUARDIAN_API_KEY) — wymagany do zapisu</label>
+        <input id="onboardingApiKey" type="password" placeholder="GUARDIAN_API_KEY" style="width:100%; padding:6px;" />
+      </div>
+      <div id="onboardingContainer" style="margin-top:14px;"><div class="muted">Ładowanie…</div></div>
+      <div class="onboarding-actions">
+        <button type="button" id="onboardingSave">Zapisz i zakończ</button>
+        <button type="button" id="onboardingSkip">Użyj domyślnych i zamknij</button>
+        <span class="grow"></span>
+        <span class="muted" id="onboardingStatus"></span>
+      </div>
+    </div>
+  </div>
 
 <script src="/dashboard.js"></script>
 </body>

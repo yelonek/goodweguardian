@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 import guardian_config as guardian_cfg
 
@@ -43,6 +43,7 @@ from guardian_watchdog_override import (
     clear_watchdog_override,
     watchdog_soc_api_payload,
 )
+import guardian_settings
 from baseline_info import baseline_spec
 from load_forecast import (
     build_daily_hourly_kwh_cache,
@@ -123,6 +124,13 @@ class WatchdogSocUpdateBody(BaseModel):
                 raise ValueError("soc_night_reserve_hours: hour out of 0..23")
             out.add(hi)
         return sorted(out)
+
+
+class SettingsUpdateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    overrides: dict[str, Any] = Field(default_factory=dict)
+    complete_onboarding: bool | None = None
 
 
 class EcoslotWriteBody(BaseModel):
@@ -676,6 +684,36 @@ def api_watchdog_soc_delete(
 ) -> JSONResponse:
     clear_watchdog_override()
     return JSONResponse(watchdog_soc_api_payload())
+
+
+@app.get("/api/settings")
+def api_settings_get() -> JSONResponse:
+    """Schemat + wartości efektywne + źródła + stan onboardingu (data-driven UI)."""
+    return JSONResponse(guardian_settings.settings_api_payload())
+
+
+@app.put("/api/settings")
+def api_settings_put(
+    body: SettingsUpdateBody,
+    _: None = Depends(_require_guardian_api_key),
+) -> JSONResponse:
+    try:
+        guardian_settings.update_overrides(
+            body.overrides, complete_onboarding=body.complete_onboarding
+        )
+    except ValidationError as e:
+        raise HTTPException(status_code=422, detail=e.errors()) from e
+    return JSONResponse(guardian_settings.settings_api_payload())
+
+
+@app.delete("/api/settings")
+def api_settings_delete(
+    keys: str | None = Query(default=None, description="CSV kluczy do resetu; brak = wszystkie"),
+    _: None = Depends(_require_guardian_api_key),
+) -> JSONResponse:
+    key_list = [k.strip() for k in keys.split(",") if k.strip()] if keys else None
+    guardian_settings.reset_overrides(key_list)
+    return JSONResponse(guardian_settings.settings_api_payload())
 
 
 @app.get("/api/pricing/day")

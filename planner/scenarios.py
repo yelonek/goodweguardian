@@ -59,7 +59,7 @@ def build_planning_scenarios(hours_in: list[HourInputs]) -> list[PlanningScenari
     w_o = float(PLANNER_SCENARIO_WEIGHT_OPTIMISTIC)
     total = w_p + w_b + w_o
     if total <= 0.0:
-        w_p, w_b, w_o = 0.15, 0.70, 0.15
+        w_p, w_b, w_o = 0.15, 0.80, 0.05
         total = 1.0
     w_p, w_b, w_o = w_p / total, w_b / total, w_o / total
 

@@ -12,7 +12,7 @@ Moc baterii: dodatnia = rozładowanie, ujemna = ładowanie.
 
 from dataclasses import dataclass
 
-from planner.config import PLANNER_SOC_MIN_PCT
+from guardian_settings import get_settings
 from planner.models import ExecMode
 
 # Obrony SOC a exec_mode (§13 PLANNING_SYSTEM.md)
@@ -446,7 +446,8 @@ def decide_soc_defenses(
 
     if apply_soc_low and float(inp.soc_pct) <= float(cfg.soc_low_threshold_pct):
         low_soc_target_w = inp.low_soc_discharge_target_w
-        at_soc_floor = float(inp.soc_pct) <= float(PLANNER_SOC_MIN_PCT) + 0.5
+        planner_soc_min_pct = get_settings().planner_soc_min_pct
+        at_soc_floor = float(inp.soc_pct) <= float(planner_soc_min_pct) + 0.5
         plan_wants_charge = (
             plan_battery_delta_kwh is not None
             and float(plan_battery_delta_kwh) > PLAN_CHARGE_INTENT_EPS_KWH

@@ -10,7 +10,8 @@ from typing import Any
 
 import httpx
 
-from guardian_config import DATA_DIR, RCE_EXPORT_MULTIPLIER, RCE_PROXY_BASE_URL, TELEMETRY_TZ
+from guardian_config import DATA_DIR, RCE_PROXY_BASE_URL, TELEMETRY_TZ
+from guardian_settings import get_settings
 from pse_rce import get_or_fetch_hourly_rce_pln_per_kwh
 from tariff_g12 import G12TariffConfig, g12_tariff_from_env
 
@@ -82,7 +83,7 @@ def adjust_rce_for_export_settlement(hourly_rce: list[float]) -> list[float]:
     """RCE z rynku (PSE/proxy) → stawka używana przy eksporcie (KPI, planer)."""
     from economics import export_pln_per_kwh_effective
 
-    m = float(RCE_EXPORT_MULTIPLIER)
+    m = float(get_settings().rce_export_multiplier)
     if m == 1.0:
         return [export_pln_per_kwh_effective(v) for v in hourly_rce]
     return [export_pln_per_kwh_effective(float(v) * m) for v in hourly_rce]

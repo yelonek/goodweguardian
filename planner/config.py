@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import os
-
-from guardian_config import DATA_DIR, P_BATTERY_W, STATE_DIR, _float_env, _int_env
+from guardian_config import DATA_DIR, P_BATTERY_W, STATE_DIR
+from guardian_settings import get_settings
 
 PLANNER_DIR = DATA_DIR / "planner"
 PLANNER_AUDIT_DIR = PLANNER_DIR / "audit"
@@ -14,25 +13,30 @@ PLANNER_REVIEWS_DIR = PLANNER_DIR / "reviews"
 PLANNER_AUDITS_DIR = PLANNER_DIR / "audits"
 PLANNER_LATEST_PLAN_PATH = PLANNER_PLANS_DIR / "plan_latest.json"
 PLANNER_OUTPUT_PATH = STATE_DIR / "planner_output.json"
-PLANNER_POLICY_VALID_MINUTES = _int_env("PLANNER_POLICY_VALID_MINUTES", 10)
+
+# Wartości strojenia pochodzą z jednolitego systemu ustawień (env → settings.json).
+# Pozostają stałymi modułu (spójność z konsumentami/testami); świeży proces CLI
+# planera czyta bieżące settings.json przy imporcie.
+_s = get_settings()
+PLANNER_POLICY_VALID_MINUTES = _s.planner_policy_valid_minutes
 # Eksport zarobkowy: minimalna cena RCE [PLN/kWh] do trybu ``export_profit``.
-PLANNER_EXPORT_PROFIT_MIN_PLN = _float_env("PLANNER_EXPORT_PROFIT_MIN_PLN", 0.35)
+PLANNER_EXPORT_PROFIT_MIN_PLN = _s.planner_export_profit_min_pln
 
 # Pojemność magazynu [kWh] — do symulacji SOC w optymalizatorze
-PLANNER_BATTERY_KWH = _float_env("PLANNER_BATTERY_KWH", 10.0)
-PLANNER_BATTERY_ETA = _float_env("PLANNER_BATTERY_ETA", 0.92)
+PLANNER_BATTERY_KWH = _s.battery_capacity_kwh
+PLANNER_BATTERY_ETA = _s.planner_battery_eta
 # Amortyzacja: PLN za każdy kWh **rozładowania** magazynu (ład bez kary wear).
-PLANNER_BATTERY_CYCLE_COST_PLN = _float_env("PLANNER_BATTERY_CYCLE_COST_PLN", 0.10)
-PLANNER_SOC_MIN_PCT = _float_env("PLANNER_SOC_MIN_PCT", 10.0)
-PLANNER_SOC_MAX_PCT = _float_env("PLANNER_SOC_MAX_PCT", 100.0)
-PLANNER_HORIZON_HOURS = _int_env("PLANNER_HORIZON_HOURS", 24)
-PLANNER_LOAD_LOOKBACK_DAYS = _int_env("PLANNER_LOAD_LOOKBACK_DAYS", 28)
+PLANNER_BATTERY_CYCLE_COST_PLN = _s.planner_battery_cycle_cost_pln
+PLANNER_SOC_MIN_PCT = _s.planner_soc_min_pct
+PLANNER_SOC_MAX_PCT = _s.planner_soc_max_pct
+PLANNER_HORIZON_HOURS = _s.planner_horizon_hours
+PLANNER_LOAD_LOOKBACK_DAYS = _s.planner_load_lookback_days
 
 # Wieloscenariuszowy MILP (p10/p50/p90); ``off`` = deterministyczny p50.
-_SCENARIO_OPTIMIZER_RAW = (os.environ.get("PLANNER_SCENARIO_OPTIMIZER") or "1").strip().lower()
-PLANNER_SCENARIO_WEIGHT_PESSIMISTIC = _float_env("PLANNER_SCENARIO_WEIGHT_PESSIMISTIC", 0.15)
-PLANNER_SCENARIO_WEIGHT_BASE = _float_env("PLANNER_SCENARIO_WEIGHT_BASE", 0.70)
-PLANNER_SCENARIO_WEIGHT_OPTIMISTIC = _float_env("PLANNER_SCENARIO_WEIGHT_OPTIMISTIC", 0.15)
+_SCENARIO_OPTIMIZER_RAW = "1" if _s.planner_scenario_optimizer else "off"
+PLANNER_SCENARIO_WEIGHT_PESSIMISTIC = _s.planner_scenario_weight_pessimistic
+PLANNER_SCENARIO_WEIGHT_BASE = _s.planner_scenario_weight_base
+PLANNER_SCENARIO_WEIGHT_OPTIMISTIC = _s.planner_scenario_weight_optimistic
 
 
 def planner_scenario_optimizer_enabled() -> bool:

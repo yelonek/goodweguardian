@@ -235,7 +235,7 @@ const WD_FIELD_LABELS = {
 
 function formatWatchdogSource(source) {
   if (source === "override") return "panel";
-  if (source === "env") return ".env";
+  if (source === "default") return "domyślne";
   return fmt(source);
 }
 
@@ -1062,8 +1062,8 @@ function renderWatchdogSoc(wds) {
   if (!wds || !wds.effective) return;
   const eff = wds.effective, src = wds.sources || {};
   document.getElementById("wdPathLine").textContent = wds.override_exists
-    ? "Nadpisania z panelu: aktywne (niektóre progi mogą różnić się od .env)"
-    : "Tylko wartości z .env — brak pliku nadpisania";
+    ? "Nadpisania z panelu: aktywne (niektóre progi różnią się od domyślnych)"
+    : "Tylko wartości domyślne — brak nadpisań w settings.json";
   document.getElementById("watchdogSummaryCards").innerHTML = [
     ["soc_night_reserve_enabled", eff.soc_night_reserve_enabled ? "włączona" : "wyłączona (planer)", formatWatchdogSource(src.soc_night_reserve_enabled)],
     ["soc_night_reserve_pct", `${fmt(eff.soc_night_reserve_pct)}%`, formatWatchdogSource(src.soc_night_reserve_pct)],
@@ -1095,6 +1095,9 @@ async function loadSettings(force) {
     } catch (e) {
       console.error(e);
     }
+  }
+  if (!isPoll) {
+    loadTuning().catch(console.error);
   }
   if (getKey()) {
     refreshControl().catch(console.error);
@@ -1181,7 +1184,7 @@ async function putPlanner(enabled) {
 async function saveWatchdog() {
   const key = getKey(), st = document.getElementById("wdSaveStatus");
   if (!key) { st.textContent = "Ustaw klucz API"; return; }
-  const eb = (window._lastWds || {}).env_base;
+  const eb = (window._lastWds || {}).defaults;
   if (!eb) { st.textContent = "Brak konfiguracji"; return; }
   const body = {};
   const nightEnabled = document.getElementById("wd_soc_night_reserve_enabled").checked;
@@ -1214,7 +1217,7 @@ async function resetWatchdog() {
   const r = await fetch("/api/guardian/watchdog-soc", { method: "DELETE", headers: { "X-Guardian-Api-Key": key } });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) { st.textContent = j.detail || "error"; return; }
-  st.textContent = "Przywrócono wartości z .env (plik nadpisania usunięty).";
+  st.textContent = "Przywrócono wartości domyślne (nadpisania usunięte).";
   window._lastWds = j;
   renderWatchdogSoc(j);
 }
@@ -1445,6 +1448,163 @@ async function saveEcoslot(slotId, btn) {
   }
 }
 
+// ---- Data-driven tuning settings (schemat z /api/settings) ----
+function settingsEqual(a, b) {
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length) return false;
+    const sa = [...a].sort((x, y) => x - y), sb = [...b].sort((x, y) => x - y);
+    return sa.every((v, i) => v === sb[i]);
+  }
+  if (typeof a === "number" && typeof b === "number") return Math.abs(a - b) < 1e-9;
+  return a === b;
+}
+
+function settingInputHtml(name, sch, value) {
+  const type = sch.type;
+  if (type === "boolean") {
+    return `<div class="t-row"><input data-setting="${name}" data-type="boolean" type="checkbox" ${value ? "checked" : ""} /></div>`;
+  }
+  if (type === "array") {
+    const csv = Array.isArray(value) ? value.join(",") : "";
+    return `<input data-setting="${name}" data-type="array" type="text" value="${csv}" placeholder="np. 22,23,0,1,2,3,4,5" />`;
+  }
+  const step = type === "integer" ? "1" : "any";
+  let min = "";
+  if (sch.minimum !== undefined) min = ` min="${sch.minimum}"`;
+  else if (sch.exclusiveMinimum !== undefined) min = ` min="${sch.exclusiveMinimum}"`;
+  const max = sch.maximum !== undefined ? ` max="${sch.maximum}"` : "";
+  const unit = sch.unit ? `<span class="t-unit">${escapeHtml(sch.unit)}</span>` : "";
+  return `<div class="t-row"><input data-setting="${name}" data-type="${type}" type="number" step="${step}"${min}${max} value="${value}" />${unit}</div>`;
+}
+
+function renderSettingsForm(payload, container) {
+  const props = (payload.schema && payload.schema.properties) || {};
+  const groups = payload.groups || [];
+  const eff = payload.effective || {};
+  const src = payload.sources || {};
+  const html = groups.map((g) => {
+    const fields = Object.keys(props).filter((n) => (props[n].group || "") === g.key);
+    if (!fields.length) return "";
+    const rows = fields.map((n) => {
+      const sch = props[n];
+      const badge = src[n] === "override"
+        ? '<span class="src-badge override">panel</span>'
+        : '<span class="src-badge">domyślne</span>';
+      return `<label class="tuning-field">
+        <span class="t-name">${escapeHtml(n)} ${badge}</span>
+        ${settingInputHtml(n, sch, eff[n])}
+        <span class="t-hint">${escapeHtml(sch.description || "")}</span>
+      </label>`;
+    }).join("");
+    return `<fieldset class="tuning-group"><legend>${escapeHtml(g.label)}</legend>
+      <div class="tuning-grid">${rows}</div></fieldset>`;
+  }).join("");
+  container.innerHTML = html || '<div class="muted">Brak pól.</div>';
+}
+
+function collectSettingsOverrides(container, payload) {
+  const base = payload.defaults || {};
+  const out = {};
+  container.querySelectorAll("[data-setting]").forEach((el) => {
+    const name = el.getAttribute("data-setting");
+    const type = el.getAttribute("data-type");
+    let val;
+    if (type === "boolean") {
+      val = el.checked;
+    } else if (type === "array") {
+      val = el.value.split(",").map((x) => x.trim()).filter((x) => x !== "").map((x) => parseInt(x, 10));
+    } else if (type === "integer") {
+      if (el.value === "") return;
+      val = parseInt(el.value, 10);
+    } else {
+      if (el.value === "") return;
+      val = parseFloat(el.value);
+    }
+    // Równe wartości domyślnej ze schematu → wyczyść override (null); różne → ustaw.
+    out[name] = settingsEqual(val, base[name]) ? null : val;
+  });
+  return out;
+}
+
+async function putSettings(overrides, completeOnboarding, statusEl) {
+  const key = getKey();
+  if (!key) { if (statusEl) statusEl.textContent = "Ustaw klucz API"; return null; }
+  const body = { overrides };
+  if (completeOnboarding) body.complete_onboarding = true;
+  const r = await fetch("/api/settings", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", "X-Guardian-Api-Key": key },
+    body: JSON.stringify(body),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    if (statusEl) statusEl.textContent = typeof j.detail === "string" ? j.detail : "Błąd zapisu (sprawdź zakresy i klucz API).";
+    return null;
+  }
+  return j;
+}
+
+async function loadTuning() {
+  const container = document.getElementById("tuningContainer");
+  try {
+    const p = await fetchJson("/api/settings", 10000);
+    window._lastSettings = p;
+    renderSettingsForm(p, container);
+  } catch (e) {
+    container.innerHTML = '<div class="muted">Błąd: ' + escapeHtml(String(e)) + "</div>";
+  }
+}
+
+async function saveTuning() {
+  const st = document.getElementById("tuningStatus");
+  const container = document.getElementById("tuningContainer");
+  const p = window._lastSettings;
+  if (!p) return;
+  st.textContent = "Zapisuję…";
+  const overrides = collectSettingsOverrides(container, p);
+  const j = await putSettings(overrides, false, st);
+  if (j) { window._lastSettings = j; renderSettingsForm(j, container); st.textContent = "Zapisano."; }
+}
+
+async function resetTuning() {
+  const st = document.getElementById("tuningStatus");
+  const key = getKey();
+  if (!key) { st.textContent = "Ustaw klucz API"; return; }
+  const r = await fetch("/api/settings", { method: "DELETE", headers: { "X-Guardian-Api-Key": key } });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { st.textContent = "Błąd resetu"; return; }
+  window._lastSettings = j;
+  renderSettingsForm(j, document.getElementById("tuningContainer"));
+  st.textContent = "Przywrócono wartości domyślne.";
+}
+
+async function maybeShowOnboarding() {
+  let p;
+  try { p = await fetchJson("/api/settings", 10000); } catch (e) { return; }
+  window._lastSettings = p;
+  if (p.onboarding_completed) return;
+  renderSettingsForm(p, document.getElementById("onboardingContainer"));
+  document.getElementById("onboardingApiKey").value = getKey();
+  document.getElementById("onboardingOverlay").hidden = false;
+}
+
+async function finishOnboarding(useDefaults) {
+  const st = document.getElementById("onboardingStatus");
+  const keyInput = document.getElementById("onboardingApiKey").value.trim();
+  if (keyInput) localStorage.setItem("guardianApiKey", keyInput);
+  if (!getKey()) { st.textContent = "Podaj klucz API, żeby zapisać."; return; }
+  const p = window._lastSettings || {};
+  const overrides = useDefaults ? {} : collectSettingsOverrides(document.getElementById("onboardingContainer"), p);
+  st.textContent = "Zapisuję…";
+  const j = await putSettings(overrides, true, st);
+  if (j) {
+    window._lastSettings = j;
+    document.getElementById("onboardingOverlay").hidden = true;
+    document.getElementById("apiKey").value = getKey();
+    if (currentPage === "settings") loadTuning().catch(console.error);
+  }
+}
+
 const PAGE_LOADERS = {
   overview: loadOverview,
   history: loadHistory,
@@ -1520,6 +1680,10 @@ document.getElementById("enablePlanner").addEventListener("click", () => putPlan
 document.getElementById("disablePlanner").addEventListener("click", () => putPlanner(false));
 document.getElementById("saveWatchdog").addEventListener("click", () => saveWatchdog().catch(console.error));
 document.getElementById("resetWatchdog").addEventListener("click", () => resetWatchdog().catch(console.error));
+document.getElementById("saveTuning").addEventListener("click", () => saveTuning().catch(console.error));
+document.getElementById("resetTuning").addEventListener("click", () => resetTuning().catch(console.error));
+document.getElementById("onboardingSave").addEventListener("click", () => finishOnboarding(false).catch(console.error));
+document.getElementById("onboardingSkip").addEventListener("click", () => finishOnboarding(true).catch(console.error));
 document.getElementById("wd_soc_night_reserve_enabled").addEventListener("change", (e) => {
   setNightReserveFieldsEnabled(e.target.checked);
 });
@@ -1535,3 +1699,4 @@ initKpiDayPicker();
 startGlobalAlertPolling();
 if (!location.hash) location.hash = "overview";
 navigate(parsePageFromHash(), true);
+maybeShowOnboarding().catch(console.error);

@@ -2,13 +2,7 @@
 
 from __future__ import annotations
 
-from guardian_config import (
-    EXEC_EARLY_INTERVENTION_KW,
-    EXEC_MIN_ACTIVE_CHARGE_PCT,
-    EXEC_MIN_ACTIVE_DISCHARGE_PCT,
-    EXEC_STEADY_PCT,
-    IMPORT_GRID_SOC_PCT,
-)
+from guardian_settings import get_settings
 from guardian_logic import (
     BalanceInputs,
     WatchdogConfig,
@@ -38,10 +32,11 @@ def _exec_export_profit(
     params: HourPolicyParams,
     cfg: WatchdogConfig,
 ) -> WatchdogDecision:
+    s = get_settings()
     floor = float(params.soc_floor_pct if params.soc_floor_pct is not None else cfg.soc_low_threshold_pct)
     if float(inp.soc_pct) <= floor + 0.5:
         return _steady_decision(
-            power_pct=EXEC_STEADY_PCT,
+            power_pct=s.exec_steady_pct,
             mode="discharge",
             reason="export_profit_soc_floor",
             time_to_end_s=inp.time_to_end_s,
@@ -50,8 +45,8 @@ def _exec_export_profit(
     plan_pct = _params_pct(
         params,
         "discharge_pct",
-        minimum=EXEC_MIN_ACTIVE_DISCHARGE_PCT,
-        default=EXEC_MIN_ACTIVE_DISCHARGE_PCT,
+        minimum=s.exec_min_active_discharge_pct,
+        default=s.exec_min_active_discharge_pct,
     )
     plan_max_w = plan_pct * inp.watts_per_percent
     full_max_w = min(
@@ -64,19 +59,19 @@ def _exec_export_profit(
     target_w = compute_export_profit_pace_w(
         inp,
         plan_discharge_pct=plan_pct,
-        min_discharge_pct=EXEC_MIN_ACTIVE_DISCHARGE_PCT,
+        min_discharge_pct=s.exec_min_active_discharge_pct,
         taper_max_w=taper_w,
     )
     if target_w <= 0.0:
         return _steady_decision(
-            power_pct=EXEC_STEADY_PCT,
+            power_pct=s.exec_steady_pct,
             mode="discharge",
             reason="export_profit_soc_floor",
             time_to_end_s=inp.time_to_end_s,
         )
 
     pct = max(
-        EXEC_MIN_ACTIVE_DISCHARGE_PCT,
+        s.exec_min_active_discharge_pct,
         min(plan_pct, _battery_pct_from_w(target_w, inp.watts_per_percent)),
     )
     return _steady_decision(
@@ -91,7 +86,7 @@ def _exec_export_pv_surplus(inp: BalanceInputs, cfg: WatchdogConfig) -> Watchdog
     if float(inp.remaining_kwh) < 0.0:
         return _deficit_recovery_decision(inp, cfg)
     return _steady_decision(
-        power_pct=EXEC_STEADY_PCT,
+        power_pct=get_settings().exec_steady_pct,
         mode="discharge",
         reason="export_pv_surplus",
         time_to_end_s=inp.time_to_end_s,
@@ -99,12 +94,13 @@ def _exec_export_pv_surplus(inp: BalanceInputs, cfg: WatchdogConfig) -> Watchdog
 
 
 def _exec_import_grid(inp: BalanceInputs) -> WatchdogDecision:
+    s = get_settings()
     return _steady_decision(
-        power_pct=-EXEC_STEADY_PCT,
+        power_pct=-s.exec_steady_pct,
         mode="charge",
         reason="import_grid",
         time_to_end_s=inp.time_to_end_s,
-        slot_soc_pct=IMPORT_GRID_SOC_PCT,
+        slot_soc_pct=s.import_grid_soc_pct,
     )
 
 
@@ -112,17 +108,18 @@ def _exec_charge_grid(
     inp: BalanceInputs,
     params: HourPolicyParams,
 ) -> WatchdogDecision:
+    s = get_settings()
     target_soc = float(params.target_soc_pct if params.target_soc_pct is not None else params.soc_end_pct)
     if float(inp.soc_pct) >= target_soc - 0.5:
         return _neutral_decision("charge_grid_target_reached")
     pct = _params_pct(
         params,
         "charge_pct",
-        minimum=EXEC_MIN_ACTIVE_CHARGE_PCT,
-        default=EXEC_MIN_ACTIVE_CHARGE_PCT,
+        minimum=s.exec_min_active_charge_pct,
+        default=s.exec_min_active_charge_pct,
     )
-    if not params.allow_grid_charge and pct > EXEC_STEADY_PCT:
-        pct = EXEC_STEADY_PCT
+    if not params.allow_grid_charge and pct > s.exec_steady_pct:
+        pct = s.exec_steady_pct
     return _steady_decision(
         power_pct=-pct,
         mode="charge",
@@ -141,7 +138,7 @@ def _exec_neutral(
         inp,
         cfg=cfg,
         target_net_kwh=float(params.target_net_kwh),
-        early_intervention_kw=EXEC_EARLY_INTERVENTION_KW,
+        early_intervention_kw=get_settings().exec_early_intervention_kw,
     )
 
 

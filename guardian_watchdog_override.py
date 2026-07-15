@@ -1,18 +1,20 @@
-"""Runtime overrides dla progów SOC watchdog (plik JSON), bez restartu — jak guardian_control_override."""
+"""Runtime progi SOC watchdog — cienki widok nad ``guardian_settings``.
+
+Historycznie osobny plik override; teraz te 6 pól to część jednolitego
+``GuardianSettings`` (``state/settings.json``). Moduł zostaje jako warstwa
+zgodności dla dashboardu (endpointy ``/api/guardian/watchdog-soc``) i testów.
+"""
 
 from __future__ import annotations
 
-import json
-import logging
 from dataclasses import dataclass
 from typing import Any, Literal
 
-import guardian_config as _gc
+import guardian_settings as _gs
 
-logger = logging.getLogger("guardian")
+Source = Literal["override", "default"]
 
-Source = Literal["override", "env"]
-
+# 6 pól SOC watchdog sterowanych z dedykowanego widoku dashboardu.
 ALLOWED_KEYS = frozenset(
     {
         "soc_night_reserve_enabled",
@@ -36,167 +38,53 @@ class EffectiveWatchdogSoc:
     sources: dict[str, Source]
 
 
-def env_base_watchdog_soc() -> EffectiveWatchdogSoc:
-    """Wartości z guardian_config (env przy imporcie), bez pliku override."""
+def default_watchdog_soc() -> EffectiveWatchdogSoc:
+    """Wartości domyślne 6 pól watchdog SOC (schemat, bez override) — do payloadu ``defaults``."""
+    d = _gs.GuardianSettings().model_dump()
     return EffectiveWatchdogSoc(
-        soc_night_reserve_enabled=bool(_gc.SOC_NIGHT_RESERVE_ENABLED),
-        soc_night_reserve_pct=float(_gc.SOC_NIGHT_RESERVE_PCT),
-        soc_night_reserve_charge_pct=int(_gc.SOC_NIGHT_RESERVE_CHARGE_PCT),
-        night_reserve_hours=frozenset(_gc.SOC_NIGHT_RESERVE_HOURS),
-        soc_low_defense_threshold_pct=float(_gc.SOC_LOW_DEFENSE_THRESHOLD_PCT),
-        soc_full_defense_threshold_pct=float(_gc.SOC_FULL_DEFENSE_THRESHOLD_PCT),
-        sources={k: "env" for k in ALLOWED_KEYS},
+        soc_night_reserve_enabled=bool(d["soc_night_reserve_enabled"]),
+        soc_night_reserve_pct=float(d["soc_night_reserve_pct"]),
+        soc_night_reserve_charge_pct=int(d["soc_night_reserve_charge_pct"]),
+        night_reserve_hours=frozenset(d["soc_night_reserve_hours"]),
+        soc_low_defense_threshold_pct=float(d["soc_low_defense_threshold_pct"]),
+        soc_full_defense_threshold_pct=float(d["soc_full_defense_threshold_pct"]),
+        sources={k: "default" for k in ALLOWED_KEYS},
     )
-
-
-def _normalize_hours(val: Any) -> frozenset[int]:
-    if isinstance(val, frozenset):
-        seq = list(val)
-    elif isinstance(val, (list, tuple, set)):
-        seq = list(val)
-    else:
-        raise ValueError("soc_night_reserve_hours must be a list of hours")
-    out: list[int] = []
-    for x in seq:
-        h = int(x)
-        if not 0 <= h <= 23:
-            raise ValueError(f"hour out of range 0..23: {h}")
-        out.append(h)
-    return frozenset(out)
-
-
-def _coerce_bool(val: Any) -> bool:
-    if isinstance(val, bool):
-        return val
-    if isinstance(val, (int, float)):
-        return bool(val)
-    s = str(val).strip().lower()
-    if s in ("0", "false", "no", "off"):
-        return False
-    if s in ("1", "true", "yes", "on"):
-        return True
-    raise ValueError(f"expected boolean, got {val!r}")
-
-
-def _coerce_from_file(key: str, val: Any) -> Any:
-    if key == "soc_night_reserve_enabled":
-        return _coerce_bool(val)
-    if key == "soc_night_reserve_pct":
-        x = float(val)
-        if not 0.0 <= x <= 100.0:
-            raise ValueError("soc_night_reserve_pct must be 0..100")
-        return x
-    if key == "soc_night_reserve_charge_pct":
-        x = int(val)
-        if not -1 <= x <= 100:
-            raise ValueError("soc_night_reserve_charge_pct must be -1..100")
-        return x
-    if key == "soc_night_reserve_hours":
-        return _normalize_hours(val)
-    if key == "soc_low_defense_threshold_pct":
-        x = float(val)
-        if not 0.0 <= x <= 100.0:
-            raise ValueError("soc_low_defense_threshold_pct must be 0..100")
-        return x
-    if key == "soc_full_defense_threshold_pct":
-        x = float(val)
-        if not 0.0 <= x <= 100.0:
-            raise ValueError("soc_full_defense_threshold_pct must be 0..100")
-        return x
-    raise ValueError(f"unknown key {key}")
 
 
 def load_override_dict() -> dict[str, Any]:
-    path = _gc.GUARDIAN_WATCHDOG_OVERRIDE_PATH
-    if not path.exists():
-        return {}
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as e:
-        logger.warning("guardian_watchdog_override read failed %s: %s", path, e)
-        return {}
-    if not isinstance(raw, dict):
-        return {}
-    out: dict[str, Any] = {}
-    for k, v in raw.items():
-        if k not in ALLOWED_KEYS:
-            continue
-        try:
-            out[k] = _coerce_from_file(k, v)
-        except (TypeError, ValueError) as e:
-            logger.warning("guardian_watchdog_override skip key %s: %s", k, e)
-    return out
+    """Aktualne override tylko dla 6 pól watchdog SOC."""
+    ov = _gs.current_overrides()
+    return {k: v for k, v in ov.items() if k in ALLOWED_KEYS}
 
 
 def effective_watchdog_soc() -> EffectiveWatchdogSoc:
-    base = env_base_watchdog_soc()
-    ov = load_override_dict()
-    sources: dict[str, Source] = {}
-
-    def pick_float(name: str, base_v: float) -> float:
-        if name in ov:
-            sources[name] = "override"
-            return float(ov[name])
-        sources[name] = "env"
-        return base_v
-
-    def pick_int(name: str, base_v: int) -> int:
-        if name in ov:
-            sources[name] = "override"
-            return int(ov[name])
-        sources[name] = "env"
-        return base_v
-
-    def pick_bool(name: str, base_v: bool) -> bool:
-        if name in ov:
-            sources[name] = "override"
-            return bool(ov[name])
-        sources[name] = "env"
-        return base_v
-
-    if "soc_night_reserve_hours" in ov:
-        nh: frozenset[int] = ov["soc_night_reserve_hours"]
-        sources["soc_night_reserve_hours"] = "override"
-    else:
-        nh = base.night_reserve_hours
-        sources["soc_night_reserve_hours"] = "env"
-
+    s = _gs.get_settings()
+    src = _gs.sources()
     return EffectiveWatchdogSoc(
-        soc_night_reserve_enabled=pick_bool(
-            "soc_night_reserve_enabled", base.soc_night_reserve_enabled
-        ),
-        soc_night_reserve_pct=pick_float("soc_night_reserve_pct", base.soc_night_reserve_pct),
-        soc_night_reserve_charge_pct=pick_int(
-            "soc_night_reserve_charge_pct", base.soc_night_reserve_charge_pct
-        ),
-        night_reserve_hours=nh,
-        soc_low_defense_threshold_pct=pick_float(
-            "soc_low_defense_threshold_pct", base.soc_low_defense_threshold_pct
-        ),
-        soc_full_defense_threshold_pct=pick_float(
-            "soc_full_defense_threshold_pct", base.soc_full_defense_threshold_pct
-        ),
-        sources=sources,
+        soc_night_reserve_enabled=bool(s.soc_night_reserve_enabled),
+        soc_night_reserve_pct=float(s.soc_night_reserve_pct),
+        soc_night_reserve_charge_pct=int(s.soc_night_reserve_charge_pct),
+        night_reserve_hours=frozenset(s.soc_night_reserve_hours),
+        soc_low_defense_threshold_pct=float(s.soc_low_defense_threshold_pct),
+        soc_full_defense_threshold_pct=float(s.soc_full_defense_threshold_pct),
+        sources={k: src.get(k, "default") for k in ALLOWED_KEYS},  # type: ignore[misc]
     )
-
-
-def _serialize_for_json(hours: frozenset[int]) -> list[int]:
-    return sorted(hours)
 
 
 def watchdog_soc_api_payload() -> dict[str, Any]:
     """GET /api/guardian/watchdog-soc — jedna funkcja dla dashboardu i testów."""
-    base = env_base_watchdog_soc()
+    base = default_watchdog_soc()
     eff = effective_watchdog_soc()
-    path = _gc.GUARDIAN_WATCHDOG_OVERRIDE_PATH
+    ov = load_override_dict()
     return {
-        "override_path": str(path),
-        "override_exists": path.exists(),
-        "env_base": {
+        "override_path": str(_gs.settings_path()),
+        "override_exists": bool(ov),
+        "defaults": {
             "soc_night_reserve_enabled": base.soc_night_reserve_enabled,
             "soc_night_reserve_pct": base.soc_night_reserve_pct,
             "soc_night_reserve_charge_pct": base.soc_night_reserve_charge_pct,
-            "soc_night_reserve_hours": _serialize_for_json(base.night_reserve_hours),
+            "soc_night_reserve_hours": sorted(base.night_reserve_hours),
             "soc_low_defense_threshold_pct": base.soc_low_defense_threshold_pct,
             "soc_full_defense_threshold_pct": base.soc_full_defense_threshold_pct,
         },
@@ -204,7 +92,7 @@ def watchdog_soc_api_payload() -> dict[str, Any]:
             "soc_night_reserve_enabled": eff.soc_night_reserve_enabled,
             "soc_night_reserve_pct": eff.soc_night_reserve_pct,
             "soc_night_reserve_charge_pct": eff.soc_night_reserve_charge_pct,
-            "soc_night_reserve_hours": _serialize_for_json(eff.night_reserve_hours),
+            "soc_night_reserve_hours": sorted(eff.night_reserve_hours),
             "soc_low_defense_threshold_pct": eff.soc_low_defense_threshold_pct,
             "soc_full_defense_threshold_pct": eff.soc_full_defense_threshold_pct,
         },
@@ -213,46 +101,12 @@ def watchdog_soc_api_payload() -> dict[str, Any]:
 
 
 def apply_watchdog_override_updates(updates: dict[str, Any]) -> None:
-    """
-    Merge into override file. Value None removes that key (fall back to env).
-    Ignores keys outside ALLOWED_KEYS.
-    """
-    path = _gc.GUARDIAN_WATCHDOG_OVERRIDE_PATH
-    current = load_override_dict()
-    for k, v in updates.items():
-        if k not in ALLOWED_KEYS:
-            continue
-        if v is None:
-            current.pop(k, None)
-            continue
-        current[k] = _coerce_from_file(k, v)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if not current:
-        try:
-            path.unlink()
-        except OSError:
-            pass
-        return
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    payload = json.dumps(_dumpable(current), indent=2, sort_keys=True) + "\n"
-    tmp.write_text(payload, encoding="utf-8")
-    tmp.replace(path)
-
-
-def _dumpable(merged: dict[str, Any]) -> dict[str, Any]:
-    out: dict[str, Any] = {}
-    for k in sorted(merged.keys()):
-        v = merged[k]
-        if k == "soc_night_reserve_hours" and isinstance(v, frozenset):
-            out[k] = sorted(v)
-        else:
-            out[k] = v
-    return out
+    """Merge 6 pól SOC do ``settings.json``. ``None`` usuwa klucz. Reszta ignorowana."""
+    filtered = {k: v for k, v in updates.items() if k in ALLOWED_KEYS}
+    if filtered:
+        _gs.update_overrides(filtered)
 
 
 def clear_watchdog_override() -> None:
-    path = _gc.GUARDIAN_WATCHDOG_OVERRIDE_PATH
-    try:
-        path.unlink()
-    except OSError:
-        pass
+    """Usuń override 6 pól watchdog SOC (powrót do env/default)."""
+    _gs.reset_overrides(list(ALLOWED_KEYS))

@@ -115,7 +115,44 @@ def test_optimize_horizon_uses_scenarios_when_enabled(
     res = optimize_horizon(hours, soc_start_pct=61.0, params=bp)
     assert res.hours
     assert res.scenario_meta is not None
-    assert res.scenario_meta.get("model") == "per_scenario_ch_dis_soc"
+    assert res.scenario_meta.get("model") == "shared_battery_grid_recourse"
+
+
+def test_scenario_coupling_keeps_reserve_vs_p50(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sprzęgnięcie: przy mocnej wadze pesymistycznej wspólny plan trzyma większą
+    rezerwę SOC niż czysty p50.
+
+    Regresja: przed sprzęgnięciem wykonywany dispatch = p50 niezależnie od wag, więc
+    minimalny SOC byłby identyczny. Po sprzęgnięciu waga pesymistyczna realnie hamuje
+    rozładowanie przed drogim, bezsłonecznym porankiem.
+    """
+    import planner.config as cfg
+    import planner.scenarios as scen
+
+    bp = BatteryParams(
+        capacity_kwh=10.0, soc_min_pct=10.0, soc_max_pct=100.0, max_power_kwh_per_h=5.0
+    )
+    hours = _evening_export_morning_risk_hours()
+
+    monkeypatch.setattr(cfg, "_SCENARIO_OPTIMIZER_RAW", "off")
+    p50 = optimize_horizon(hours, soc_start_pct=80.0, params=bp)
+
+    monkeypatch.setattr(cfg, "_SCENARIO_OPTIMIZER_RAW", "1")
+    monkeypatch.setattr(scen, "PLANNER_SCENARIO_WEIGHT_PESSIMISTIC", 0.6)
+    monkeypatch.setattr(scen, "PLANNER_SCENARIO_WEIGHT_BASE", 0.39)
+    monkeypatch.setattr(scen, "PLANNER_SCENARIO_WEIGHT_OPTIMISTIC", 0.01)
+    coupled = optimize_horizon(hours, soc_start_pct=80.0, params=bp)
+
+    assert coupled.scenario_meta is not None
+    assert coupled.scenario_meta.get("fallback") != "deterministic_p50"
+    assert coupled.scenario_meta.get("model") == "shared_battery_grid_recourse"
+    # Rezerwa trzymana przez ryzykowną noc/poranek — z pominięciem celowego zjazdu
+    # do podłogi w ostatniej (terminalnej) godzinie horyzontu.
+    coupled_reserve = min(coupled.soc_trajectory_pct[:-1])
+    p50_reserve = min(p50.soc_trajectory_pct[:-1])
+    assert coupled_reserve > p50_reserve + 1.0
 
 
 def test_scenario_milp_no_grid_charge_when_pv_surplus() -> None:

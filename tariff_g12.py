@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
@@ -91,23 +90,19 @@ class G12TariffConfig(BaseModel):
 
 def g12_tariff_from_env() -> G12TariffConfig:
     """
-    Zmienne środowiskowe:
-      TARIFF_DISTRIBUTION_DAY_PLN_KWH / TARIFF_DISTRIBUTION_NIGHT_PLN_KWH
-      TARIFF_ENERGY_DAY_PLN_KWH / TARIFF_ENERGY_NIGHT_PLN_KWH
+    Składowe taryfy z jednolitych ustawień (env → settings.json), czytane na żywo:
+      tariff_distribution_day_pln_kwh / tariff_distribution_night_pln_kwh
+      tariff_energy_day_pln_kwh / tariff_energy_night_pln_kwh
 
     Strefa dzień/noc wg godzin G12: ``ENEA_G12_NIGHT_HOURS`` (Enea: 22–6 i 13–15 zimą).
     Import netto w godzinie: dystrybucja + energia wg strefy. Eksport netto: rozliczenie RCE (poza tym modelem).
     """
+    from guardian_settings import get_settings
 
-    def _f(name: str, default: float) -> float:
-        v = os.environ.get(name)
-        if v is None or v.strip() == "":
-            return default
-        return float(v.replace(",", "."))
-
+    s = get_settings()
     return G12TariffConfig(
-        distribution_day_pln_per_kwh=_f("TARIFF_DISTRIBUTION_DAY_PLN_KWH", 0.0),
-        distribution_night_pln_per_kwh=_f("TARIFF_DISTRIBUTION_NIGHT_PLN_KWH", 0.0),
-        energy_day_pln_per_kwh=_f("TARIFF_ENERGY_DAY_PLN_KWH", 0.0),
-        energy_night_pln_per_kwh=_f("TARIFF_ENERGY_NIGHT_PLN_KWH", 0.0),
+        distribution_day_pln_per_kwh=s.tariff_distribution_day_pln_kwh,
+        distribution_night_pln_per_kwh=s.tariff_distribution_night_pln_kwh,
+        energy_day_pln_per_kwh=s.tariff_energy_day_pln_kwh,
+        energy_night_pln_per_kwh=s.tariff_energy_night_pln_kwh,
     )
