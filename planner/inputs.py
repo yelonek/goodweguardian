@@ -12,7 +12,7 @@ from ev_charging_plan import build_ev_charging_plan, ev_schedule_map
 from ev_charging_store import declarations_for_dates
 from guardian_config import TELEMETRY_TZ
 from load_forecast import forecast_load_hours
-from planner.config import PLANNER_HORIZON_HOURS, PLANNER_LOAD_LOOKBACK_DAYS
+from planner.config import PLANNER_LOAD_LOOKBACK_DAYS
 from planner.models import HourInputs
 from planner.hour_remainder import scale_hour_inputs_for_remainder
 from planner.pv_correction import apply_pv_correction
@@ -157,21 +157,6 @@ def build_hour_inputs_for_slots(
         "ev_charging_plans": ev_plans_by_date,
     }
     return out, snapshot
-
-
-def build_hour_inputs(
-    *,
-    start_dt: datetime | None = None,
-    hours: int | None = None,
-) -> tuple[list[HourInputs], dict[str, Any]]:
-    """Kompatybilność wsteczna: kolejne ``hours`` slotów od ``start_dt``."""
-    now = start_dt or _local_now().replace(tzinfo=None)
-    horizon = hours if hours is not None else PLANNER_HORIZON_HOURS
-    slots = [
-        ((now + timedelta(hours=step)).date().isoformat(), (now + timedelta(hours=step)).hour)
-        for step in range(horizon)
-    ]
-    return build_hour_inputs_for_slots(slots)
 
 
 def latest_soc_from_telemetry(local_date: date | None = None) -> float | None:

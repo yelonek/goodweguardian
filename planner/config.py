@@ -27,7 +27,6 @@ PLANNER_BATTERY_ETA = _s.planner_battery_eta
 PLANNER_BATTERY_CYCLE_COST_PLN = _s.planner_battery_cycle_cost_pln
 PLANNER_SOC_MIN_PCT = _s.planner_soc_min_pct
 PLANNER_SOC_MAX_PCT = _s.planner_soc_max_pct
-PLANNER_HORIZON_HOURS = _s.planner_horizon_hours
 PLANNER_LOAD_LOOKBACK_DAYS = _s.planner_load_lookback_days
 
 # Wieloscenariuszowy MILP (p10/p50/p90); ``off`` = deterministyczny p50.

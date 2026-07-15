@@ -422,7 +422,7 @@ Rezerwa nocna w Guardianie = **airbag** przy deterministycznym planie p50. Stoch
 
 ### Wdrożenie w repo
 
-1. Rozszerzyć `build_hour_inputs` o pasma PV (p10/p90) i load (p75).
+1. Rozszerzyć `build_hour_inputs_for_slots` o pasma PV (p10/p90) i load (p75).
 2. `optimize_horizon_scenarios(...)` — ten sam MILP, bilans/cashflow × S scenariuszy w funkcji celu.
 3. Backtest wag `π_s` na `reconcile` / `day_review`.
 

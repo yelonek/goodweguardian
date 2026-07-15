@@ -302,10 +302,6 @@ class GuardianSettings(BaseModel):
         100.0, ge=0.0, le=100.0, json_schema_extra=_meta("planner", "%"),
         description="Maksymalny SOC w symulacji planera.",
     )
-    planner_horizon_hours: int = Field(
-        24, ge=1, le=96, json_schema_extra=_meta("planner", "h"),
-        description="Horyzont planowania.",
-    )
     planner_load_lookback_days: int = Field(
         28, ge=1, le=180, json_schema_extra=_meta("planner", "dni"),
         description="Ile dni wstecz do próbek prognozy zużycia.",

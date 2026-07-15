@@ -141,7 +141,7 @@ Katalogi wynikowe (w `.gitignore` przez `data/`): `data/planner/plans/`, `audit/
 - **Solver:** docs — coordinate descent; kod — **programowanie dynamiczne** (SOC dyskretny × siatka net).
 - **Korekta load:** docs — jeden `factor`; kod — nowcast z `load_forecast` (waga malejąca w czasie, pola `load_nowcast_*` w Ustawieniach).
 - **Wyjście:** docs — `state/planner_output.json` + enum policy; kod — plan JSON + audyt, bez mapowania na eco-slot.
-- **Horyzont:** docs — rolling od `now`; kod — **cała doba od 00:00** przy `plan` (parametr `start_dt` w `build_hour_inputs`).
+- **Horyzont:** rolling od bieżącej godziny do ostatniej z pełnym cennikiem (`priced_horizon_slots` — dziś + jutro gdy RCE jest).
 
 ---
 
@@ -154,7 +154,6 @@ Pokrętła poniżej są w **Ustawieniach** (`GuardianSettings` → `state/settin
 | `battery_capacity_kwh` | `PLANNER_BATTERY_KWH` | 10 | Pojemność magazynu [kWh] |
 | `planner_battery_eta` | `PLANNER_BATTERY_ETA` | 0.92 | Sprawność round-trip |
 | `planner_soc_min_pct` / `planner_soc_max_pct` | `PLANNER_SOC_MIN/MAX_PCT` | 10 / 100 | Granice SOC |
-| `planner_horizon_hours` | `PLANNER_HORIZON_HOURS` | 24 | Długość horyzontu |
 | `planner_load_lookback_days` | `PLANNER_LOAD_LOOKBACK_DAYS` | 28 | Lookback load forecast |
 | `pv_correction_enabled` | `PV_CORRECTION_ENABLED` | true | Włącz korektę `k_intra` |
 | `pv_correction_eps_kwh` | `PV_CORRECTION_EPS_KWH` | 0.1 | Próg ε [kWh/h] |
