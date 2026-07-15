@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 from planner.config import (
@@ -14,9 +15,24 @@ from planner.config import (
 from planner.models import HourInputs
 
 
+def eta_one_way_from_rt(eta_rt: float) -> float:
+    """Sprawność jednokierunkowa ze sprawności round-trip: ``√η_rt``.
+
+    Parametr planera ``planner_battery_eta`` / ``BatteryParams.eta`` to **η_rt**
+    (łóż → wyjmij). Symetryczny model: charge i discharge dostają po ``√η_rt``,
+    więc cykl AC→AC odzyskuje dokładnie ``η_rt`` energii.
+    """
+    if eta_rt <= 0.0:
+        raise ValueError(f"eta_rt must be > 0, got {eta_rt}")
+    if eta_rt > 1.0:
+        raise ValueError(f"eta_rt must be <= 1, got {eta_rt}")
+    return math.sqrt(eta_rt)
+
+
 @dataclass(frozen=True)
 class BatteryParams:
     capacity_kwh: float = PLANNER_BATTERY_KWH
+    # Round-trip η (AC→AC). W bilansie SOC używaj ``eta_one_way`` / ``eta_one_way_from_rt``.
     eta: float = PLANNER_BATTERY_ETA
     soc_min_pct: float = PLANNER_SOC_MIN_PCT
     soc_max_pct: float = PLANNER_SOC_MAX_PCT
@@ -27,6 +43,11 @@ class BatteryParams:
             object.__setattr__(
                 self, "max_power_kwh_per_h", max_battery_kwh_per_hour()
             )
+
+    @property
+    def eta_one_way(self) -> float:
+        """``√η_rt`` — do ``soc += η₁·ch − dis/η₁``."""
+        return eta_one_way_from_rt(self.eta)
 
 
 def max_power_for_hour(hin: HourInputs, params: BatteryParams) -> float:
@@ -62,19 +83,22 @@ def apply_battery_step(
 ) -> float | None:
     """
     Zwraca nowy SOC [%] po kroku, lub None gdy niedopuszczalne (limity / moc).
-    Ładowanie zużywa eta; rozładowanie dostarcza z eta.
+
+    ``battery_delta_kwh`` jest po stronie AC (+ ładuj, − oddawaj).
+    ``params.eta`` = η_rt; bilans: ``ΔSOC = +E_ch·√η − E_dis/√η``.
     """
     if params.capacity_kwh <= 0:
         return soc_pct
 
+    eta1 = params.eta_one_way
     cur_kwh = soc_kwh(soc_pct, params)
     if battery_delta_kwh > 0:
-        stored = battery_delta_kwh * params.eta
+        stored = battery_delta_kwh * eta1
         if stored > params.max_power_kwh_per_h + 1e-9:
             return None
         new_kwh = cur_kwh + stored
     elif battery_delta_kwh < 0:
-        delivered = (-battery_delta_kwh) / params.eta
+        delivered = (-battery_delta_kwh) / eta1
         if delivered > params.max_power_kwh_per_h + 1e-9:
             return None
         new_kwh = cur_kwh - delivered

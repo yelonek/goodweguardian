@@ -18,7 +18,7 @@ Planer **co 10 min** → `state/planner_output.json` (**policy** + parametry). G
 
 4. **Wyjście:** **policy + parametry**; optimizer → wektor `e_bat_kwh[h]` w granicach **battery_model**; **policy_output** → enum + JSON. Guardian **nie** goni `target_net_kwh` co minutę — wykonuje **strategię** przypisaną do policy (§13).
 
-5. **Bateria w solverze:** `soc_kwh`, limity z Ustawień (`planner_soc_*`, `battery_capacity_kwh`), **jedno η** round-trip (`η_rt`).
+5. **Bateria w solverze:** `soc_kwh`, limity z Ustawień (`planner_soc_*`, `battery_capacity_kwh`), **jedno η** round-trip (`η_rt`). W bilansie SOC: `+√η_rt · ch − dis / √η_rt` (symetrycznie), żeby cykl AC→AC odzyskiwał dokładnie `η_rt`, a nie `η_rt²`.
 
 6. **Korekta PV (`k_intra`):**
    - **ε = 0,1 kWh/h** — próg znaczącej prognozy w ułamku godziny.

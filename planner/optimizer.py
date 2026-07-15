@@ -107,15 +107,16 @@ def _solve_milp(
     eq_rows.append(row)
     eq_rhs.append(soc0_kwh)
 
-    eta = params.eta
+    # params.eta = η_rt; w SOC: +√η·ch − dis/√η (cykl AC→AC = η_rt).
+    eta1 = params.eta_one_way
     for h in range(n_h):
         hin = hours_in[h]
 
         row = np.zeros(n_vars)
         row[h] = -1.0
         row[h + 1] = 1.0
-        row[hour_idx(h, layout["ch"])] = -eta
-        row[hour_idx(h, layout["dis"])] = 1.0 / eta
+        row[hour_idx(h, layout["ch"])] = -eta1
+        row[hour_idx(h, layout["dis"])] = 1.0 / eta1
         eq_rows.append(row)
         eq_rhs.append(0.0)
 

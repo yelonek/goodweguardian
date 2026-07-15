@@ -119,7 +119,8 @@ def _solve_scenario_milp(
     eq_rows: list[np.ndarray] = []
     eq_rhs: list[float] = []
     soc0 = soc_kwh(soc_start_pct, params)
-    eta = params.eta
+    # params.eta = η_rt; w SOC: +√η·ch − dis/√η (cykl AC→AC = η_rt).
+    eta1 = params.eta_one_way
 
     # Wspólna trajektoria SOC (jedna dla wszystkich scenariuszy).
     row = np.zeros(n_vars)
@@ -131,8 +132,8 @@ def _solve_scenario_milp(
         row = np.zeros(n_vars)
         row[soc_idx(h)] = -1.0
         row[soc_idx(h + 1)] = 1.0
-        row[ch_idx(h)] = -eta
-        row[dis_idx(h)] = 1.0 / eta
+        row[ch_idx(h)] = -eta1
+        row[dis_idx(h)] = 1.0 / eta1
         eq_rows.append(row)
         eq_rhs.append(0.0)
 

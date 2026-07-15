@@ -152,7 +152,7 @@ Pokrętła poniżej są w **Ustawieniach** (`GuardianSettings` → `state/settin
 | Pole (`settings.json`) | Alias w kodzie | Domyślnie | Znaczenie |
 |------------------------|----------------|-----------|-----------|
 | `battery_capacity_kwh` | `PLANNER_BATTERY_KWH` | 10 | Pojemność magazynu [kWh] |
-| `planner_battery_eta` | `PLANNER_BATTERY_ETA` | 0.92 | Sprawność round-trip |
+| `planner_battery_eta` | `PLANNER_BATTERY_ETA` | 0.92 | Sprawność round-trip; w SOC/MILP: `√η` na charge i discharge |
 | `planner_soc_min_pct` / `planner_soc_max_pct` | `PLANNER_SOC_MIN/MAX_PCT` | 10 / 100 | Granice SOC |
 | `planner_load_lookback_days` | `PLANNER_LOAD_LOOKBACK_DAYS` | 28 | Lookback load forecast |
 | `planner_battery_cycle_cost_pln` | `PLANNER_BATTERY_CYCLE_COST_PLN` | 0.10 | Wear: PLN/kWh discharge |
