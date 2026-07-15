@@ -116,10 +116,6 @@ class GuardianSettings(BaseModel):
         1, ge=0, le=100, json_schema_extra=_meta("execution", "%"),
         description="Bazowy krok mocy [%] w trybach steady (export/import).",
     )
-    export_profit_pace_margin: float = Field(
-        1.1, ge=1.0, json_schema_extra=_meta("execution"),
-        description="Mnożnik zapasu przy tempie eksportu (η, szum SOC, opóźnienie eco-slotu).",
-    )
     battery_capacity_kwh: float = Field(
         10.0, gt=0.0, json_schema_extra=_meta("execution", "kWh"),
         description="Pojemność magazynu — pacing export_profit oraz symulacja SOC planera.",
@@ -167,10 +163,6 @@ class GuardianSettings(BaseModel):
     soc_low_defense_release_remaining_kwh: float = Field(
         0.0, json_schema_extra=_meta("soc_low", "kWh"),
         description="Próg bilansu godziny, poniżej którego zwalniamy legacy hold.",
-    )
-    export_profit_low_soc_max_w: float = Field(
-        1000.0, ge=0.0, json_schema_extra=_meta("soc_low", "W"),
-        description="export_profit przy niskim SOC: sufit mocy (LFP — spadek napięcia przy dużym I).",
     )
 
     # --- Taper rozładowania ---
@@ -316,10 +308,6 @@ class GuardianSettings(BaseModel):
     planner_policy_valid_minutes: int = Field(
         10, ge=1, le=1440, json_schema_extra=_meta("planner", "min"),
         description="Ważność artefaktu policy od computed_at (gdy brak valid_until).",
-    )
-    planner_export_profit_min_pln: float = Field(
-        0.35, ge=0.0, json_schema_extra=_meta("planner", "PLN/kWh"),
-        description="Minimalna cena RCE do trybu export_profit.",
     )
     planner_battery_eta: float = Field(
         0.92, gt=0.0, le=1.0, json_schema_extra=_meta("planner"),

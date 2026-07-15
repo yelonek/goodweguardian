@@ -142,16 +142,6 @@ def _steady_decision(
     )
 
 
-def load_cover_discharge_w(inp: BalanceInputs) -> float:
-    """Minimum rozładowania [W] na pokrycie domu — średnia telemetrii lub bieżące consumption."""
-    limit = inp.low_soc_discharge_target_w
-    if limit is None and float(inp.consumption_w) > 0.0:
-        limit = float(inp.consumption_w)
-    if limit is None or limit <= 0.0:
-        return 0.0
-    return float(limit)
-
-
 def battery_discharge_cap_w(
     inp: BalanceInputs,
     cfg: WatchdogConfig,
@@ -186,28 +176,6 @@ def battery_discharge_cap_w(
     return max(0.0, cap)
 
 
-def export_profit_low_soc_taper_max_w(
-    inp: BalanceInputs,
-    *,
-    threshold_pct: float,
-    full_max_w: float,
-    lfp_cap_w: float,
-) -> float:
-    """
-    Kompatybilność wsteczna dla testów — woła ``battery_discharge_cap_w`` z syntetycznym cfg.
-
-    Zwraca 0 gdy SOC powyżej progu (brak taperu).
-    """
-    cfg = WatchdogConfig(
-        discharge_taper_soc_high_pct=float(threshold_pct),
-        discharge_taper_soc_low_pct=10.0,
-        discharge_taper_max_w_high=float(lfp_cap_w) if lfp_cap_w > 0.0 else float(full_max_w),
-        discharge_taper_max_w_low=70.0,
-    )
-    cap = battery_discharge_cap_w(inp, cfg, full_max_w=full_max_w)
-    return 0.0 if cap is None else cap
-
-
 def compute_export_profit_pace_w(
     inp: BalanceInputs,
     *,
@@ -219,7 +187,7 @@ def compute_export_profit_pace_w(
     Moc rozładowania [W] dla ``export_profit``.
 
     Powyżej progu niskiego SOC: max (plan, bateria, inwerter).
-    Poniżej: ``taper_max_w`` z ``export_profit_low_soc_taper_max_w`` (LFP / pokrycie loadu).
+    Poniżej: ``taper_max_w`` z ``battery_discharge_cap_w`` (LFP / taper rozładowania).
     Podłoga energii = ``soc_floor_pct`` (osobna gałąź w ``_exec_export_profit``).
     """
     cap_w = _discharge_cap_w(inp.p_inverter_w, inp.pv_w, inp.p_battery_w)

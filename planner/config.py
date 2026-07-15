@@ -19,8 +19,6 @@ PLANNER_OUTPUT_PATH = STATE_DIR / "planner_output.json"
 # planera czyta bieżące settings.json przy imporcie.
 _s = get_settings()
 PLANNER_POLICY_VALID_MINUTES = _s.planner_policy_valid_minutes
-# Eksport zarobkowy: minimalna cena RCE [PLN/kWh] do trybu ``export_profit``.
-PLANNER_EXPORT_PROFIT_MIN_PLN = _s.planner_export_profit_min_pln
 
 # Pojemność magazynu [kWh] — do symulacji SOC w optymalizatorze
 PLANNER_BATTERY_KWH = _s.battery_capacity_kwh

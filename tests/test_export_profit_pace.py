@@ -9,8 +9,6 @@ from guardian_logic import (
     WatchdogConfig,
     battery_discharge_cap_w,
     compute_export_profit_pace_w,
-    export_profit_low_soc_taper_max_w,
-    load_cover_discharge_w,
 )
 
 
@@ -77,28 +75,22 @@ def test_taper_does_not_boost_to_load() -> None:
 
 def test_lfp_taper_caps_below_threshold() -> None:
     inp = _inp(soc_pct=15.0, low_soc_discharge_target_w=520.0)
-    taper = export_profit_low_soc_taper_max_w(
-        inp, threshold_pct=20.0, full_max_w=5200.0, lfp_cap_w=1500.0
-    )
-    assert taper == pytest.approx(785.0)
+    cfg = _taper_cfg(discharge_taper_max_w_high=1500.0)
+    cap = battery_discharge_cap_w(inp, cfg, full_max_w=5200.0)
+    assert cap == pytest.approx(785.0)
 
 
 def test_lfp_taper_no_load_cover() -> None:
     inp = _inp(soc_pct=15.0, low_soc_discharge_target_w=520.0)
-    taper = export_profit_low_soc_taper_max_w(
-        inp, threshold_pct=20.0, full_max_w=5200.0, lfp_cap_w=400.0
-    )
-    assert taper == pytest.approx(235.0)
+    cfg = _taper_cfg(discharge_taper_max_w_high=400.0)
+    cap = battery_discharge_cap_w(inp, cfg, full_max_w=5200.0)
+    assert cap == pytest.approx(235.0)
 
 
 def test_no_taper_above_threshold() -> None:
     inp = _inp(soc_pct=25.0, low_soc_discharge_target_w=520.0)
-    assert (
-        export_profit_low_soc_taper_max_w(
-            inp, threshold_pct=20.0, full_max_w=5200.0, lfp_cap_w=1500.0
-        )
-        == 0.0
-    )
+    cfg = _taper_cfg(discharge_taper_max_w_high=1500.0)
+    assert battery_discharge_cap_w(inp, cfg, full_max_w=5200.0) is None
 
 
 def test_compute_applies_taper_without_min_discharge_boost() -> None:
@@ -109,8 +101,3 @@ def test_compute_applies_taper_without_min_discharge_boost() -> None:
         taper_max_w=814.0,
     )
     assert w == pytest.approx(814.0)
-
-
-def test_load_cover_from_consumption() -> None:
-    inp = _inp(low_soc_discharge_target_w=None, consumption_w=480.0)
-    assert load_cover_discharge_w(inp) == pytest.approx(480.0)
