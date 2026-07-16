@@ -54,7 +54,6 @@ class EvChargingDeclaration(BaseModel):
 
 class CheapBudget(BaseModel):
     cheap_export_kwh: float
-    cheap_import_kwh: float
     recommendable_kwh: float
 
 
@@ -232,7 +231,6 @@ def compute_cheap_budget(
     slot_rows: list[dict[str, Any]],
     *,
     now: datetime,
-    max_power_kw: float,
 ) -> CheapBudget:
     remaining = [
         r
@@ -244,13 +242,9 @@ def compute_cheap_budget(
         for r in remaining
         if float(r["rce_pln_kwh"]) < CHEAP_THRESHOLD_PLN
     )
-    cheap_import = sum(
-        max_power_kw for r in remaining if bool(r.get("is_g12_night"))
-    )
     return CheapBudget(
         cheap_export_kwh=round(cheap_export, 4),
-        cheap_import_kwh=round(cheap_import, 4),
-        recommendable_kwh=round(cheap_export + cheap_import, 4),
+        recommendable_kwh=round(cheap_export, 4),
     )
 
 
@@ -389,9 +383,7 @@ def allocate_ev_schedule(
     delivered, past_slots, current_h_delivered = _delivered_ev_state(local_d, now=now_local)
     remaining_kwh = max(0.0, declaration.target_kwh - delivered)
 
-    budget = compute_cheap_budget(
-        slot_rows, now=now_local, max_power_kw=declaration.max_power_kw
-    )
+    budget = compute_cheap_budget(slot_rows, now=now_local)
     warnings: list[str] = []
     if delivered > 1e-3 and remaining_kwh < declaration.target_kwh - 1e-6:
         past_h = ", ".join(f"{s.hour:02d}" for s in past_slots[:4])
@@ -486,7 +478,7 @@ def build_ev_recommendation(
     power = max_power_kw if max_power_kw is not None else TESLA_WC_MAX_KW
     slot_list = slots_for_local_date(d, now=now_local)
     rows = build_horizon_slot_rows(slot_list)
-    budget = compute_cheap_budget(rows, now=now_local, max_power_kw=power)
+    budget = compute_cheap_budget(rows, now=now_local)
     tgt = target_kwh if target_kwh is not None else budget.recommendable_kwh
     decl = EvChargingDeclaration(date=d_iso, target_kwh=max(0.0, tgt), max_power_kw=power)
     recommended = _greedy_allocate(

@@ -131,17 +131,16 @@ def test_manual_slots_used() -> None:
     assert m[(d, 11)] == pytest.approx(3.0)
 
 
-def test_cheap_budget_sums_export_and_import() -> None:
+def test_cheap_budget_sums_cheap_export_only() -> None:
     d = "2026-06-11"
     rows = [
         _slot_row(d, 8, pv=5.0, export_kwh=2.0, rce=0.2, is_night=False),
         _slot_row(d, 22, pv=0.0, export_kwh=0.0, rce=0.5, is_night=True, score=0.3),
     ]
     now = datetime(2026, 6, 11, 7, 0)
-    budget = compute_cheap_budget(rows, now=now, max_power_kw=11.0)
+    budget = compute_cheap_budget(rows, now=now)
     assert budget.cheap_export_kwh == pytest.approx(2.0)
-    assert budget.cheap_import_kwh == pytest.approx(11.0)
-    assert budget.recommendable_kwh == pytest.approx(13.0)
+    assert budget.recommendable_kwh == pytest.approx(2.0)
 
 
 def test_export_kwh_from_plan_when_available() -> None:
