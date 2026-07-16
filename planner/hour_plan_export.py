@@ -12,9 +12,6 @@ from datetime import datetime
 from planner.models import HourInputs, HourPlan
 from planner.telemetry import net_kwh_so_far_for_hour
 
-# Gdy MILP nie planuje wymiany z siecią na resztę h — cel z planu, nie kotwica telemetrii.
-_REMAINDER_NET_EPS = 1e-9
-
 
 def _full_hour_target_net_kwh(
     *,
@@ -23,15 +20,17 @@ def _full_hour_target_net_kwh(
     net_so_far: float | None,
     is_current_hour: bool,
 ) -> float:
+    """
+    Cel bilansu na koniec pełnej godziny.
+
+    Przy telemetrii bieżącej h: ``net_so_far + remainder_net`` (warunek początkowy
+    + plan MILP na resztę). Bez telemetrii: ekstrapolacja ``remainder_net / frac``.
+    """
     if frac >= 1.0 - 1e-9:
         return remainder_net
-    extrapolated = remainder_net / frac
-    if not is_current_hour or net_so_far is None:
-        return extrapolated
-    # Reszta slotu bez importu/eksportu → nie utrwalaj net_so_far (+0,05 / −0,24 z początku h).
-    if abs(remainder_net) <= _REMAINDER_NET_EPS:
-        return extrapolated
-    return net_so_far + remainder_net
+    if is_current_hour and net_so_far is not None:
+        return net_so_far + remainder_net
+    return remainder_net / frac
 
 
 def normalize_hour_plans_for_policy(
@@ -43,16 +42,13 @@ def normalize_hour_plans_for_policy(
     """
     Konwertuje wynik MILP na reszcie bieżącej h → cele na koniec pełnej godziny.
 
-    ``target_net_kwh`` = plan na pełną godzinę dla Guardiana / dashboardu.
+    ``target_net_kwh`` = plan na pełną godzinę dla Guardiana / dashboardu:
+    przy telemetrii bieżącej h ``net_so_far + remainder_net`` (także gdy
+    ``remainder_net ≈ 0`` — setpoint Flappy trzyma już zrobiony bilans).
 
-    Gdy MILP na **resztę** bieżącej h nie planuje wymiany z siecią
-    (``remainder_net ≈ 0``), cel to ``remainder_net / hour_fraction`` — zwykle 0.
-    Telemetria ``net_so_far`` **nie kotwiczy** setpointu (ani import, ani eksport
-    z pierwszych minut po replanowaniu).
-
-    Gdy MILP planuje resztę h z siecią (``|remainder_net| > ε``): ``net_so_far + remainder_net``.
     Bez telemetrii: ``remainder_net / hour_fraction``.
     ``battery_delta_kwh``: ``remainder_bd / hour_fraction`` (ekwiwalent % mocy/h).
+    Intencja trybu (import/eksport/soak) nadal z ``target_net_remainder_kwh``.
     """
     if len(hours_in) != len(plans):
         return plans

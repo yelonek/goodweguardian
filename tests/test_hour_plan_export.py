@@ -109,18 +109,18 @@ def test_mid_hour_pv_soak_not_charge_grid_after_prior_import(
     )
     now = datetime(2026, 6, 20, 12, 20, 0)
     out = normalize_hour_plans_for_policy([hin], [hp], now=now)[0]
-    # remainder=0 → cel 0, nie kotwica net_so_far z telemetrii.
-    assert out.target_net_kwh == pytest.approx(0.0)
+    # remainder=0 → cel = net_so_far; tryb z reszty nadal neutral (soak).
+    assert out.target_net_kwh == pytest.approx(-0.5)
     assert out.battery_delta_kwh == pytest.approx(3.36 / frac, rel=0.01)
     row = map_hour_to_exec_mode(out, hin)
     assert row.exec_mode == "neutral"
     assert row.params.allow_grid_charge is False
 
 
-def test_normalize_zero_remainder_ignores_net_so_far_import(
+def test_normalize_zero_remainder_anchors_net_so_far_import(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """remainder=0 + ujemny net_so_far → cel 0, nie kotwica."""
+    """remainder=0 + ujemny net_so_far → cel = net_so_far (warunek początkowy)."""
     frac = 40 / 60
     hin = HourInputs(
         date="2026-07-08",
@@ -150,7 +150,7 @@ def test_normalize_zero_remainder_ignores_net_so_far_import(
     )
     now = datetime(2026, 7, 8, 13, 20, 0)
     out = normalize_hour_plans_for_policy([hin], [hp], now=now)[0]
-    assert out.target_net_kwh == pytest.approx(0.0)
+    assert out.target_net_kwh == pytest.approx(-0.24)
     assert out.target_net_remainder_kwh == pytest.approx(0.0)
     row = map_hour_to_exec_mode(out, hin)
     assert row.exec_mode == "neutral"
@@ -189,10 +189,10 @@ def test_mid_hour_full_target_zero_with_prior_export_is_neutral_not_charge_grid(
     assert row.params.allow_grid_charge is False
 
 
-def test_normalize_zero_remainder_ignores_net_so_far_export(
+def test_normalize_zero_remainder_anchors_net_so_far_export(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """remainder=0 + dodatni net_so_far (RCE=0) → cel 0, nie kotwica +0,05."""
+    """remainder=0 + dodatni net_so_far → cel = net_so_far (także małe +0,05)."""
     frac = 9 / 60
     hin = HourInputs(
         date="2026-07-08",
@@ -218,7 +218,48 @@ def test_normalize_zero_remainder_ignores_net_so_far_export(
     )
     now = datetime(2026, 7, 8, 13, 54, 0)
     out = normalize_hour_plans_for_policy([hin], [hp], now=now)[0]
-    assert out.target_net_kwh == pytest.approx(0.0)
+    assert out.target_net_kwh == pytest.approx(0.05)
+
+
+def test_normalize_large_prior_import_remainder_zero_keeps_neutral(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regresja 14:50: net_so_far=−5, remainder=0 → target=−5, soak=neutral (bez chase 0)."""
+    frac = 10 / 60
+    hin = HourInputs(
+        date="2026-07-16",
+        hour=14,
+        load_kwh=0.2 * frac,
+        pv_kwh=0.7 * frac,
+        import_pln_per_kwh=0.59,
+        export_pln_per_kwh=0.38,
+        hour_fraction=frac,
+    )
+    hp = HourPlan(
+        date="2026-07-16",
+        hour=14,
+        target_net_kwh=0.0,
+        expected_cashflow_pln=0.0,
+        soc_start_pct=90.0,
+        soc_end_pct=94.5,
+        battery_delta_kwh=0.53,
+    )
+    monkeypatch.setattr(
+        "planner.hour_plan_export.net_kwh_so_far_for_hour",
+        lambda _d, _h: -5.0,
+    )
+    monkeypatch.setattr(
+        "planner.policy_output.net_kwh_so_far_for_hour",
+        lambda _d, _h: -5.0,
+    )
+    now = datetime(2026, 7, 16, 14, 50, 0)
+    out = normalize_hour_plans_for_policy([hin], [hp], now=now)[0]
+    assert out.target_net_kwh == pytest.approx(-5.0)
+    assert out.target_net_remainder_kwh == pytest.approx(0.0)
+    row = map_hour_to_exec_mode(out, hin)
+    assert row.exec_mode == "neutral"
+    assert row.params.allow_grid_charge is False
+    assert row.params.target_net_kwh == pytest.approx(-5.0)
 
 
 def test_mid_hour_discharge_serve_not_export_profit(

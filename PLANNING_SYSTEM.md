@@ -110,6 +110,8 @@ Brak osobnego `anchor_net_kwh` — **Ockham:** jedno pole, różna interpretacja
 | `export_pv_surplus`, `import_grid` | Prognoza końca h + audyt; egzekucja **nie** chase po tym polu |
 | `export_profit`, `charge_grid` | Audyt; granice = SOC (`soc_floor_pct` / `target_soc_pct`) |
 
+**Mid-hour:** `target_net_kwh` = `net_so_far` (bilans już zrobiony od :00) + plan MILP na **resztę** h. Intencja trybu (`exec_mode`) z reszty — soak po wcześniejszym imporcie to nadal `neutral`, nie `charge_grid`. MILP może zaplanować „cofnięcie” bilansu na reszcie, jeśli ekonomia to uzasadnia.
+
 „Pilnować” w `neutral` ≠ gonić co minutę — reguły Flappy (§13.5).
 
 ### 13.5 Zachowanie per tryb
