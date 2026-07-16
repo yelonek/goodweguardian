@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
+from planner.battery import BatteryParams, max_power_for_hour
 from planner.config import (
     PLANNER_OUTPUT_PATH,
     PLANNER_POLICY_VALID_MINUTES,
@@ -23,7 +24,6 @@ from planner.models import (
     PlannerPolicyArtifact,
     PlannerPolicyName,
 )
-from planner.telemetry import net_kwh_so_far_for_hour
 
 log = logging.getLogger("planner")
 
@@ -38,7 +38,6 @@ EXEC_MODE_LABELS_PL: dict[ExecMode, str] = {
     "charge_grid": "ładowanie z sieci",
 }
 
-# Legacy dashboard / stare pliki JSON
 POLICY_LABELS_PL: dict[PlannerPolicyName, str] = {
     "hold_neutral": "neutral",
     "hold_export": "eksport PV",
@@ -57,74 +56,47 @@ _EXEC_TO_LEGACY_POLICY: dict[ExecMode, PlannerPolicyName] = {
 }
 
 
-def _pct_from_battery_delta(bd_kwh: float) -> int:
-    """Szacunek % mocy z planowanej zmiany baterii w godzinie."""
-    cap = max_battery_kwh_per_hour()
+def _pct_from_battery_delta(bd_kwh: float, hin: HourInputs | None = None) -> int:
+    """Szacunek % mocy z planowanej Δ baterii (względem limitu slotu / h)."""
+    if hin is not None and float(hin.hour_fraction) < 1.0 - 1e-9:
+        cap = max_power_for_hour(hin, BatteryParams())
+    else:
+        cap = max_battery_kwh_per_hour()
+    if cap <= 0:
+        return 2
     pct = int(round(abs(bd_kwh) / cap * 100.0))
     return max(2, min(100, pct))
 
 
 def _export_pv_surplus_viable(export_pln: float) -> bool:
-    """Eksport nadwyżek PV ma sens tylko gdy RCE > 0 (po floor prosumenta)."""
     return export_pln > 0.0
 
 
-def _remainder_planned_net_kwh(hp: HourPlan, hin: HourInputs | None) -> float:
+def _net_intent_kwh(hp: HourPlan, hin: HourInputs | None) -> float:
     """
-    Bilans licznika planowany na **resztę** bieżącego slotu.
+    Intencja sieci na resztę h: ``net_end − N₀``.
 
-    ``target_net_remainder_kwh`` (z MILP, przed normalizacją) jest źródłem prawdy
-    dla intencji importu/eksportu. Po normalizacji ``target_net_kwh`` to cel
-    pełnej godziny dla Guardiana — nie wolno go odjąć od ``net_so_far``.
+    Przy pełnej godzinie (brak N₀) = ``target_net_kwh``.
     """
-    if hp.target_net_remainder_kwh is not None and hin is not None:
-        frac = float(hin.hour_fraction)
-        if frac < 1.0 - 1e-9:
+    net_end = float(hp.target_net_kwh)
+    if hin is None or hin.net_so_far_kwh is None:
+        if hp.target_net_remainder_kwh is not None:
             return float(hp.target_net_remainder_kwh)
-
-    net_full = float(hp.target_net_kwh)
-    if hin is None:
-        return net_full
-    frac = float(hin.hour_fraction)
-    if frac >= 1.0 - 1e-9:
-        return net_full
-    net_so_far = net_kwh_so_far_for_hour(date.fromisoformat(hin.date), hin.hour)
-    if net_so_far is not None:
-        return net_full - net_so_far
-    return net_full * frac
-
-
-def _remainder_planned_battery_delta_kwh(hp: HourPlan, hin: HourInputs | None) -> float:
-    """
-    Δ baterii planowane na **resztę** bieżącego slotu.
-
-    Po normalizacji ``HourPlan.battery_delta_kwh`` opisuje ekwiwalent pełnej godziny
-    (``remainder_bd / hour_fraction``). Klasyfikacja ``exec_mode`` musi używać
-    reszty — inaczej rozładowanie ≈ deficyt domu wygląda jak export_profit.
-    """
-    bd_full = float(hp.battery_delta_kwh)
-    if hin is None:
-        return bd_full
-    frac = float(hin.hour_fraction)
-    if frac >= 1.0 - 1e-9:
-        return bd_full
-    return bd_full * frac
+        return net_end
+    return net_end - float(hin.net_so_far_kwh)
 
 
 def _planned_serve_kwh(hin: HourInputs | None) -> float:
-    """Prognozowany pobór domu netto PV [kWh/h] — rozładowanie do tego poziomu = zasil dom."""
     if hin is None:
         return 0.0
-    return max(0.0, float(hin.load_kwh) - float(hin.pv_kwh))
+    pv_so = float(hin.pv_so_far_kwh or 0.0)
+    load_so = float(hin.load_so_far_kwh or 0.0)
+    pv_rem = float(hin.pv_kwh) - pv_so
+    load_rem = float(hin.load_kwh) - load_so
+    return max(0.0, load_rem - pv_rem)
 
 
 def _discharge_export_intent(bd: float, net: float, hin: HourInputs | None) -> bool:
-    """
-    Intencja eksportu zarobkowego przy planowanym rozładowaniu (bd < 0).
-
-    1) net > ε — licznik ma iść w plus, albo
-    2) |bd| > (load − pv) + ε **oraz** net ≥ −ε — nadmiar ponad dom bez wyraźnego importu.
-    """
     if net > NET_NEUTRAL_EPS_KWH:
         return True
     if hin is None:
@@ -134,8 +106,8 @@ def _discharge_export_intent(bd: float, net: float, hin: HourInputs | None) -> b
     return surplus and net >= -NET_NEUTRAL_EPS_KWH
 
 
-def _export_profit_params(bd: float, hp: HourPlan) -> tuple[int, float]:
-    discharge_pct = _pct_from_battery_delta(bd)
+def _export_profit_params(bd: float, hp: HourPlan, hin: HourInputs | None) -> tuple[int, float]:
+    discharge_pct = _pct_from_battery_delta(bd, hin)
     soc_floor_pct = max(float(PLANNER_SOC_MIN_PCT), float(hp.soc_end_pct))
     return discharge_pct, soc_floor_pct
 
@@ -147,8 +119,8 @@ def map_hour_to_exec_mode(
     """Deterministyczne mapowanie wyniku optymalizatora na ``exec_mode`` + parametry."""
     bd = float(hp.battery_delta_kwh)
     net = float(hp.target_net_kwh)
-    net_grid = _remainder_planned_net_kwh(hp, hin)
-    bd_slot = _remainder_planned_battery_delta_kwh(hp, hin)
+    net_grid = _net_intent_kwh(hp, hin)
+    bd_slot = bd
     pv = float(hin.pv_kwh) if hin is not None else None
     load = float(hin.load_kwh) if hin is not None else None
     export_pln = float(hin.export_pln_per_kwh) if hin is not None else 0.0
@@ -161,7 +133,6 @@ def map_hour_to_exec_mode(
     allow_grid = False
 
     if abs(bd_slot) <= BATTERY_DELTA_EPS_KWH:
-        # Bateria stoi — patrzymy tylko na bilans licznika (reszta slotu w mid-hour).
         if net_grid > NET_NEUTRAL_EPS_KWH and _export_pv_surplus_viable(export_pln):
             exec_mode = "export_pv_surplus"
         elif net_grid < -NET_NEUTRAL_EPS_KWH:
@@ -172,15 +143,14 @@ def map_hour_to_exec_mode(
         if net_grid < -NET_NEUTRAL_EPS_KWH:
             exec_mode = "charge_grid"
             allow_grid = True
-            charge_pct = _pct_from_battery_delta(bd)
+            charge_pct = _pct_from_battery_delta(bd, hin)
             target_soc_pct = float(hp.soc_end_pct)
         else:
             exec_mode = "neutral"
     elif _discharge_export_intent(bd_slot, net_grid, hin):
         exec_mode = "export_profit"
-        discharge_pct, soc_floor_pct = _export_profit_params(bd, hp)
+        discharge_pct, soc_floor_pct = _export_profit_params(bd, hp, hin)
     else:
-        # Rozładowanie ≈ pokrycie load; ewent. import dopełniający — Flappy w Guardianie.
         exec_mode = "neutral"
 
     return HourPolicyRow(
@@ -207,7 +177,6 @@ def map_hour_to_policy(
     hp: HourPlan,
     hin: HourInputs | None = None,
 ) -> HourPolicyRow:
-    """Alias zachowawczy — zwraca wiersz z ``exec_mode``."""
     return map_hour_to_exec_mode(hp, hin)
 
 
@@ -334,3 +303,4 @@ def policy_for_hour(
                         break
             return map_hour_to_exec_mode(hp, hin)
     return None
+

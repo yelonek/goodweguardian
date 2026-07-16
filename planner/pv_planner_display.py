@@ -87,6 +87,10 @@ def planner_pv_milp_snapshot(
     )
     scaled = scale_hour_inputs_for_remainder(hin, now=now, pv_correction_meta=meta)
     frac = float(scaled.hour_fraction or 1.0)
+    a_so = float(scaled.pv_so_far_kwh or 0.0)
+    rem_p50 = max(0.0, float(scaled.pv_kwh) - a_so)
+    rem_p10 = max(0.0, float(scaled.pv_kwh_p10 or 0.0) - a_so)
+    rem_p90 = max(0.0, float(scaled.pv_kwh_p90 or 0.0) - a_so)
 
     return {
         "pv_planner_active": True,
@@ -97,10 +101,10 @@ def planner_pv_milp_snapshot(
         "pv_planner_band_narrow_enabled": meta.get(
             "band_narrow_enabled", PV_BAND_NARROW_ENABLED
         ),
-        "pv_planner_full_p10_kwh": round(pv_p10, 4),
-        "pv_planner_full_p50_kwh": round(pv_p50, 4),
-        "pv_planner_full_p90_kwh": round(pv_p90, 4),
-        "pv_planner_remainder_p10_kwh": round(float(scaled.pv_kwh_p10 or 0.0), 4),
-        "pv_planner_remainder_p50_kwh": round(float(scaled.pv_kwh), 4),
-        "pv_planner_remainder_p90_kwh": round(float(scaled.pv_kwh_p90 or 0.0), 4),
+        "pv_planner_full_p10_kwh": round(float(scaled.pv_kwh_p10 or 0.0), 4),
+        "pv_planner_full_p50_kwh": round(float(scaled.pv_kwh), 4),
+        "pv_planner_full_p90_kwh": round(float(scaled.pv_kwh_p90 or 0.0), 4),
+        "pv_planner_remainder_p10_kwh": round(rem_p10, 4),
+        "pv_planner_remainder_p50_kwh": round(rem_p50, 4),
+        "pv_planner_remainder_p90_kwh": round(rem_p90, 4),
     }

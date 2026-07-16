@@ -31,7 +31,7 @@ Planer **co 10 min** → `state/planner_output.json` (**policy** + parametry). G
    - **pv_plan[h+1]** = **`k_intra × F50`** (gdy `k_intra` aktywne).
    - **pv_plan[h+2…]** = **F50** (Solcast bez korekty).
    - Korekta **nie** obejmuje całego dnia jednym współczynnikiem — przesuwa się co godzinę.
-   - **Pasma reszty bieżącej h (p10/p90):** w mid-hour rolling plan pasma reszty slotu zwężają się z `(1−α)`, mają floor `P10_total ≥ A_so_far` i opcjonalny floor z `recent_kw` — patrz [`docs/planner/modules/pv_correction.md`](docs/planner/modules/pv_correction.md) (scenario MILP).
+   - **Pasma reszty bieżącej h (p10/p90 PV, p25/p75 load):** zwężane z `(1−α)`, floor od energii so_far; MILP dostaje **pełną godzinę** `so_far+rem`, a `hour_fraction` tylko limit mocy — patrz [`docs/planner/modules/pv_correction.md`](docs/planner/modules/pv_correction.md), [`load_correction.md`](docs/planner/modules/load_correction.md).
 
 7. **Solcast:** `fetched_at`, `age_hours`, `GET /status` — logi.
 
@@ -110,7 +110,7 @@ Brak osobnego `anchor_net_kwh` — **Ockham:** jedno pole, różna interpretacja
 | `export_pv_surplus`, `import_grid` | Prognoza końca h + audyt; egzekucja **nie** chase po tym polu |
 | `export_profit`, `charge_grid` | Audyt; granice = SOC (`soc_floor_pct` / `target_soc_pct`) |
 
-**Mid-hour:** `target_net_kwh` = `net_so_far` (bilans już zrobiony od :00) + plan MILP na **resztę** h. Intencja trybu (`exec_mode`) z reszty — soak po wcześniejszym imporcie to nadal `neutral`, nie `charge_grid`. MILP może zaplanować „cofnięcie” bilansu na reszcie, jeśli ekonomia to uzasadnia.
+**Mid-hour:** energie PV/load w MILP to **pełna godzina** (so_far + zwężona reszta); `hour_fraction` ogranicza tylko moc baterii. `net_so_far` (`N₀`) wchodzi do bilansu tak, że `imp`/`exp` oznaczają rozliczenie **końca godziny** (sieć ≈ η=1 w godzinie). `target_net_kwh` = net końca h; intencja trybu z `net_end − N₀`. MILP może „cofnąć” bilans na reszcie, jeśli ekonomia to uzasadnia.
 
 „Pilnować” w `neutral` ≠ gonić co minutę — reguły Flappy (§13.5).
 

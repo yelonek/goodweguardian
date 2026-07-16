@@ -154,7 +154,11 @@ def test_hour_remaining_fraction_at_fifty_minutes() -> None:
     assert hour_remaining_fraction(now, date="2026-06-14", hour=21) == 1.0
 
 
-def test_scale_hour_inputs_for_remainder() -> None:
+def test_scale_hour_inputs_for_remainder(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "planner.hour_remainder.net_kwh_so_far_for_hour",
+        lambda _d, _h: None,
+    )
     now = datetime(2026, 6, 14, 20, 50, 0)
     hin = HourInputs(
         date="2026-06-14",
@@ -171,17 +175,27 @@ def test_scale_hour_inputs_for_remainder() -> None:
         hin,
         now=now,
         pv_correction_meta={"a_so_far_kwh": 0.02},
+        load_meta={"a_so_far_kwh": 0.5, "alpha": 50 / 60, "band_narrow_enabled": True},
     )
-    assert scaled.hour_fraction == pytest.approx(10 / 60, rel=0.01)
-    assert scaled.load_kwh == pytest.approx(0.6 * 10 / 60)
-    assert scaled.load_kwh_p75 == pytest.approx(0.7 * 10 / 60)
-    assert scaled.pv_kwh == pytest.approx(0.10)
-    assert scaled.pv_kwh_p10 == pytest.approx(0.0875)
-    assert scaled.pv_kwh_p90 == pytest.approx(0.1125)
+    frac = 10 / 60
+    assert scaled.hour_fraction == pytest.approx(frac, rel=0.01)
+    # Pełna godzina = so_far + reszta (nie sama reszta).
+    assert scaled.pv_so_far_kwh == pytest.approx(0.02)
+    assert scaled.load_so_far_kwh == pytest.approx(0.5)
+    assert scaled.pv_kwh == pytest.approx(0.02 + 0.10)
+    assert scaled.load_kwh >= 0.5
+    assert scaled.pv_kwh_p10 is not None
+    assert scaled.pv_kwh_p10 >= 0.02
 
 
-def test_scale_hour_inputs_h11_pessimistic_remainder_has_surplus() -> None:
-    """Regresja: w słoneczny mid-hour p10 reszty nie zeruje się vs load reszty."""
+def test_scale_hour_inputs_h11_pessimistic_remainder_has_surplus(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regresja: w słoneczny mid-hour p10 reszty PV nie zeruje się (A > p10_full)."""
+    monkeypatch.setattr(
+        "planner.hour_remainder.net_kwh_so_far_for_hour",
+        lambda _d, _h: 0.0,
+    )
     now = datetime(2026, 7, 16, 11, 40, 0)
     hin = HourInputs(
         date="2026-07-16",
@@ -201,12 +215,58 @@ def test_scale_hour_inputs_h11_pessimistic_remainder_has_surplus() -> None:
             "a_so_far_kwh": 3.5,
             "recent_kw": 4.5,
         },
+        load_meta={
+            "a_so_far_kwh": 2.5,
+            "alpha": 40 / 60,
+            "recent_kw": 3.0,
+            "band_narrow_enabled": True,
+        },
     )
     frac = 20 / 60
     assert scaled.hour_fraction == pytest.approx(frac, rel=0.01)
-    assert scaled.load_kwh == pytest.approx(4.0 * frac)
     assert scaled.pv_kwh_p10 is not None
-    assert scaled.pv_kwh_p10 > scaled.load_kwh
+    pv_p10_rem = scaled.pv_kwh_p10 - float(scaled.pv_so_far_kwh or 0.0)
+    assert pv_p10_rem > 1.0
+    # Naiwne max(0, 2.4−3.5)=0 — narrowing musi dać > 0.
+    assert pv_p10_rem > 0.0
+
+
+def test_scale_hour_inputs_load_narrow_not_naive_frac(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Przy load_so_far pesymistyczny p75 rem ≠ ślepe full×frac."""
+    monkeypatch.setattr(
+        "planner.hour_remainder.net_kwh_so_far_for_hour",
+        lambda _d, _h: None,
+    )
+    now = datetime(2026, 7, 16, 11, 40, 0)
+    hin = HourInputs(
+        date="2026-07-16",
+        hour=11,
+        load_kwh=4.0,
+        pv_kwh=5.0,
+        load_kwh_p25=2.0,
+        load_kwh_p75=6.0,
+        import_pln_per_kwh=1.11,
+        export_pln_per_kwh=0.5,
+    )
+    scaled = scale_hour_inputs_for_remainder(
+        hin,
+        now=now,
+        pv_correction_meta={"a_so_far_kwh": 2.0},
+        load_meta={
+            "a_so_far_kwh": 3.0,
+            "alpha": 40 / 60,
+            "recent_kw": 4.0,
+            "band_narrow_enabled": True,
+        },
+    )
+    frac = 20 / 60
+    naive_p75_rem = 6.0 * frac
+    p75_rem = scaled.load_kwh_p75 - 3.0
+    assert p75_rem != pytest.approx(naive_p75_rem)
+    assert p75_rem > 0.0
+    assert scaled.load_kwh_p75 >= scaled.load_kwh
 
 
 def test_partial_current_hour_limits_soc_drop(monkeypatch: pytest.MonkeyPatch) -> None:

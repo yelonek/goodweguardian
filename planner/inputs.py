@@ -15,6 +15,7 @@ from load_forecast import forecast_load_hours
 from planner.config import PLANNER_LOAD_LOOKBACK_DAYS
 from planner.models import HourInputs
 from planner.hour_remainder import scale_hour_inputs_for_remainder
+from planner.load_correction import build_load_intra_meta
 from planner.pv_correction import apply_pv_correction
 from pv_forecast import fetch_hourly_pv_forecast
 
@@ -81,6 +82,7 @@ def build_hour_inputs_for_slots(
 
     out: list[HourInputs] = []
     pricing_cache: dict[str, dict] = {}
+    load_intra_meta = build_load_intra_meta(now_local)
 
     for d_iso, h in slots:
         key = (d_iso, h)
@@ -139,7 +141,10 @@ def build_hour_inputs_for_slots(
         )
         out.append(
             scale_hour_inputs_for_remainder(
-                hin, now=now_local, pv_correction_meta=pv_correction_meta
+                hin,
+                now=now_local,
+                pv_correction_meta=pv_correction_meta,
+                load_meta=load_intra_meta,
             )
         )
 
@@ -153,6 +158,7 @@ def build_hour_inputs_for_slots(
             for k in ("timezone", "source", "cached", "fetched_at", "error")
         },
         "pv_correction": pv_correction_meta,
+        "load_correction": load_intra_meta,
         "pricing_dates": list(pricing_cache.keys()),
         "ev_charging_plans": ev_plans_by_date,
     }

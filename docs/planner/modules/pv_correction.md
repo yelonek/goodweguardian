@@ -62,9 +62,9 @@ Wyłączenie: `PV_CORRECTION_ENABLED = False` w `planner/pv_correction.py` (cons
 
 ## Pasma reszty godziny (p10 / p90 → scenario MILP)
 
-W środku bieżącej godziny [`planner/hour_remainder.py`](../../planner/hour_remainder.py) przekazuje do optimizera **resztę** slotu (`hour_fraction`, PV/load × reszta). Pasma p10/p90 reszty liczy `pv_remainder_bands_kwh()` w [`planner/pv_correction.py`](../../planner/pv_correction.py) — **nie** naiwne `max(0, band − A_so_far)`.
+W środku bieżącej godziny [`planner/hour_remainder.py`](../../planner/hour_remainder.py) buduje **pełną godzinę conditioned**: `so_far +` pasma reszty z `pv_remainder_bands_kwh()` / `load_remainder_bands_kwh()`. `hour_fraction` idzie do MILP **tylko** jako limit mocy. Load: [`load_correction.md`](load_correction.md).
 
-**Wejście:** pełne pasma godziny (p50 skorygowany `k_intra`, p10/p90 × `k_scale`), `A_so_far`, `α`, opcjonalnie `recent_kw` (15 min).
+**Wejście (PV):** pełne pasma godziny (p50 skorygowany `k_intra`, p10/p90 × `k_scale`), `A_so_far`, `α`, opcjonalnie `recent_kw` (15 min).
 
 **Algorytm (skrót):**
 

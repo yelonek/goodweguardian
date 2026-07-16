@@ -26,8 +26,12 @@ class HourInputs(BaseModel):
     load_kwh_p25: float | None = None
     ev_load_kwh: float = 0.0
     load_base_kwh: float | None = None
-    # 1.0 = pełna godzina; <1.0 = reszta bieżącej h (limity mocy w MILP).
+    # 1.0 = pełna godzina; <1.0 = limity mocy w MILP (P_bat · frac); energie = pełna h.
     hour_fraction: float = 1.0
+    # Warunki początkowe bieżącej h (None = początek slotu / brak telemetrii).
+    net_so_far_kwh: float | None = None
+    pv_so_far_kwh: float | None = None
+    load_so_far_kwh: float | None = None
 
 
 class HourPlan(BaseModel):

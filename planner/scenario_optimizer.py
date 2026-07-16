@@ -9,8 +9,9 @@ import numpy as np
 from scipy.optimize import Bounds, LinearConstraint, milp
 
 from economics import battery_wear_pln_for_hour, cashflow_pln_for_hour
-from planner.battery import BatteryParams, battery_delta_from_net, max_power_for_hour, soc_kwh
+from planner.battery import BatteryParams, max_power_for_hour, soc_kwh
 from planner.config import PLANNER_BATTERY_CYCLE_COST_PLN
+from planner.hour_remainder import remaining_battery_delta_kwh
 from planner.models import HourInputs, HourPlan
 from planner.optimizer import OptimizeResult, _big_m, _soc_pct, _solve_milp
 from planner.scenarios import PlanningScenario, base_scenario_index, build_planning_scenarios
@@ -147,7 +148,14 @@ def _solve_scenario_milp(
             row[ch_idx(h)] = -1.0
             row[exp_idx(s, h)] = -1.0
             eq_rows.append(row)
-            eq_rhs.append(float(sc.load_kwh[h]) - float(sc.pv_kwh[h]))
+            # Scenariusz: load/pv full; so_far/N0 z hours_in (wspólne, już zaszłe).
+            hin = hours_in[h]
+            load_so = float(hin.load_so_far_kwh or 0.0)
+            pv_so = float(hin.pv_so_far_kwh or 0.0)
+            n0 = float(hin.net_so_far_kwh or 0.0)
+            load_rem = float(sc.load_kwh[h]) - load_so
+            pv_rem = float(sc.pv_kwh[h]) - pv_so
+            eq_rhs.append(load_rem - pv_rem - n0)
 
     eq_constraint = LinearConstraint(np.vstack(eq_rows), eq_rhs, eq_rhs)
 
@@ -272,7 +280,7 @@ def _optimize_from_deterministic_milp(
         ch = float(x[hour_idx(h, layout["ch"])])
         dis = float(x[hour_idx(h, layout["dis"])])
         net = exp - imp
-        bd = battery_delta_from_net(pv_kwh=hin.pv_kwh, load_kwh=hin.load_kwh, net_kwh=net)
+        bd = remaining_battery_delta_kwh(hin, net)
         soc_end = _soc_pct(float(x[h + 1]), params)
         grid_cf = cashflow_pln_for_hour(
             net,
@@ -368,7 +376,7 @@ def optimize_horizon_scenarios(
         ch = float(x[ch_idx(h)])
         dis = float(x[dis_idx(h)])
         net = exp - imp
-        bd = battery_delta_from_net(pv_kwh=hin.pv_kwh, load_kwh=hin.load_kwh, net_kwh=net)
+        bd = remaining_battery_delta_kwh(hin, net)
         soc_end = _soc_pct(float(x[soc_idx(h + 1)]), bp)
         grid_cf = cashflow_pln_for_hour(
             net,

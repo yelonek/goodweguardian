@@ -12,11 +12,11 @@ from economics import battery_wear_pln_for_hour, cashflow_pln_for_hour
 from planner.battery import (
     BatteryParams,
     apply_battery_step,
-    battery_delta_from_net,
     max_power_for_hour,
     soc_kwh,
 )
 from planner.config import PLANNER_BATTERY_CYCLE_COST_PLN, planner_scenario_optimizer_enabled
+from planner.hour_remainder import balance_rhs_kwh, remaining_battery_delta_kwh
 from planner.models import HourInputs, HourPlan
 
 log = logging.getLogger("planner")
@@ -126,7 +126,7 @@ def _solve_milp(
         row[hour_idx(h, layout["ch"])] = -1.0
         row[hour_idx(h, layout["exp"])] = -1.0
         eq_rows.append(row)
-        eq_rhs.append(hin.load_kwh - hin.pv_kwh)
+        eq_rhs.append(balance_rhs_kwh(hin))
 
     a_eq = np.vstack(eq_rows)
     eq_constraint = LinearConstraint(a_eq, eq_rhs, eq_rhs)
@@ -230,7 +230,7 @@ def optimize_horizon(
         ch = float(x[hour_idx(h, layout["ch"])])
         dis = float(x[hour_idx(h, layout["dis"])])
         net = exp - imp
-        bd = battery_delta_from_net(pv_kwh=hin.pv_kwh, load_kwh=hin.load_kwh, net_kwh=net)
+        bd = remaining_battery_delta_kwh(hin, net)
         soc_end = _soc_pct(float(x[h + 1]), bp)
         grid_cf = cashflow_pln_for_hour(
             net,
@@ -266,7 +266,7 @@ def _fallback_neutral(
     traj = [soc]
     for hin in hours_in:
         net = 0.0
-        bd = battery_delta_from_net(pv_kwh=hin.pv_kwh, load_kwh=hin.load_kwh, net_kwh=net)
+        bd = remaining_battery_delta_kwh(hin, net)
         soc_new = apply_battery_step(soc, bd, bp) or soc
         cf = cashflow_pln_for_hour(
             net,
