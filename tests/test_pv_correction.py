@@ -16,6 +16,7 @@ from planner.pv_correction import (
     pv_plan_current_hour_kwh,
     pv_plan_next_hour_kwh,
     pv_recent_average_kw,
+    pv_remainder_bands_kwh,
 )
 
 
@@ -234,3 +235,78 @@ def test_pv_energy_so_far_from_telemetry(
     energy, samples = got
     assert samples == 3
     assert energy == pytest.approx((240 + 260 + 250) / 1000.0 / 60.0)
+
+
+def test_pv_remainder_bands_h11_sunny_mid_hour() -> None:
+    """A > p10_full: p10 reszty > 0 dzięki zwężaniu + recent_kw."""
+    p50, p10, p90 = pv_remainder_bands_kwh(
+        p50_full=5.3,
+        p10_full=2.4,
+        p90_full=5.5,
+        a_so_far=3.5,
+        alpha=2.0 / 3.0,
+        recent_kw=4.5,
+    )
+    assert p10 > 0.0
+    assert p10 <= p50 <= p90
+    assert p10 > 1.0
+
+
+def test_pv_remainder_bands_alpha_zero_centered_on_p50() -> None:
+    """α=0: pełna niepewność reszty (u=1), pasma wycentrowane na p50."""
+    p50, p10, p90 = pv_remainder_bands_kwh(
+        p50_full=5.0,
+        p10_full=2.0,
+        p90_full=6.0,
+        a_so_far=0.0,
+        alpha=0.0,
+    )
+    assert p50 == pytest.approx(5.0)
+    assert p10 == pytest.approx(3.0)
+    assert p90 == pytest.approx(7.0)
+
+
+def test_pv_remainder_bands_alpha_one_collapses() -> None:
+    p50, p10, p90 = pv_remainder_bands_kwh(
+        p50_full=5.0,
+        p10_full=2.0,
+        p90_full=6.0,
+        a_so_far=4.0,
+        alpha=1.0,
+    )
+    assert p50 == pytest.approx(1.0)
+    assert p10 == pytest.approx(1.0)
+    assert p90 == pytest.approx(1.0)
+
+
+def test_pv_remainder_bands_no_rate_floor_at_night() -> None:
+    p50, p10, p90 = pv_remainder_bands_kwh(
+        p50_full=0.1,
+        p10_full=0.0,
+        p90_full=0.2,
+        a_so_far=0.02,
+        alpha=0.5,
+        recent_kw=0.0,
+    )
+    assert p50 == pytest.approx(0.08)
+    assert p10 == pytest.approx(0.035)
+    assert p90 == pytest.approx(0.125)
+
+
+def test_pv_remainder_bands_kill_switch_uses_subtract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import planner.pv_correction as pv_mod
+
+    monkeypatch.setattr(pv_mod, "PV_BAND_NARROW_ENABLED", False)
+    p50, p10, p90 = pv_remainder_bands_kwh(
+        p50_full=5.3,
+        p10_full=2.4,
+        p90_full=5.5,
+        a_so_far=3.5,
+        alpha=2.0 / 3.0,
+        recent_kw=4.5,
+    )
+    assert p50 == pytest.approx(1.8)
+    assert p10 == pytest.approx(0.0)
+    assert p90 == pytest.approx(2.0)

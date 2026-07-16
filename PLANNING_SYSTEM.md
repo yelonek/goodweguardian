@@ -31,6 +31,7 @@ Planer **co 10 min** → `state/planner_output.json` (**policy** + parametry). G
    - **pv_plan[h+1]** = **`k_intra × F50`** (gdy `k_intra` aktywne).
    - **pv_plan[h+2…]** = **F50** (Solcast bez korekty).
    - Korekta **nie** obejmuje całego dnia jednym współczynnikiem — przesuwa się co godzinę.
+   - **Pasma reszty bieżącej h (p10/p90):** w mid-hour rolling plan pasma reszty slotu zwężają się z `(1−α)`, mają floor `P10_total ≥ A_so_far` i opcjonalny floor z `recent_kw` — patrz [`docs/planner/modules/pv_correction.md`](docs/planner/modules/pv_correction.md) (scenario MILP).
 
 7. **Solcast:** `fetched_at`, `age_hours`, `GET /status` — logi.
 

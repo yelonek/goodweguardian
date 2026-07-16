@@ -72,6 +72,10 @@ from planner.pv_correction import (
     pv_plan_current_hour_kwh,
     pv_plan_next_hour_kwh,
 )
+from planner.pv_planner_display import (
+    build_pv_correction_meta_for_slot,
+    planner_pv_milp_snapshot,
+)
 from tesla_wall_charger import hourly_ev_kwh_from_telemetry, twc_enabled
 
 app = FastAPI(title="GoodWeGuardian Dashboard", version="0.2.0")
@@ -1006,6 +1010,18 @@ def _combined_forecast_payload() -> dict[str, Any]:
     ev_plan = active_plan()
     ev_by_slot = ev_schedule_map(ev_plan, include_past=True)
 
+    now_d_iso = now.date().isoformat()
+    now_h = now.hour
+    pv_planner_meta: dict[str, Any] | None = None
+    pv_row_now = pv_by_dh.get((now_d_iso, now_h))
+    if pv_row_now:
+        pv_planner_meta = build_pv_correction_meta_for_slot(
+            now=now,
+            date_iso=now_d_iso,
+            hour=now_h,
+            pv_row=pv_row_now,
+        )
+
     rows: list[dict[str, Any]] = []
     start_dt = datetime.combine(today, datetime.min.time())
     for offset in range(48):
@@ -1090,8 +1106,7 @@ def _combined_forecast_payload() -> dict[str, Any]:
         ev_planned = float(ev_by_slot.get((d_iso, h), 0.0))
         load_plan = load_p50 + ev_planned
 
-        rows.append(
-            {
+        row_dict: dict[str, Any] = {
                 "date": d_iso,
                 "hour": h,
                 "hour_complete": hour_complete,
@@ -1130,7 +1145,22 @@ def _combined_forecast_payload() -> dict[str, Any]:
                     policy_row.params.allow_grid_charge if policy_row else None
                 ),
             }
-        )
+        if (
+            not hour_complete
+            and d_iso == now_d_iso
+            and h == now_h
+            and pv_row is not None
+        ):
+            milp_pv = planner_pv_milp_snapshot(
+                now=now,
+                date_iso=d_iso,
+                hour=h,
+                pv_row=pv_row,
+                pv_correction_meta=pv_planner_meta,
+            )
+            if milp_pv:
+                row_dict.update(milp_pv)
+        rows.append(row_dict)
 
     plan_exec, plan_exec_src = effective_planner_execution_enabled()
     plan_note = ""
@@ -1331,6 +1361,16 @@ def _pv_correction_payload() -> dict[str, Any]:
                 entry["delta_so_far_kwh"] = float(a_so_far) - f50_h * alpha
         today_hours.append(entry)
 
+    milp_pv = None
+    if f50_row:
+        milp_pv = planner_pv_milp_snapshot(
+            now=now,
+            date_iso=d_iso,
+            hour=current_hour,
+            pv_row=f50_row,
+            pv_correction_meta=state,
+        )
+
     return {
         "now": now.isoformat(timespec="seconds"),
         "date": d_iso,
@@ -1359,6 +1399,7 @@ def _pv_correction_payload() -> dict[str, Any]:
         ),
         "clip_timeline": clip_samples,
         "today_hours": today_hours,
+        "remainder_bands": milp_pv,
     }
 
 

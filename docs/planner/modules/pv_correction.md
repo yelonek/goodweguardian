@@ -60,6 +60,23 @@ Domyślnie: **ε = 0,1 kWh/h**, clip **0.65–1.35** (dynamicznie rozszerzany), 
 
 Wyłączenie: `PV_CORRECTION_ENABLED = False` w `planner/pv_correction.py` (const; nie ma pokrętła w UI).
 
+## Pasma reszty godziny (p10 / p90 → scenario MILP)
+
+W środku bieżącej godziny [`planner/hour_remainder.py`](../../planner/hour_remainder.py) przekazuje do optimizera **resztę** slotu (`hour_fraction`, PV/load × reszta). Pasma p10/p90 reszty liczy `pv_remainder_bands_kwh()` w [`planner/pv_correction.py`](../../planner/pv_correction.py) — **nie** naiwne `max(0, band − A_so_far)`.
+
+**Wejście:** pełne pasma godziny (p50 skorygowany `k_intra`, p10/p90 × `k_scale`), `A_so_far`, `α`, opcjonalnie `recent_kw` (15 min).
+
+**Algorytm (skrót):**
+
+1. **Floor całej h:** `P10_total = max(p10, A_so_far)` (analogicznie p50/p90).
+2. **Zwężanie:** `u = 1 − α`; `P50_rem = P50_total − A`; pasmo reszty wokół p50 o połowie szerokości `(P90_total − P10_total) × u / 2`.
+3. **Floor z tempa:** gdy `recent_kw > 0` i `α ≥ 0,15`: dolna/górna granica reszty z `recent_kw × (1−α) × 0,70 / 1,15`.
+4. **Kolejność:** `p10 ≤ p50 ≤ p90`.
+
+Stałe: `PV_BAND_NARROW_ENABLED` (kill-switch), `PV_BAND_RATE_P10_FACTOR`, `PV_BAND_RATE_P90_FACTOR`, `PV_BAND_RATE_MIN_ALPHA`.
+
+Efekt: pesymistyczny scenariusz reszty slotu nie zeruje PV, gdy słońce już jedzie — lepsze dane dla scenario MILP (wspólne ładowanie baterii z nadwyżki PV).
+
 ## Przykład
 
 11:30, F50 = 2 kWh/h, A_so_far = 0,125 kWh (250 W średnio):
@@ -73,4 +90,4 @@ Wyłączenie: `PV_CORRECTION_ENABLED = False` w `planner/pv_correction.py` (cons
 
 - Globalne okno 3 h (`k` z wcześniejszej specyfikacji) — **nie** implementowane.
 - Prognoza pogody (OpenWeather itd.) — osobny moduł na horyzont 2–6 h, opcjonalnie później.
-- `u` (p10/p50/p90) — tylko metryki UI, nie wpływa na optimizer.
+- `u` (p10/p50/p90) — pasma reszty bieżącej h wpływają na scenario MILP (patrz sekcja wyżej); pełne pasma h+2… nadal surowe Solcast.

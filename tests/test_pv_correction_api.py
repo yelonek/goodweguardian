@@ -44,3 +44,5 @@ def test_dashboard_ui_has_pv_correction_page(pv_corr_client: TestClient) -> None
     js = pv_corr_client.get("/dashboard.js")
     assert "loadPvCorrection" in js.text
     assert '"pv-correction": loadPvCorrection' in js.text
+    assert "renderPvCorrectionBands" in js.text
+    assert 'id="pvCorrectionBands"' in r.text

@@ -210,6 +210,14 @@
     table.forecast .grp-planner { background: rgba(200, 160, 255, 0.12); }
     table.forecast tr.day-break td { border-top: 2px solid rgba(127,127,127,0.55); }
     table.forecast tr.now td { background: rgba(255, 215, 0, 0.18); font-weight: 700; }
+    table.forecast tr.pv-planner-slot td.pv-planner-val {
+      background: rgba(13, 128, 80, 0.14);
+      color: #0d8050;
+      font-weight: 700;
+    }
+    @media (prefers-color-scheme: dark) {
+      table.forecast tr.pv-planner-slot td.pv-planner-val { color: #6ee7a8; }
+    }
     table.forecast tr.past td { opacity: 0.55; }
     table.forecast tr.net-bar-export td:nth-last-child(-n+2) {
       background: rgba(255, 215, 0, 0.14);
@@ -615,9 +623,9 @@
             <th class="grp-load twc-col" title="Dom bez EV (razem − EV)">dom</th>
             <th class="grp-load ev-plan-col" title="Planowane ładowanie EV">EV plan</th>
             <th class="grp-load ev-plan-col" title="Prognoza dom + EV plan">load plan</th>
-            <th class="grp-pv">p10</th>
-            <th class="grp-pv">mean</th>
-            <th class="grp-pv">p90</th>
+            <th class="grp-pv" title="Solcast p10; w bieżącej h — reszta slotu planera (MILP)">p10</th>
+            <th class="grp-pv" title="Solcast p50; w bieżącej h — reszta slotu planera (MILP)">mean</th>
+            <th class="grp-pv" title="Solcast p90; w bieżącej h — reszta slotu planera (MILP)">p90</th>
             <th class="grp-pv">act</th>
             <th class="grp-pv">Δ</th>
             <th class="grp-planner">policy</th>
@@ -640,7 +648,8 @@
       </div>
       <p class="muted setting-lead" style="font-size:12px; max-width:960px;">
         Telemetria bieżącej godziny vs prognoza Solcast p50. Planer używa skorygowanej wartości
-        (<strong>k_intra</strong> + opcjonalnie <strong>rate blend</strong> + <strong>dynamiczny clip</strong>).
+        (<strong>k_intra</strong> + opcjonalnie <strong>rate blend</strong> + <strong>dynamiczny clip</strong>)
+        oraz <strong>zwężonych pasm p10/p90 reszty slotu</strong> (scenario MILP).
       </p>
       <div class="pv-correction-block card" id="pvCorrectionBlock">
         <div class="pv-correction-metrics" id="pvCorrectionMetrics"></div>
@@ -656,6 +665,11 @@
               </div>
             </div>
             <div class="pv-correction-bars" id="pvCorrectionBars"></div>
+            <h3 style="margin:16px 0 8px; font-size:1rem;">Pasma PV — planer (MILP)</h3>
+            <p class="muted" style="font-size:11px; margin:0 0 8px;">
+              Pełna godzina (po k_intra) vs reszta slotu po <code>pv_remainder_bands_kwh</code> — to widzi scenario optimizer.
+            </p>
+            <div id="pvCorrectionBands"></div>
           </div>
           <div>
             <h3 style="margin:0 0 8px; font-size:1rem;">Dynamiczny clip k_intra</h3>

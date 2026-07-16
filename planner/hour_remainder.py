@@ -6,7 +6,11 @@ from datetime import datetime
 from typing import Any
 
 from planner.models import HourInputs
-from planner.pv_correction import hour_elapsed_fraction
+from planner.pv_correction import (
+    PV_BAND_NARROW_ENABLED,
+    hour_elapsed_fraction,
+    pv_remainder_bands_kwh,
+)
 
 
 def hour_remaining_fraction(now: datetime, *, date: str, hour: int) -> float:
@@ -31,11 +35,19 @@ def _remaining_pv_kwh(
     frac = hour_remaining_fraction(now, date=hin.date, hour=hin.hour)
     a_so_far = pv_correction_meta.get("a_so_far_kwh")
     if a_so_far is not None:
-        produced = float(a_so_far)
-        return (
-            max(0.0, hin.pv_kwh - produced),
-            max(0.0, full_p10 - produced),
-            max(0.0, full_p90 - produced),
+        narrow = pv_correction_meta.get("band_narrow_enabled", PV_BAND_NARROW_ENABLED)
+        alpha = hour_elapsed_fraction(now)
+        recent_kw = pv_correction_meta.get("recent_kw")
+        if recent_kw is not None:
+            recent_kw = float(recent_kw)
+        return pv_remainder_bands_kwh(
+            p50_full=hin.pv_kwh,
+            p10_full=full_p10,
+            p90_full=full_p90,
+            a_so_far=float(a_so_far),
+            alpha=alpha,
+            recent_kw=recent_kw,
+            narrow_enabled=bool(narrow),
         )
 
     return hin.pv_kwh * frac, full_p10 * frac, full_p90 * frac

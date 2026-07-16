@@ -176,8 +176,37 @@ def test_scale_hour_inputs_for_remainder() -> None:
     assert scaled.load_kwh == pytest.approx(0.6 * 10 / 60)
     assert scaled.load_kwh_p75 == pytest.approx(0.7 * 10 / 60)
     assert scaled.pv_kwh == pytest.approx(0.10)
-    assert scaled.pv_kwh_p10 == pytest.approx(0.03)
-    assert scaled.pv_kwh_p90 == pytest.approx(0.18)
+    assert scaled.pv_kwh_p10 == pytest.approx(0.0875)
+    assert scaled.pv_kwh_p90 == pytest.approx(0.1125)
+
+
+def test_scale_hour_inputs_h11_pessimistic_remainder_has_surplus() -> None:
+    """Regresja: w słoneczny mid-hour p10 reszty nie zeruje się vs load reszty."""
+    now = datetime(2026, 7, 16, 11, 40, 0)
+    hin = HourInputs(
+        date="2026-07-16",
+        hour=11,
+        load_kwh=4.0,
+        pv_kwh=5.3,
+        pv_kwh_p10=2.4,
+        pv_kwh_p90=5.5,
+        load_kwh_p75=4.5,
+        import_pln_per_kwh=1.11,
+        export_pln_per_kwh=0.515,
+    )
+    scaled = scale_hour_inputs_for_remainder(
+        hin,
+        now=now,
+        pv_correction_meta={
+            "a_so_far_kwh": 3.5,
+            "recent_kw": 4.5,
+        },
+    )
+    frac = 20 / 60
+    assert scaled.hour_fraction == pytest.approx(frac, rel=0.01)
+    assert scaled.load_kwh == pytest.approx(4.0 * frac)
+    assert scaled.pv_kwh_p10 is not None
+    assert scaled.pv_kwh_p10 > scaled.load_kwh
 
 
 def test_partial_current_hour_limits_soc_drop(monkeypatch: pytest.MonkeyPatch) -> None:

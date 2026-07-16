@@ -24,6 +24,12 @@ PV_CORRECTION_K_MAX_WIDE = 3.0
 PV_CORRECTION_CLIP_RAMP_START = 0.15
 PV_CORRECTION_CLIP_RAMP_END = 0.55
 
+# Pasma p10/p90 reszty bieżącej godziny (scenario MILP) — const jak k_intra.
+PV_BAND_NARROW_ENABLED = True
+PV_BAND_RATE_P10_FACTOR = 0.70
+PV_BAND_RATE_P90_FACTOR = 1.15
+PV_BAND_RATE_MIN_ALPHA = 0.15
+
 log = logging.getLogger("planner")
 
 HorizonSlot = tuple[str, int]
@@ -332,6 +338,65 @@ def pv_plan_next_hour_kwh(*, f50_kwh: float, k_intra: float) -> float:
     return max(0.0, f50_kwh * k_intra)
 
 
+def pv_remainder_bands_kwh(
+    *,
+    p50_full: float,
+    p10_full: float,
+    p90_full: float,
+    a_so_far: float,
+    alpha: float,
+    recent_kw: float | None = None,
+    narrow_enabled: bool | None = None,
+) -> tuple[float, float, float]:
+    """
+    Pasma PV [kWh] na **resztę** bieżącej godziny (p50, p10, p90).
+
+    Niepewność zwęża się z ``(1 − α)``; ``P10_total ≥ A_so_far``; opcjonalny
+    floor reszty z ``recent_kw`` gdy produkcja trwa.
+    """
+    if narrow_enabled is None:
+        narrow_enabled = PV_BAND_NARROW_ENABLED
+
+    p50_f = max(0.0, float(p50_full))
+    p10_f = max(0.0, float(p10_full))
+    p90_f = max(0.0, float(p90_full))
+    a = max(0.0, float(a_so_far))
+    al = max(0.0, min(1.0, float(alpha)))
+
+    if not narrow_enabled:
+        return (
+            max(0.0, p50_f - a),
+            max(0.0, p10_f - a),
+            max(0.0, p90_f - a),
+        )
+
+    p10_tot = max(p10_f, a)
+    p50_tot = max(p50_f, a)
+    p90_tot = max(p90_f, a)
+    width_tot = max(0.0, p90_tot - p10_tot)
+
+    u = max(0.0, 1.0 - al)
+    p50_rem = max(0.0, p50_tot - a)
+    half = 0.5 * width_tot * u
+    p10_rem = max(0.0, p50_rem - half)
+    p90_rem = p50_rem + half
+
+    if (
+        recent_kw is not None
+        and float(recent_kw) > 0.0
+        and al >= PV_BAND_RATE_MIN_ALPHA
+    ):
+        frac = max(0.0, 1.0 - al)
+        rate_p10 = float(recent_kw) * frac * PV_BAND_RATE_P10_FACTOR
+        rate_p90 = float(recent_kw) * frac * PV_BAND_RATE_P90_FACTOR
+        p10_rem = max(p10_rem, rate_p10)
+        p90_rem = max(p90_rem, p10_rem, rate_p90)
+
+    p10_rem = min(p10_rem, p50_rem)
+    p90_rem = max(p90_rem, p50_rem)
+    return p50_rem, p10_rem, p90_rem
+
+
 def build_pv_intra_state(
     now: datetime,
     *,
@@ -348,6 +413,7 @@ def build_pv_intra_state(
 
     meta: dict[str, Any] = {
         "enabled": PV_CORRECTION_ENABLED,
+        "band_narrow_enabled": PV_BAND_NARROW_ENABLED,
         "applied": False,
         "alpha": alpha,
         "f50_current_kwh": f50_current_kwh,
