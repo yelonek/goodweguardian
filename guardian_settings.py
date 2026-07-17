@@ -192,6 +192,22 @@ class GuardianSettings(BaseModel):
         0.05, ge=0.0, json_schema_extra=_meta("planner"),
         description="Waga scenariusza optymistycznego (normalizowana).",
     )
+    planner_soc_tracking: bool = Field(
+        True, json_schema_extra=_meta("planner"),
+        description=(
+            "Tracking-SP: wspólna wizja SOC* + recourse ch/dis per scenariusz. "
+            "Wyłączony = stary shared ch/dis (non-anticipativity na przepływach)."
+        ),
+    )
+    planner_soc_tracking_lambda: float = Field(
+        0.12,
+        ge=0.0,
+        json_schema_extra=_meta("planner", "PLN/kWh"),
+        description=(
+            "Kara |SOC_s − SOC*| w tracking-SP [PLN / kWh energii magazynu]. "
+            "Za duże ≈ nadmierna ostrożność; za małe ≈ wizja jak p50."
+        ),
+    )
 
 
 _FIELD_NAMES: frozenset[str] = frozenset(GuardianSettings.model_fields.keys())

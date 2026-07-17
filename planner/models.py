@@ -35,7 +35,11 @@ class HourInputs(BaseModel):
 
 
 class HourPlan(BaseModel):
-    """Plan na godzinę: docelowy bilans netto na liczniku o :00 (eksport − import)."""
+    """Plan na godzinę.
+
+    ``soc_end_pct`` / ``soc_start_pct`` = wizja stanu baterii (primary).
+    ``target_net_kwh`` / ``battery_delta_kwh`` = audyt / Flappy (pochodne).
+    """
 
     date: str
     hour: int = Field(ge=0, le=23)
@@ -59,6 +63,8 @@ class DailyPlan(BaseModel):
     horizon_start: str = ""
     horizon_end: str = ""
     soc_start_pct: float
+    # Wizja SOC: [soc₀, soc₁, …, soc_H] — primary plan object.
+    soc_trajectory_pct: list[float] = Field(default_factory=list)
     expected_total_cashflow_pln: float
     optimizer: str
     inputs_snapshot: dict[str, Any]

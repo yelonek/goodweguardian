@@ -16,9 +16,11 @@ Planer **co 10 min** → `state/planner_output.json` (**policy** + parametry). G
 
 3. **Dane do optimizera:** `pv_plan[h]` jak w pkt 6; `load_plan[h]` jak wyżej. Jedna optymalizacja **max Σ_h cashflow_h**; **rolling** co cykl.
 
-4. **Wyjście:** **policy + parametry**; optimizer → wektor `e_bat_kwh[h]` w granicach **battery_model**; **policy_output** → enum + JSON. Guardian **nie** goni `target_net_kwh` co minutę — wykonuje **strategię** przypisaną do policy (§13).
+4. **Wyjście:** **policy + parametry**. Optimizer buduje **wizję SOC** (`soc_trajectory_pct` / `soc_end_pct` per h). **policy_output** mapuje **gap SOC** → jeden `exec_mode` (nie jednoczesne `ch∧exp`). `target_net_kwh` / `battery_delta_kwh` = audyt / Flappy. Guardian **nie** goni `target_net_kwh` co minutę — wykonuje **strategię** (§13).
 
 5. **Bateria w solverze:** `soc_kwh`, limity z Ustawień (`planner_soc_*`, `battery_capacity_kwh`), **jedno η** round-trip (`η_rt`). W bilansie SOC: `+√η_rt · ch − dis / √η_rt` (symetrycznie), żeby cykl AC→AC odzyskiwał dokładnie `η_rt`, a nie `η_rt²`.
+
+   **Tracking-SP (domyślnie):** wspólna first-stage trajektoria `soc*[h]`; per scenariusz recourse `ch_s, dis_s, imp_s, exp_s`; cel `max Σ π_s·CF_s − λ·Σ π_s·|SOC_s−SOC*|`. Settingi: `planner_soc_tracking`, `planner_soc_tracking_lambda`. Wyłączenie trackingu = legacy shared `ch/dis` (niezalecane). **Nie** wracać do binarnego eco-slot MILP (`f12c348`).
 
 6. **Korekta PV (`k_intra`):**
    - **ε = 0,1 kWh/h** — próg znaczącej prognozy w ułamku godziny.
@@ -78,7 +80,7 @@ Prawdziwy wachlarz zachowań GoodWe to **pięć biegów** sterowania (nie mylić
 | 4 | **CHARGE 1%** | `import_grid` |
 | 5 | **CHARGE 2–100%** | `charge_grid` |
 
-Planer wybiera **`exec_mode`** + parametry. Guardian utrzymia odpowiedni bieg; **nie** goni `target_net_kwh` agresywnym chase we wszystkich trybach (§13.4).
+Planer wybiera **`exec_mode`** z **wizji SOC** (`soc_end_pct` vs `soc_start_pct`): rosnący SOC → soak / `charge_grid` (tani import); malejący → `export_profit`; płaski → `export_pv_surplus` / `import_grid` / `neutral`. Guardian utrzymia bieg; **nie** goni `target_net_kwh` agresywnym chase (§13.4).
 
 | `exec_mode` | PL | Eco-slot | Parametry | Sens |
 |-------------|-----|----------|-----------|------|
@@ -163,7 +165,8 @@ Utrzymuj **`target_net_kwh`** z planu (aktualizacja przy wejściu planu), nie do
 | `charge_pct` | `charge_grid` | 2–100% |
 | — | `import_grid` | Guardian: stałe **CHARGE 1%** + **SOC 10%** (poza JSON planera) |
 | `allow_grid_charge` | `charge_grid` | import do baterii; w `import_grid` **nie dotyczy** (brak ładowania z sieci) |
-| `battery_delta_kwh`, `pv_plan_kwh`, `load_plan_kwh` | optimizer | dashboard |
+| `battery_delta_kwh`, `pv_plan_kwh`, `load_plan_kwh` | audyt / dashboard (Δ z scenariusza bazowego) | dashboard |
+| `soc_end_pct` | **wizja SOC*** (primary) | `charge_grid` fallback cel; audyt |
 
 ### 13.7 Czego świadomie nie robimy
 
@@ -182,7 +185,7 @@ Po godzinie: reconcile `target_net_kwh` vs fakty; w trakcie h liczy się zgodno�
 ### 13.9 Wdrożenie
 
 1. Kontrakt JSON: `exec_mode` + `target_net_kwh` / `soc_floor_pct` / `target_soc_pct` (`charge_grid`) / `charge_pct` / `discharge_pct`; `import_grid` bez parametrów SOC w JSON.
-2. Mapowanie optimizer → `exec_mode` (zamiast `hold_*`).
+2. Mapowanie **gap SOC** → `exec_mode` (nie `(net, bd)` jako intencja).
 3. Guardian: router; strategie `export_pv_surplus`, `neutral`, `import_grid` (stałe 1% + SOC 10%).
 4. `export_profit`, `charge_grid`.
 5. Wyłączenie `balance_remaining_kwh = actual − target` jako domyślnej egzekucji.

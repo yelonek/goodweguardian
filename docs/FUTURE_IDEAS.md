@@ -388,45 +388,17 @@ Skrócenie lookback **nie priorytet**; sensowniejsze docelowo: klasyfikator shif
 
 ## Planer stochastyczny: ostrożność **całą dobę** (EV)
 
-**Problem:** optimizer dziś widzi tylko **PV p50** i **load p50** (`planner/inputs.py`); p10/p90 PV to metryki UI. Jedna trajektoria = zakładamy, że prognoza trafia — bez „co jeśli się myli?”.
+**Problem (historyczny):** deterministyczny p50; potem shared `ch/dis` zabijał soak PV w południe; osobne trajektorie + publish p50 głodziły świt; binarny eco-slot MILP (`9d93e95`) — rollback `f12c348`.
 
-**Cel:** nie tylko floor SOC rano (skrót), lecz **każda godzina horyzontu** oceniana z perspektywy niepewności — bez wcześniejszego ładowania do pełna „na wszelki wypadek” (p90 musi też wchodzić do celu).
+### Model docelowy (wdrożony): tracking-SP + mapowanie względem SOC
 
-### Model
+- **First-stage:** wspólna wizja `soc*[h]` (`DailyPlan.soc_trajectory_pct`, `HourPlan.soc_end_pct`).
+- **Recourse per scenariusz:** `ch_s, dis_s, imp_s, exp_s` (+ exclusivity imp/exp).
+- **Cel:** `max Σ_s π_s·CF_s − λ·Σ_s π_s·|SOC_s−SOC*|` (`planner_soc_tracking_lambda`).
+- **Egzekucja:** `map_hour_to_exec_mode` z **gap SOC** (jeden bieg / h) — nie `(net, bd)` jako intencja.
+- Legacy shared `ch/dis`: `planner_soc_tracking=false` (fallback).
 
-- **Per scenariusz:** `ch_s,h`, `dis_s,h`, `soc_s,h`, `imp_s,h`, `exp_s,h`.
-- **Scenariusze** `s` z pełnymi profilami na **cały** horyzont:
-  - optymistyczny: PV p90, load p50
-  - bazowy: PV p50, load p50
-  - pesymistyczny: PV p10, load p75
-- Plan wykonawczy (Guardian): scenariusz **bazowy** (p50); rolling replan co 10 min.
-- **Cel:**
-
-```text
-max  Σ_s  π_s × Σ_h  cashflow_s(h)  −  wear(ch_s, dis_s)
-```
-
-Wagi `π_s` (np. 0,15 / 0,70 / 0,15) oceniają ryzyko przez ważoną średnią cashflow.
-
-### Balans (żeby nie być totalnym pesymistą)
-
-| Mechanizm | Rola |
-|-----------|------|
-| Wagi `π_s` (np. 0,15 / 0,70 / 0,15) | p10 karze, p90 nagradza oszczędność SOC |
-| Wear baterii | już w MILP — hamuje „ładuj wszystko na zapas” |
-| Ceny per h | droga godzina sama podbija koszt złego scenariusza w tej h |
-
-### Relacja do rezerwy nocnej
-
-Rezerwa nocna w Guardianie = **airbag** przy deterministycznym planie p50. Stochastic planner **całą dobę** powinien robić większość pracy; po wdrożeniu i kalibracji — obniżyć / usunąć rezerwę (patrz sekcja wyżej).
-
-### Wdrożenie w repo
-
-1. Rozszerzyć `build_hour_inputs_for_slots` o pasma PV (p10/p90) i load (p75).
-2. `optimize_horizon_scenarios(...)` — ten sam MILP, bilans/cashflow × S scenariuszy w funkcji celu.
-3. Backtest wag `π_s` na `reconcile` / `day_review`.
-
-**Status:** wdrożone w `planner/scenario_optimizer.py` (`planner_scenario_optimizer` w Ustawieniach: włączony domyślnie; wyłączenie = p50).
+**Status:** wdrożone w `planner/scenario_optimizer.py` + `planner/policy_output.py`. Rollback tag: `v0.2.1`. **Nie** wracać do binarnego eco-slot MILP.
 
 ---
 
@@ -471,7 +443,7 @@ Optimizer **może** zaplanować `ch > pv` (ładowanie magazynu z importu) albo p
 3. **SOC slot 10%** w trajektorii planera (osobno od `planner_soc_min_pct`).
 4. Ewentualnie **osobne zmienne** `ch_pv` / `ch_grid` w MILP.
 
-**Status:** świadoma luka — **nie** naprawiamy teraz; Guardian i §13 wystarczają na produkcję.
+**Status:** MILP nadal bez pełnej fizyki eco-slot; **mapper** wybiera bieg z wizji SOC (nie z surowego `ch∧exp`). Luka DC/AC w solve zostaje — Guardian egzekwuje §13. **Nie** wdrażać ponownie binarnego eco-slot MILP.
 
 ---
 

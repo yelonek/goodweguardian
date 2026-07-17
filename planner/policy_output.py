@@ -1,4 +1,4 @@
-"""Mapowanie HourPlan → exec_mode + zapis ``state/planner_output.json``."""
+"""Mapowanie HourPlan → exec_mode (względem wizji SOC) + zapis ``state/planner_output.json``."""
 
 from __future__ import annotations
 
@@ -27,8 +27,13 @@ from planner.models import (
 
 log = logging.getLogger("planner")
 
-BATTERY_DELTA_EPS_KWH = 0.05
+# Próg zmiany SOC [pp] — poniżej traktujemy godzinę jako „trzymaj stan”.
+SOC_GAP_EPS_PCT = 1.0
+# Tolerancja „taniego importu” względem minimum horyzontu [PLN/kWh].
+_CHEAP_IMPORT_TOL_PLN = 0.02
 NET_NEUTRAL_EPS_KWH = 0.05
+# Legacy alias — testy / importy zewnętrzne.
+BATTERY_DELTA_EPS_KWH = 0.05
 
 EXEC_MODE_LABELS_PL: dict[ExecMode, str] = {
     "export_profit": "eksport zarobkowy",
@@ -68,62 +73,72 @@ def _pct_from_battery_delta(bd_kwh: float, hin: HourInputs | None = None) -> int
     return max(2, min(100, pct))
 
 
+def _pct_from_soc_gap(gap_pct: float, hin: HourInputs | None = None) -> int:
+    """Szacunek % mocy z |ΔSOC| → przybliżone kWh AC."""
+    bp = BatteryParams()
+    eta1 = bp.eta_one_way
+    # |ΔSOC| → energia w magazynie → AC (ładowanie: E_ac = E_stored / η₁)
+    stored_kwh = abs(gap_pct) / 100.0 * bp.capacity_kwh
+    ac_kwh = stored_kwh / eta1 if eta1 > 0 else stored_kwh
+    return _pct_from_battery_delta(ac_kwh, hin)
+
+
 def _export_pv_surplus_viable(export_pln: float) -> bool:
     return export_pln > 0.0
 
 
-def _net_intent_kwh(hp: HourPlan, hin: HourInputs | None) -> float:
-    """
-    Intencja sieci na resztę h: ``net_end − N₀``.
-
-    Przy pełnej godzinie (brak N₀) = ``target_net_kwh``.
-    """
-    net_end = float(hp.target_net_kwh)
-    if hin is None or hin.net_so_far_kwh is None:
-        if hp.target_net_remainder_kwh is not None:
-            return float(hp.target_net_remainder_kwh)
-        return net_end
-    return net_end - float(hin.net_so_far_kwh)
-
-
-def _planned_serve_kwh(hin: HourInputs | None) -> float:
+def _pv_surplus_rem_kwh(hin: HourInputs | None) -> float:
+    """Nadwyżka PV na resztę / pełną godzinę [kWh]."""
     if hin is None:
         return 0.0
     pv_so = float(hin.pv_so_far_kwh or 0.0)
     load_so = float(hin.load_so_far_kwh or 0.0)
     pv_rem = float(hin.pv_kwh) - pv_so
     load_rem = float(hin.load_kwh) - load_so
-    return max(0.0, load_rem - pv_rem)
+    return pv_rem - load_rem
 
 
-def _discharge_export_intent(bd: float, net: float, hin: HourInputs | None) -> bool:
-    if net > NET_NEUTRAL_EPS_KWH:
-        return True
-    if hin is None:
+def _soc_gap_ac_kwh(gap_pct: float) -> float:
+    """Ile kWh AC potrzeba, by domknąć |gap| SOC (ładowanie)."""
+    bp = BatteryParams()
+    eta1 = bp.eta_one_way
+    stored = abs(gap_pct) / 100.0 * bp.capacity_kwh
+    return stored / eta1 if eta1 > 0 else stored
+
+
+def _is_cheap_import(import_pln: float, cheap_import_threshold_pln: float | None) -> bool:
+    if cheap_import_threshold_pln is None:
         return False
-    serve = _planned_serve_kwh(hin)
-    surplus = abs(bd) > serve + BATTERY_DELTA_EPS_KWH
-    return surplus and net >= -NET_NEUTRAL_EPS_KWH
+    return import_pln <= cheap_import_threshold_pln + 1e-9
 
 
-def _export_profit_params(bd: float, hp: HourPlan, hin: HourInputs | None) -> tuple[int, float]:
-    discharge_pct = _pct_from_battery_delta(bd, hin)
-    soc_floor_pct = max(float(PLANNER_SOC_MIN_PCT), float(hp.soc_end_pct))
-    return discharge_pct, soc_floor_pct
+def cheap_import_threshold_from_inputs(hour_inputs: list[HourInputs]) -> float | None:
+    """Próg taniego importu horyzontu: min(import) + tolerancja."""
+    if not hour_inputs:
+        return None
+    return min(float(h.import_pln_per_kwh) for h in hour_inputs) + _CHEAP_IMPORT_TOL_PLN
 
 
 def map_hour_to_exec_mode(
     hp: HourPlan,
     hin: HourInputs | None = None,
+    *,
+    cheap_import_threshold_pln: float | None = None,
 ) -> HourPolicyRow:
-    """Deterministyczne mapowanie wyniku optymalizatora na ``exec_mode`` + parametry."""
+    """Mapowanie wizji SOC (``soc_end_pct``) na jeden ``exec_mode`` + parametry.
+
+    Intencja wynika z ``gap = soc* − soc0``, nie z jednoczesnych ``ch`` i ``exp``.
+    """
+    soc0 = float(hp.soc_start_pct)
+    soc_star = float(hp.soc_end_pct)
+    gap = soc_star - soc0
     bd = float(hp.battery_delta_kwh)
     net = float(hp.target_net_kwh)
-    net_grid = _net_intent_kwh(hp, hin)
-    bd_slot = bd
     pv = float(hin.pv_kwh) if hin is not None else None
     load = float(hin.load_kwh) if hin is not None else None
     export_pln = float(hin.export_pln_per_kwh) if hin is not None else 0.0
+    import_pln = float(hin.import_pln_per_kwh) if hin is not None else 1.11
+    surplus = _pv_surplus_rem_kwh(hin)
 
     exec_mode: ExecMode
     discharge_pct: int | None = None
@@ -132,26 +147,45 @@ def map_hour_to_exec_mode(
     target_soc_pct: float | None = None
     allow_grid = False
 
-    if abs(bd_slot) <= BATTERY_DELTA_EPS_KWH:
-        if net_grid > NET_NEUTRAL_EPS_KWH and _export_pv_surplus_viable(export_pln):
-            exec_mode = "export_pv_surplus"
-        elif net_grid < -NET_NEUTRAL_EPS_KWH:
-            exec_mode = "import_grid"
-        else:
+    if gap > SOC_GAP_EPS_PCT:
+        # Wizja: naładuj — soak PV; grid charge tylko w tanim oknie.
+        need_ac = _soc_gap_ac_kwh(gap)
+        shortfall = need_ac - max(0.0, surplus)
+        if shortfall <= NET_NEUTRAL_EPS_KWH:
             exec_mode = "neutral"
-    elif bd_slot > BATTERY_DELTA_EPS_KWH:
-        if net_grid < -NET_NEUTRAL_EPS_KWH:
+        elif _is_cheap_import(import_pln, cheap_import_threshold_pln):
             exec_mode = "charge_grid"
             allow_grid = True
-            charge_pct = _pct_from_battery_delta(bd, hin)
-            target_soc_pct = float(hp.soc_end_pct)
-        else:
+            charge_pct = (
+                _pct_from_battery_delta(bd, hin)
+                if abs(bd) > BATTERY_DELTA_EPS_KWH
+                else _pct_from_soc_gap(gap, hin)
+            )
+            target_soc_pct = soc_star
+        elif surplus > NET_NEUTRAL_EPS_KWH:
+            # Częściowy soak z PV; bez eksportu nadwyżki i bez drogiego AC→baterii.
             exec_mode = "neutral"
-    elif _discharge_export_intent(bd_slot, net_grid, hin):
+        else:
+            # Drogi import: bateria tylko z PV (DC), dom z sieci.
+            exec_mode = "import_grid"
+    elif gap < -SOC_GAP_EPS_PCT:
+        # Wizja: rozładuj → sprzedaż z baterii do soc*.
         exec_mode = "export_profit"
-        discharge_pct, soc_floor_pct = _export_profit_params(bd, hp, hin)
+        discharge_pct = (
+            _pct_from_battery_delta(bd, hin)
+            if abs(bd) > BATTERY_DELTA_EPS_KWH
+            else _pct_from_soc_gap(gap, hin)
+        )
+        soc_floor_pct = max(float(PLANNER_SOC_MIN_PCT), soc_star)
     else:
-        exec_mode = "neutral"
+        # Trzymaj stan (|gap| ≤ eps).
+        if surplus > NET_NEUTRAL_EPS_KWH and _export_pv_surplus_viable(export_pln):
+            exec_mode = "export_pv_surplus"
+        elif surplus < -NET_NEUTRAL_EPS_KWH and bd >= -BATTERY_DELTA_EPS_KWH:
+            exec_mode = "import_grid"
+        else:
+            # Bilans / drobny serve z baterii → Flappy.
+            exec_mode = "neutral"
 
     return HourPolicyRow(
         date=hp.date,
@@ -161,7 +195,7 @@ def map_hour_to_exec_mode(
         params=HourPolicyParams(
             target_net_kwh=net,
             battery_delta_kwh=bd,
-            soc_end_pct=float(hp.soc_end_pct),
+            soc_end_pct=soc_star,
             pv_plan_kwh=pv,
             load_plan_kwh=load,
             allow_grid_charge=allow_grid,
@@ -176,8 +210,12 @@ def map_hour_to_exec_mode(
 def map_hour_to_policy(
     hp: HourPlan,
     hin: HourInputs | None = None,
+    *,
+    cheap_import_threshold_pln: float | None = None,
 ) -> HourPolicyRow:
-    return map_hour_to_exec_mode(hp, hin)
+    return map_hour_to_exec_mode(
+        hp, hin, cheap_import_threshold_pln=cheap_import_threshold_pln
+    )
 
 
 def exec_mode_label_pl(mode: ExecMode) -> str:
@@ -201,8 +239,13 @@ def build_policy_artifact(
 ) -> PlannerPolicyArtifact:
     """Buduje artefakt policy dla całego horyzontu planu."""
     by_slot = _inputs_by_slot(hour_inputs)
+    cheap_thr = cheap_import_threshold_from_inputs(hour_inputs)
     rows = [
-        map_hour_to_exec_mode(hp, by_slot.get((hp.date, hp.hour)))
+        map_hour_to_exec_mode(
+            hp,
+            by_slot.get((hp.date, hp.hour)),
+            cheap_import_threshold_pln=cheap_thr,
+        )
         for hp in plan.hours
     ]
     computed = datetime.fromisoformat(plan.generated_at.replace("Z", "+00:00"))
@@ -293,6 +336,9 @@ def policy_for_hour(
             return row
     if plan is None:
         return None
+    cheap_thr = (
+        cheap_import_threshold_from_inputs(hour_inputs) if hour_inputs else None
+    )
     for hp in plan.hours:
         if hp.date == local_date and hp.hour == hour:
             hin = None
@@ -301,6 +347,7 @@ def policy_for_hour(
                     if hi.date == local_date and hi.hour == hour:
                         hin = hi
                         break
-            return map_hour_to_exec_mode(hp, hin)
+            return map_hour_to_exec_mode(
+                hp, hin, cheap_import_threshold_pln=cheap_thr
+            )
     return None
-

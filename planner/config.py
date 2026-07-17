@@ -34,11 +34,17 @@ _SCENARIO_OPTIMIZER_RAW = "1" if _s.planner_scenario_optimizer else "off"
 PLANNER_SCENARIO_WEIGHT_PESSIMISTIC = _s.planner_scenario_weight_pessimistic
 PLANNER_SCENARIO_WEIGHT_BASE = _s.planner_scenario_weight_base
 PLANNER_SCENARIO_WEIGHT_OPTIMISTIC = _s.planner_scenario_weight_optimistic
+_SOC_TRACKING_RAW = "1" if _s.planner_soc_tracking else "off"
+PLANNER_SOC_TRACKING_LAMBDA = float(_s.planner_soc_tracking_lambda)
 
 
 def planner_scenario_optimizer_enabled() -> bool:
     return _SCENARIO_OPTIMIZER_RAW not in ("0", "off", "false", "no", "deterministic")
 
+
+def planner_soc_tracking_enabled() -> bool:
+    """Tracking-SP (SOC* first-stage); wyłączenie = legacy shared ch/dis."""
+    return _SOC_TRACKING_RAW not in ("0", "off", "false", "no")
 
 # Maks. moc ładowania/rozładowania magazynu w godzinie [kWh]
 def max_battery_kwh_per_hour() -> float:

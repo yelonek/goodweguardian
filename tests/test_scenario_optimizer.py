@@ -1,4 +1,4 @@
-"""Testy optymalizatora wieloscenariuszowego."""
+"""Testy optymalizatora wieloscenariuszowego (tracking-SP + legacy shared)."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import pytest
 from planner.battery import BatteryParams
 from planner.models import HourInputs
 from planner.optimizer import optimize_horizon
+from planner.policy_output import map_hour_to_exec_mode
 from planner.scenario_optimizer import optimize_horizon_scenarios
 
 
@@ -104,31 +105,27 @@ def test_scenario_exports_at_high_rce() -> None:
     assert res.hours[0].target_net_kwh > 0.5
 
 
-def test_optimize_horizon_uses_scenarios_when_enabled(
+def test_optimize_horizon_uses_tracking_when_enabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import planner.config as cfg
 
     monkeypatch.setattr(cfg, "_SCENARIO_OPTIMIZER_RAW", "1")
+    monkeypatch.setattr(cfg, "_SOC_TRACKING_RAW", "1")
     bp = BatteryParams(capacity_kwh=10.0, soc_min_pct=10.0, soc_max_pct=100.0, max_power_kwh_per_h=5.0)
     hours = _evening_export_morning_risk_hours()
     res = optimize_horizon(hours, soc_start_pct=61.0, params=bp)
     assert res.hours
     assert res.scenario_meta is not None
-    assert res.scenario_meta.get("model") == "shared_battery_grid_recourse"
+    assert res.scenario_meta.get("model") == "soc_tracking_recourse"
 
 
-def test_scenario_coupling_keeps_reserve_vs_p50(
+def test_tracking_keeps_dawn_reserve_vs_p50(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Sprzęgnięcie: przy mocnej wadze pesymistycznej wspólny plan trzyma większą
-    rezerwę SOC niż czysty p50.
-
-    Regresja: przed sprzęgnięciem wykonywany dispatch = p50 niezależnie od wag, więc
-    minimalny SOC byłby identyczny. Po sprzęgnięciu waga pesymistyczna realnie hamuje
-    rozładowanie przed drogim, bezsłonecznym porankiem.
-    """
+    """Tracking z silną wagą p10 trzyma wyższą rezerwę po nocy niż czysty p50."""
     import planner.config as cfg
+    import planner.scenario_optimizer as so
     import planner.scenarios as scen
 
     bp = BatteryParams(
@@ -140,23 +137,116 @@ def test_scenario_coupling_keeps_reserve_vs_p50(
     p50 = optimize_horizon(hours, soc_start_pct=80.0, params=bp)
 
     monkeypatch.setattr(cfg, "_SCENARIO_OPTIMIZER_RAW", "1")
+    monkeypatch.setattr(cfg, "_SOC_TRACKING_RAW", "1")
+    monkeypatch.setattr(cfg, "PLANNER_SOC_TRACKING_LAMBDA", 0.25)
+    monkeypatch.setattr(so, "PLANNER_SOC_TRACKING_LAMBDA", 0.25)
     monkeypatch.setattr(scen, "PLANNER_SCENARIO_WEIGHT_PESSIMISTIC", 0.6)
     monkeypatch.setattr(scen, "PLANNER_SCENARIO_WEIGHT_BASE", 0.39)
     monkeypatch.setattr(scen, "PLANNER_SCENARIO_WEIGHT_OPTIMISTIC", 0.01)
-    coupled = optimize_horizon(hours, soc_start_pct=80.0, params=bp)
+    tracked = optimize_horizon(hours, soc_start_pct=80.0, params=bp)
 
-    assert coupled.scenario_meta is not None
-    assert coupled.scenario_meta.get("fallback") != "deterministic_p50"
-    assert coupled.scenario_meta.get("model") == "shared_battery_grid_recourse"
-    # Rezerwa trzymana przez ryzykowną noc/poranek — z pominięciem celowego zjazdu
-    # do podłogi w ostatniej (terminalnej) godzinie horyzontu.
-    coupled_reserve = min(coupled.soc_trajectory_pct[:-1])
-    p50_reserve = min(p50.soc_trajectory_pct[:-1])
-    assert coupled_reserve > p50_reserve + 1.0
+    assert tracked.scenario_meta is not None
+    assert tracked.scenario_meta.get("model") == "soc_tracking_recourse"
+    # Sloty: h21, h22, h6, h10, h20 → traj[2] = SOC po nocy (koniec h22).
+    assert len(tracked.soc_trajectory_pct) >= 3
+    assert tracked.soc_trajectory_pct[2] > p50.soc_trajectory_pct[2] + 5.0
+
+
+def test_midday_pv_soak_raises_soc_star_not_export_then_grid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Case 17.07: tanie RCE 10–12 + EV@13 → soc* rośnie w południe, bez charge_grid na baterię o 13."""
+    import planner.config as cfg
+    import planner.scenario_optimizer as so
+
+    monkeypatch.setattr(cfg, "_SCENARIO_OPTIMIZER_RAW", "1")
+    monkeypatch.setattr(cfg, "_SOC_TRACKING_RAW", "1")
+    monkeypatch.setattr(cfg, "PLANNER_SOC_TRACKING_LAMBDA", 0.12)
+    monkeypatch.setattr(so, "PLANNER_SOC_TRACKING_LAMBDA", 0.12)
+
+    bp = BatteryParams(capacity_kwh=10.0, soc_min_pct=10.0, soc_max_pct=100.0, max_power_kwh_per_h=5.2)
+    hours = [
+        HourInputs(
+            date="2026-07-17",
+            hour=10,
+            load_kwh=1.0,
+            pv_kwh=4.4,
+            pv_kwh_p10=1.5,
+            pv_kwh_p90=5.0,
+            load_kwh_p75=1.2,
+            import_pln_per_kwh=1.11,
+            export_pln_per_kwh=0.565,
+        ),
+        HourInputs(
+            date="2026-07-17",
+            hour=11,
+            load_kwh=1.1,
+            pv_kwh=4.9,
+            pv_kwh_p10=1.6,
+            pv_kwh_p90=5.5,
+            load_kwh_p75=1.3,
+            import_pln_per_kwh=1.11,
+            export_pln_per_kwh=0.541,
+        ),
+        HourInputs(
+            date="2026-07-17",
+            hour=12,
+            load_kwh=1.0,
+            pv_kwh=5.0,
+            pv_kwh_p10=1.7,
+            pv_kwh_p90=5.6,
+            load_kwh_p75=1.2,
+            import_pln_per_kwh=1.11,
+            export_pln_per_kwh=0.510,
+        ),
+        HourInputs(
+            date="2026-07-17",
+            hour=13,
+            load_kwh=12.8,  # EV 11 + dom
+            pv_kwh=4.6,
+            pv_kwh_p10=2.0,
+            pv_kwh_p90=5.2,
+            load_kwh_p75=13.5,
+            import_pln_per_kwh=0.59,
+            export_pln_per_kwh=0.495,
+        ),
+        HourInputs(
+            date="2026-07-17",
+            hour=19,
+            load_kwh=0.5,
+            pv_kwh=0.3,
+            pv_kwh_p10=0.0,
+            pv_kwh_p90=0.5,
+            load_kwh_p75=0.6,
+            import_pln_per_kwh=1.11,
+            export_pln_per_kwh=1.08,
+        ),
+    ]
+    res = optimize_horizon_scenarios(hours, soc_start_pct=10.0, params=bp)
+    assert res.scenario_meta is not None
+    assert res.scenario_meta.get("model") == "soc_tracking_recourse"
+
+    by_h = {hp.hour: hp for hp in res.hours}
+    # SOC* rośnie przez południe (soak 11–12).
+    assert by_h[12].soc_end_pct > by_h[10].soc_start_pct + 15.0
+    assert by_h[12].soc_end_pct >= 40.0
+
+    # Godzina z rosnącym SOC → soak (neutral), nie export_pv_surplus.
+    row12 = map_hour_to_exec_mode(
+        by_h[12],
+        hours[2],
+        cheap_import_threshold_pln=0.61,
+    )
+    assert row12.exec_mode == "neutral"
+    assert row12.exec_mode != "export_pv_surplus"
+
+    # O 13 bateria nie dobija się z sieci (EV i tak ciągnie import domu).
+    assert by_h[13].battery_delta_kwh < 1.0
+    assert by_h[13].soc_end_pct >= by_h[12].soc_end_pct - 1.0
 
 
 def test_scenario_milp_no_grid_charge_when_pv_surplus() -> None:
-    """Regresja 19.06 ~14:30: baza ładuje z PV, bez importu przy nadwyżce PV."""
+    """Regresja: baza ładuje z PV, bez importu przy nadwyżce PV."""
     bp = BatteryParams(capacity_kwh=10.0, soc_min_pct=10.0, soc_max_pct=100.0, max_power_kwh_per_h=5.0)
     hours = [
         HourInputs(
@@ -197,3 +287,16 @@ def test_scenario_milp_no_grid_charge_when_pv_surplus() -> None:
     h14 = res.hours[0]
     if h14.battery_delta_kwh > 0.05:
         assert h14.target_net_kwh >= -0.05
+
+
+def test_legacy_shared_battery_still_available(monkeypatch: pytest.MonkeyPatch) -> None:
+    import planner.config as cfg
+
+    monkeypatch.setattr(cfg, "_SCENARIO_OPTIMIZER_RAW", "1")
+    monkeypatch.setattr(cfg, "_SOC_TRACKING_RAW", "off")
+    bp = BatteryParams(capacity_kwh=10.0, soc_min_pct=10.0, soc_max_pct=100.0, max_power_kwh_per_h=5.0)
+    res = optimize_horizon_scenarios(
+        _evening_export_morning_risk_hours(), soc_start_pct=61.0, params=bp
+    )
+    assert res.scenario_meta is not None
+    assert res.scenario_meta.get("model") == "shared_battery_grid_recourse"

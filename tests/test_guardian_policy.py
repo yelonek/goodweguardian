@@ -23,6 +23,7 @@ def test_active_policy_row_valid(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
         generated_at=datetime(2026, 6, 10, 12, 25, 0, tzinfo=UTC).isoformat(),
         timezone="Europe/Warsaw",
         soc_start_pct=50.0,
+        soc_trajectory_pct=[50.0, 50.0],
         expected_total_cashflow_pln=0.0,
         optimizer="test",
         inputs_snapshot={},
@@ -32,7 +33,7 @@ def test_active_policy_row_valid(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
             target_net_kwh=2.0,
             expected_cashflow_pln=0.0,
             soc_start_pct=50.0,
-            soc_end_pct=55.0,
+            soc_end_pct=50.0,
             battery_delta_kwh=0.0,
         )],
     )

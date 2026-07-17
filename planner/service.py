@@ -49,8 +49,15 @@ def build_rolling_plan(
         hour_inputs, opt.hours, now=now_local
     )
     optimizer_name = (
-        "lp_battery_scenarios_v1" if planner_scenario_optimizer_enabled() else "lp_battery_v1"
+        "lp_soc_tracking_v1"
+        if planner_scenario_optimizer_enabled()
+        else "lp_battery_v1"
     )
+    if planner_scenario_optimizer_enabled():
+        from planner.config import planner_soc_tracking_enabled
+
+        if not planner_soc_tracking_enabled():
+            optimizer_name = "lp_battery_scenarios_v1"
     plan_id = str(uuid.uuid4())
     generated = datetime.now(UTC)
     anchor_date = now_local.date().isoformat()
@@ -63,6 +70,7 @@ def build_rolling_plan(
         horizon_start=slot_to_local_iso(slots[0]),
         horizon_end=slot_to_local_iso(slots[-1]),
         soc_start_pct=soc,
+        soc_trajectory_pct=list(opt.soc_trajectory_pct),
         expected_total_cashflow_pln=opt.total_cashflow_pln,
         optimizer=optimizer_name,
         inputs_snapshot=snapshot,
