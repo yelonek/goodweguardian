@@ -57,11 +57,41 @@ def _hin(
 
 
 def test_hold_soc_export_pv_surplus() -> None:
+    """Spill PV tylko gdy bateria praktycznie pełna — inaczej soak."""
+    row = map_hour_to_exec_mode(
+        _hp(soc0=98.0, soc_end=98.0, net=3.0, bd=0.0),
+        _hin(pv=5.0, load=2.0, export_pln=0.4),
+    )
+    assert row.exec_mode == "export_pv_surplus"
+
+
+def test_hold_soc_with_headroom_soaks_not_exports() -> None:
+    """Płaski SOC przy miejscu w baterii + nadwyżka PV → neutral (soak), nie eksport."""
     row = map_hour_to_exec_mode(
         _hp(soc0=50.0, soc_end=50.0, net=3.0, bd=0.0),
         _hin(pv=5.0, load=2.0, export_pln=0.4),
     )
-    assert row.exec_mode == "export_pv_surplus"
+    assert row.exec_mode == "neutral"
+
+
+def test_tiny_soc_dip_with_pv_surplus_is_neutral_not_export_profit() -> None:
+    """Szum trackingu ~1 pp w dół przy nadwyżce PV nie może włączać export_profit."""
+    row = map_hour_to_exec_mode(
+        _hp(soc0=15.0, soc_end=13.88, net=0.0, bd=-0.115),
+        _hin(pv=1.78, load=1.54, export_pln=0.4, import_pln=0.59),
+    )
+    assert row.exec_mode == "neutral"
+
+
+def test_soc_dump_with_zero_net_is_neutral_not_export_profit() -> None:
+    """Spadek soc* do min przy net=0 (brak sprzedaży) + PV → soak, nie eksport zarobkowy."""
+    row = map_hour_to_exec_mode(
+        _hp(soc0=15.0, soc_end=10.5, net=0.0, bd=-0.47),
+        _hin(pv=1.78, load=1.0, export_pln=0.09, import_pln=0.59),
+    )
+    assert row.exec_mode == "neutral"
+
+
 
 
 def test_hold_soc_zero_rce_is_neutral() -> None:
@@ -200,12 +230,12 @@ def test_build_and_save_policy_artifact(tmp_path: Path, monkeypatch: pytest.Monk
         local_date="2026-06-10",
         generated_at=datetime(2026, 6, 10, 12, 0, 0, tzinfo=UTC).isoformat(),
         timezone="Europe/Warsaw",
-        soc_start_pct=50.0,
-        soc_trajectory_pct=[50.0, 50.0],
+        soc_start_pct=98.0,
+        soc_trajectory_pct=[98.0, 98.0],
         expected_total_cashflow_pln=1.0,
         optimizer="test",
         inputs_snapshot={},
-        hours=[_hp(soc0=50.0, soc_end=50.0, net=3.0, bd=0.0)],
+        hours=[_hp(soc0=98.0, soc_end=98.0, net=3.0, bd=0.0)],
     )
     hin = [_hin()]
     art = build_policy_artifact(plan, hin, degraded=False, valid_minutes=10)
@@ -219,7 +249,7 @@ def test_build_and_save_policy_artifact(tmp_path: Path, monkeypatch: pytest.Monk
     assert loaded.hours[0].params == HourPolicyParams(
         target_net_kwh=3.0,
         battery_delta_kwh=0.0,
-        soc_end_pct=50.0,
+        soc_end_pct=98.0,
         pv_plan_kwh=5.0,
         load_plan_kwh=2.0,
         allow_grid_charge=False,

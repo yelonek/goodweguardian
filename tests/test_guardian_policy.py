@@ -50,7 +50,7 @@ def test_active_policy_row_valid(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     got = active_policy_row(now.date(), 12, now=now)
     assert got is not None
     row, art = got
-    assert row.exec_mode == "export_pv_surplus"
+    assert row.exec_mode == "neutral"
     assert art.plan_id == "p1"
 
 

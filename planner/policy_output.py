@@ -29,6 +29,11 @@ log = logging.getLogger("planner")
 
 # Próg zmiany SOC [pp] — poniżej traktujemy godzinę jako „trzymaj stan”.
 SOC_GAP_EPS_PCT = 1.0
+# Minimalny spadek SOC [pp] dla ``export_profit`` (świadome rozładowanie zarobkowe).
+# Mniejsze dipy (szum trackingu / wear) przy nadwyżce PV → soak (neutral), nie eksport.
+SOC_GAP_DISCHARGE_PCT = 4.0
+# Powyżej tego SOC uznajemy baterię za „pełną” — dopiero wtedy spill nadwyżki PV.
+SOC_NEAR_FULL_PCT = 95.0
 # Tolerancja „taniego importu” względem minimum horyzontu [PLN/kWh].
 _CHEAP_IMPORT_TOL_PLN = 0.02
 NET_NEUTRAL_EPS_KWH = 0.05
@@ -168,23 +173,38 @@ def map_hour_to_exec_mode(
         else:
             # Drogi import: bateria tylko z PV (DC), dom z sieci.
             exec_mode = "import_grid"
-    elif gap < -SOC_GAP_EPS_PCT:
-        # Wizja: rozładuj → sprzedaż z baterii do soc*.
-        exec_mode = "export_profit"
-        discharge_pct = (
-            _pct_from_battery_delta(bd, hin)
-            if abs(bd) > BATTERY_DELTA_EPS_KWH
-            else _pct_from_soc_gap(gap, hin)
-        )
-        soc_floor_pct = max(float(PLANNER_SOC_MIN_PCT), soc_star)
+    elif gap < -SOC_GAP_DISCHARGE_PCT:
+        # Świadome rozładowanie zarobkowe tylko gdy plan faktycznie sprzedaje (net > 0).
+        # Sam spadek soc* przy net≈0 / nadwyżce PV to szum trackingu albo serve — soak/Flappy,
+        # nie export_profit (który forsownie rozładowuje baterię do sieci).
+        if net > NET_NEUTRAL_EPS_KWH:
+            exec_mode = "export_profit"
+            discharge_pct = (
+                _pct_from_battery_delta(bd, hin)
+                if abs(bd) > BATTERY_DELTA_EPS_KWH
+                else _pct_from_soc_gap(gap, hin)
+            )
+            soc_floor_pct = max(float(PLANNER_SOC_MIN_PCT), soc_star)
+        elif surplus > NET_NEUTRAL_EPS_KWH:
+            exec_mode = "neutral"
+        elif surplus < -NET_NEUTRAL_EPS_KWH and bd >= -BATTERY_DELTA_EPS_KWH:
+            exec_mode = "import_grid"
+        else:
+            exec_mode = "neutral"
     else:
-        # Trzymaj stan (|gap| ≤ eps).
-        if surplus > NET_NEUTRAL_EPS_KWH and _export_pv_surplus_viable(export_pln):
+        # Płaski / drobny dip (|gap| < próg rozładowania) — nie mylić z export_profit.
+        # Przy miejscu w baterii nadwyżka PV idzie w soak (neutral), nie w eksport.
+        near_full = max(soc0, soc_star) >= SOC_NEAR_FULL_PCT - 1e-9
+        if (
+            surplus > NET_NEUTRAL_EPS_KWH
+            and _export_pv_surplus_viable(export_pln)
+            and near_full
+        ):
             exec_mode = "export_pv_surplus"
         elif surplus < -NET_NEUTRAL_EPS_KWH and bd >= -BATTERY_DELTA_EPS_KWH:
             exec_mode = "import_grid"
         else:
-            # Bilans / drobny serve z baterii → Flappy.
+            # Bilans / soak / drobny serve z baterii → Flappy.
             exec_mode = "neutral"
 
     return HourPolicyRow(
