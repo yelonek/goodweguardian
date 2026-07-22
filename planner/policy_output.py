@@ -117,6 +117,30 @@ def _is_cheap_import(import_pln: float, cheap_import_threshold_pln: float | None
     return import_pln <= cheap_import_threshold_pln + 1e-9
 
 
+def _remaining_net_intent_kwh(hp: HourPlan, hin: HourInputs | None) -> float:
+    """Ile net jeszcze planujemy w tej godzinie (import < 0, eksport > 0).
+
+    Preferuje ``target_net_remainder_kwh`` (net* − N₀). Bez tego: ``net − net_so_far``.
+    """
+    if hp.target_net_remainder_kwh is not None:
+        return float(hp.target_net_remainder_kwh)
+    net = float(hp.target_net_kwh)
+    if hin is not None and hin.net_so_far_kwh is not None:
+        return net - float(hin.net_so_far_kwh)
+    return net
+
+
+def _wants_net_import(hp: HourPlan, hin: HourInputs | None) -> bool:
+    """Import z sieci tylko gdy **i** net końca h, **i** reszta godziny są ujemne.
+
+    Sam ``rem_net≈−0.15`` przy ``net*=0`` to flapping wokół bilansu — nie import_grid /
+    charge_grid. Sam ``net*=−5`` przy ``rem=0`` (już zaimportowane) też nie.
+    """
+    net = float(hp.target_net_kwh)
+    rem = _remaining_net_intent_kwh(hp, hin)
+    return net < -NET_NEUTRAL_EPS_KWH and rem < -NET_NEUTRAL_EPS_KWH
+
+
 def cheap_import_threshold_from_inputs(hour_inputs: list[HourInputs]) -> float | None:
     """Próg taniego importu horyzontu: min(import) + tolerancja."""
     if not hour_inputs:
@@ -132,13 +156,15 @@ def map_hour_to_exec_mode(
 ) -> HourPolicyRow:
     """Mapowanie wizji SOC (``soc_end_pct``) na jeden ``exec_mode`` + parametry.
 
-    Intencja wynika z ``gap = soc* − soc0``, nie z jednoczesnych ``ch`` i ``exp``.
+    Intencja wynika z ``gap = soc* − soc0``. ``import_grid`` / ``charge_grid`` tylko
+    gdy plan chce import (``net* < 0`` i pozostały net < 0) — nigdy przy net≈0 / eksporcie.
     """
     soc0 = float(hp.soc_start_pct)
     soc_star = float(hp.soc_end_pct)
     gap = soc_star - soc0
     bd = float(hp.battery_delta_kwh)
     net = float(hp.target_net_kwh)
+    wants_import = _wants_net_import(hp, hin)
     pv = float(hin.pv_kwh) if hin is not None else None
     load = float(hin.load_kwh) if hin is not None else None
     export_pln = float(hin.export_pln_per_kwh) if hin is not None else 0.0
@@ -152,11 +178,15 @@ def map_hour_to_exec_mode(
     target_soc_pct: float | None = None
     allow_grid = False
 
+    # import_grid ma sens tylko gdy bateria nie spada (CHARGE 1% ładowałoby baterię z sieci
+    # gdyby bd < 0 — to odwrotność intencji). Skrót dla wszystkich gałęzi poniżej.
+    bd_nonneg = bd >= -BATTERY_DELTA_EPS_KWH
+
     if gap > SOC_GAP_EPS_PCT:
-        # Wizja: naładuj — soak PV; grid charge tylko w tanim oknie.
+        # Wizja: naładuj — soak PV; z sieci tylko gdy plan naprawdę importuje.
         need_ac = _soc_gap_ac_kwh(gap)
         shortfall = need_ac - max(0.0, surplus)
-        if shortfall <= NET_NEUTRAL_EPS_KWH:
+        if shortfall <= NET_NEUTRAL_EPS_KWH or not wants_import:
             exec_mode = "neutral"
         elif _is_cheap_import(import_pln, cheap_import_threshold_pln):
             exec_mode = "charge_grid"
@@ -167,16 +197,16 @@ def map_hour_to_exec_mode(
                 else _pct_from_soc_gap(gap, hin)
             )
             target_soc_pct = soc_star
-        elif surplus > NET_NEUTRAL_EPS_KWH:
-            # Częściowy soak z PV; bez eksportu nadwyżki i bez drogiego AC→baterii.
-            exec_mode = "neutral"
-        else:
-            # Drogi import: bateria tylko z PV (DC), dom z sieci.
+        elif bd_nonneg:
+            # Drogi import do domu; bateria tylko z PV (DC).
             exec_mode = "import_grid"
+        else:
+            # bd < 0: bateria serwuje dom — Flappy, nie ładowanie z sieci.
+            exec_mode = "neutral"
     elif gap < -SOC_GAP_DISCHARGE_PCT:
         # Świadome rozładowanie zarobkowe tylko gdy plan faktycznie sprzedaje (net > 0).
-        # Sam spadek soc* przy net≈0 / nadwyżce PV to szum trackingu albo serve — soak/Flappy,
-        # nie export_profit (który forsownie rozładowuje baterię do sieci).
+        # Przy net ≤ 0 (dom z sieci + bateria w dół / stoi) → neutral; import_grid = CHARGE 1%
+        # ładowałby baterię z sieci, co jest odwrotnością intencji planera.
         if net > NET_NEUTRAL_EPS_KWH:
             exec_mode = "export_profit"
             discharge_pct = (
@@ -185,15 +215,10 @@ def map_hour_to_exec_mode(
                 else _pct_from_soc_gap(gap, hin)
             )
             soc_floor_pct = max(float(PLANNER_SOC_MIN_PCT), soc_star)
-        elif surplus > NET_NEUTRAL_EPS_KWH:
-            exec_mode = "neutral"
-        elif surplus < -NET_NEUTRAL_EPS_KWH and bd >= -BATTERY_DELTA_EPS_KWH:
-            exec_mode = "import_grid"
         else:
             exec_mode = "neutral"
     else:
         # Płaski / drobny dip (|gap| < próg rozładowania) — nie mylić z export_profit.
-        # Przy miejscu w baterii nadwyżka PV idzie w soak (neutral), nie w eksport.
         near_full = max(soc0, soc_star) >= SOC_NEAR_FULL_PCT - 1e-9
         if (
             surplus > NET_NEUTRAL_EPS_KWH
@@ -201,10 +226,11 @@ def map_hour_to_exec_mode(
             and near_full
         ):
             exec_mode = "export_pv_surplus"
-        elif surplus < -NET_NEUTRAL_EPS_KWH and bd >= -BATTERY_DELTA_EPS_KWH:
+        elif wants_import and bd_nonneg:
+            # Dom z sieci; bateria z PV (DC) — tylko gdy bateria nie spada.
             exec_mode = "import_grid"
         else:
-            # Bilans / soak / drobny serve z baterii → Flappy.
+            # Bilans / soak / serve z baterii → Flappy.
             exec_mode = "neutral"
 
     return HourPolicyRow(

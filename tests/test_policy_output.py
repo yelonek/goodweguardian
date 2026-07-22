@@ -110,6 +110,17 @@ def test_hold_soc_deficit_is_import_grid() -> None:
     assert row.exec_mode == "import_grid"
 
 
+def test_net_zero_or_export_never_import_grid() -> None:
+    """net*≥0 ⇒ nigdy import_grid / charge_grid, nawet przy deficycie PV mid-hour."""
+    for net in (0.0, 0.22, 1.5):
+        row = map_hour_to_exec_mode(
+            _hp(soc0=40.0, soc_end=39.5, net=net, bd=-0.05),
+            _hin(pv=0.5, load=3.0, import_pln=1.11, export_pln=0.4),
+        )
+        assert row.exec_mode == "neutral", (net, row.exec_mode)
+        assert row.params.allow_grid_charge is False
+
+
 def test_rising_soc_with_pv_surplus_is_neutral_not_export() -> None:
     """soc0=10 → soc*=40 przy PV≫load → soak (neutral), nie export_pv_surplus."""
     row = map_hour_to_exec_mode(
@@ -133,6 +144,65 @@ def test_rising_soc_cheap_import_without_pv_is_charge_grid() -> None:
     assert row.params.charge_pct is not None
 
 
+def test_mid_hour_rising_soc_net_zero_is_neutral_not_charge_grid() -> None:
+    """Regresja 18.07 14:40: shortfall mid-hour + G12 0.59 przy rem_net≈0 → soak, nie charge_grid."""
+    hin = HourInputs(
+        date="2026-07-18",
+        hour=14,
+        load_kwh=1.221,
+        pv_kwh=3.577,
+        import_pln_per_kwh=0.59,
+        export_pln_per_kwh=0.50,
+        hour_fraction=20 / 60,
+        pv_so_far_kwh=2.423,
+        load_so_far_kwh=0.551,
+        net_so_far_kwh=0.15,
+    )
+    hp = HourPlan(
+        date="2026-07-18",
+        hour=14,
+        target_net_kwh=0.0,
+        # Jak po normalize: net*−N₀ ≈ −0.15 (flapping wokół zera, nie import do magazynu).
+        target_net_remainder_kwh=-0.15,
+        expected_cashflow_pln=0.0,
+        soc_start_pct=78.0,
+        soc_end_pct=83.65,
+        battery_delta_kwh=0.63,
+    )
+    row = map_hour_to_exec_mode(hp, hin, cheap_import_threshold_pln=0.61)
+    assert row.exec_mode == "neutral"
+    assert row.params.allow_grid_charge is False
+
+
+def test_rising_soc_prior_import_remainder_zero_not_charge_grid() -> None:
+    """N₀ ujemne, intent reszty godziny = 0 → nie charge_grid mimo taniego G12 i luki SOC."""
+    hin = HourInputs(
+        date="2026-07-16",
+        hour=14,
+        load_kwh=0.8,
+        pv_kwh=1.5,
+        import_pln_per_kwh=0.59,
+        export_pln_per_kwh=0.4,
+        hour_fraction=10 / 60,
+        pv_so_far_kwh=0.7,
+        load_so_far_kwh=0.6,
+        net_so_far_kwh=-5.0,
+    )
+    hp = HourPlan(
+        date="2026-07-16",
+        hour=14,
+        target_net_kwh=-5.0,
+        target_net_remainder_kwh=0.0,
+        expected_cashflow_pln=0.0,
+        soc_start_pct=80.0,
+        soc_end_pct=90.0,
+        battery_delta_kwh=1.0,
+    )
+    row = map_hour_to_exec_mode(hp, hin, cheap_import_threshold_pln=0.61)
+    assert row.exec_mode == "neutral"
+    assert row.params.allow_grid_charge is False
+
+
 def test_rising_soc_expensive_import_is_import_grid() -> None:
     """Luka SOC przy drogim imporcie → import_grid (PV DC), nie charge_grid."""
     row = map_hour_to_exec_mode(
@@ -141,6 +211,19 @@ def test_rising_soc_expensive_import_is_import_grid() -> None:
         cheap_import_threshold_pln=0.61,
     )
     assert row.exec_mode == "import_grid"
+    assert row.params.allow_grid_charge is False
+
+
+def test_falling_soc_net_negative_is_neutral_not_import_grid() -> None:
+    """Regresja 20.07: gap<−8pp, net<0 (dom z sieci + bateria w dół) → neutral, nie import_grid.
+
+    import_grid = CHARGE 1%, co ładowałoby baterię z sieci — odwrotność intencji.
+    """
+    row = map_hour_to_exec_mode(
+        _hp(soc0=45.0, soc_end=36.6, net=-2.43, bd=-0.86),
+        _hin(pv=2.19, load=4.01, import_pln=1.11, export_pln=0.4),
+    )
+    assert row.exec_mode == "neutral"
     assert row.params.allow_grid_charge is False
 
 
