@@ -1212,6 +1212,173 @@ async function loadPvCorrection(force) {
   }
 }
 
+function renderLoadCorrectionChart(curve, alpha) {
+  const svg = document.getElementById("loadCorrectionChart");
+  if (!svg || !curve || !curve.length) {
+    if (svg) svg.innerHTML = "";
+    return;
+  }
+  const w = 600;
+  const h = 220;
+  const pad = { l: 36, r: 12, t: 12, b: 28 };
+  const innerW = w - pad.l - pad.r;
+  const innerH = h - pad.t - pad.b;
+  const ymax = Math.max(
+    0.05,
+    ...curve.map((p) => Math.max(p.forecast_kwh || 0, p.actual_kwh || 0, p.plan_kwh || 0))
+  );
+  const x = (m) => pad.l + (m / 60) * innerW;
+  const y = (v) => pad.t + innerH - (v / ymax) * innerH;
+  const linePath = (key) => {
+    const pts = curve.filter((p) => p[key] != null);
+    if (!pts.length) return "";
+    return pts.map((p, i) => `${i ? "L" : "M"}${x(p.minute).toFixed(1)},${y(p[key]).toFixed(1)}`).join(" ");
+  };
+  const nowX = x(Math.min(60, Math.max(0, alpha * 60)));
+  svg.innerHTML =
+    `<rect x="0" y="0" width="${w}" height="${h}" fill="transparent"/>` +
+    `<text x="${pad.l}" y="${h - 6}" font-size="10" fill="currentColor" opacity="0.6">:00</text>` +
+    `<text x="${w - pad.r - 16}" y="${h - 6}" font-size="10" fill="currentColor" opacity="0.6">:60</text>` +
+    `<path class="line-solcast" d="${linePath("forecast_kwh")}"/>` +
+    `<path class="line-actual" d="${linePath("actual_kwh")}"/>` +
+    `<path class="line-plan" d="${linePath("plan_kwh")}"/>` +
+    `<line class="now-v" x1="${nowX.toFixed(1)}" y1="${pad.t}" x2="${nowX.toFixed(1)}" y2="${h - pad.b}"/>` +
+    `<text x="${Math.min(w - 40, nowX + 4)}" y="${pad.t + 10}" font-size="10" fill="currentColor">teraz</text>`;
+}
+
+function renderLoadCorrectionBars(projections) {
+  const el = document.getElementById("loadCorrectionBars");
+  if (!el || !projections) return;
+  const items = [
+    ["Forecast p50", projections.forecast_full_hour_kwh, "base"],
+    ["k_intra only", projections.k_intra_only_kwh, "alt"],
+    ["rate only", projections.rate_only_kwh, "alt"],
+    ["Plan finalny", projections.final_plan_kwh, ""],
+  ].filter(([, v]) => v != null);
+  const max = Math.max(0.05, ...items.map(([, v]) => Number(v)));
+  el.innerHTML = items.map(([label, val, cls]) => {
+    const pct = Math.max(2, (Number(val) / max) * 100);
+    return `<div class="pv-correction-bar-item"><div class="bar-label">${escapeHtml(label)} · ${fmtKwh(val, 2)}</div>` +
+      `<div class="pv-correction-bar"><span class="${cls || ""}" style="width:${pct.toFixed(0)}%"></span></div></div>`;
+  }).join("");
+}
+
+function renderLoadCorrectionBands(bands) {
+  const el = document.getElementById("loadCorrectionBands");
+  if (!el) return;
+  if (!bands || !bands.load_planner_active) {
+    el.innerHTML = "<p class=\"muted\" style=\"font-size:12px;margin:0;\">Aktywne tylko w trakcie bieżącej godziny (mid-hour rolling).</p>";
+    return;
+  }
+  const frac = bands.load_planner_hour_fraction != null
+    ? `${(Number(bands.load_planner_hour_fraction) * 100).toFixed(0)}%`
+    : "—";
+  const row = (label, p25, p50, p75) =>
+    `<tr><td>${escapeHtml(label)}</td>` +
+    `<td>${fmtKwh(p25, 3)}</td><td>${fmtKwh(p50, 3)}</td><td>${fmtKwh(p75, 3)}</td></tr>`;
+  el.innerHTML =
+    `<p class="muted" style="font-size:11px;margin:0 0 8px;">` +
+    `Reszta slotu: ${frac} · A=${fmtKwh(bands.load_planner_a_so_far_kwh, 3)} · ` +
+    `k_intra=${bands.load_planner_k_intra != null ? Number(bands.load_planner_k_intra).toFixed(3) : "—"} · ` +
+    `method=${bands.load_planner_plan_method || "—"} · ` +
+    `zwężanie=${bands.load_planner_band_narrow_enabled ? "tak" : "nie"}</p>` +
+    `<table class="pv-correction-day"><thead><tr><th></th><th>p25</th><th>p50</th><th>p75</th></tr></thead><tbody>` +
+    row("Pełna h (planer)", bands.load_planner_full_p25_kwh, bands.load_planner_full_p50_kwh, bands.load_planner_full_p75_kwh) +
+    row("Reszta → MILP", bands.load_planner_remainder_p25_kwh, bands.load_planner_remainder_p50_kwh, bands.load_planner_remainder_p75_kwh) +
+    `</tbody></table>`;
+}
+
+function renderLoadCorrectionBlock(payload) {
+  const c = payload.correction || {};
+  const p = payload.projections || {};
+  const alphaPct = c.alpha != null ? `${(Number(c.alpha) * 100).toFixed(0)}%` : "—";
+  const kRaw = c.k_raw != null ? Number(c.k_raw).toFixed(3) : "—";
+  const kIntra = c.k_intra != null ? Number(c.k_intra).toFixed(3) : "—";
+  const clip = (c.clip_min != null && c.clip_max != null)
+    ? `[${Number(c.clip_min).toFixed(2)}, ${Number(c.clip_max).toFixed(2)}]`
+    : "—";
+
+  document.getElementById("loadCorrectionMetrics").innerHTML =
+    pvCorrMetric("Godzina", `${payload.current_hour}:00`, "hero") +
+    pvCorrMetric("α (minuta)", alphaPct) +
+    pvCorrMetric("A_so_far", fmtKwh(c.a_so_far_kwh, 3)) +
+    pvCorrMetric("F50 forecast", fmtKwh(c.f50_current_kwh, 2)) +
+    pvCorrMetric("k_raw", kRaw) +
+    pvCorrMetric("k_intra", kIntra) +
+    pvCorrMetric("Clip", clip) +
+    pvCorrMetric("recent kW", c.recent_kw != null ? `${Number(c.recent_kw).toFixed(2)} kW` : "—") +
+    pvCorrMetric("Plan h", fmtKwh(p.final_plan_kwh, 2), "hero") +
+    pvCorrMetric("Metoda", fmt(c.plan_method || c.reason));
+
+  renderLoadCorrectionChart(payload.projection_curve || [], Number(c.alpha || 0));
+  renderLoadCorrectionBars(p);
+  renderLoadCorrectionBands(payload.remainder_bands);
+
+  const clipRows = document.getElementById("loadCorrectionClipRows");
+  if (clipRows) {
+    clipRows.innerHTML =
+      `<tr><td>k_min</td><td>${c.clip_min != null ? Number(c.clip_min).toFixed(3) : "—"}</td></tr>` +
+      `<tr><td>k_max</td><td>${c.clip_max != null ? Number(c.clip_max).toFixed(3) : "—"}</td></tr>` +
+      `<tr><td>rate blend w</td><td>${c.rate_blend_weight != null ? (Number(c.rate_blend_weight) * 100).toFixed(0) + "%" : "—"}</td></tr>` +
+      `<tr><td>k_plan</td><td>${fmtKwh(c.k_plan_kwh, 3)}</td></tr>` +
+      `<tr><td>rate_plan</td><td>${fmtKwh(c.rate_plan_kwh, 3)}</td></tr>`;
+  }
+  const clipNowEl = document.getElementById("loadCorrectionClipNow");
+  if (clipNowEl) {
+    clipNowEl.textContent = c.applied
+      ? `Teraz: k_raw=${kRaw} → k_intra=${kIntra} · method=${c.plan_method || "—"}`
+      : `Korekta nieaktywna: ${c.reason || "—"}`;
+  }
+
+  const dayRows = document.getElementById("loadCorrectionDayRows");
+  if (dayRows) {
+    dayRows.innerHTML = (payload.today_hours || []).map((row) => {
+      const cls = row.in_progress ? "in-progress" : (row.complete ? "complete" : "");
+      const actual = row.complete
+        ? fmtKwh(row.actual_kwh, 2)
+        : (row.in_progress ? fmtKwh(row.actual_so_far_kwh, 3) + "*" : "—");
+      const plan = row.load_plan_kwh != null ? fmtKwh(row.load_plan_kwh, 2) : "—";
+      let delta = "—";
+      if (row.delta_kwh != null) {
+        const d = Number(row.delta_kwh);
+        delta = (d >= 0 ? "+" : "") + d.toFixed(2);
+      } else if (row.delta_so_far_kwh != null) {
+        const d = Number(row.delta_so_far_kwh);
+        delta = (d >= 0 ? "+" : "") + d.toFixed(2) + "*";
+      }
+      return `<tr class="${cls}"><td>${String(row.hour).padStart(2, "0")}</td>` +
+        `<td>${fmtKwh(row.f50_kwh, 2)}</td><td>${actual}</td><td>${plan}</td><td>${delta}</td></tr>`;
+    }).join("");
+  }
+
+  const meta = document.getElementById("loadCorrectionMeta");
+  if (meta) {
+    meta.textContent = [
+      `updated: ${payload.now || "—"}`,
+      c.enabled ? "correction on" : "correction off",
+      c.applied ? "applied" : (c.reason || ""),
+      p.remaining_kwh != null ? `reszta h: ${Number(p.remaining_kwh).toFixed(3)} kWh` : "",
+      c.rate_blend_weight ? `rate blend w=${(Number(c.rate_blend_weight) * 100).toFixed(0)}%` : "",
+    ].filter(Boolean).join(" · ");
+  }
+}
+
+async function loadLoadCorrection(force) {
+  if (!force && pageLoaded["load-correction"]) return;
+  const st = document.getElementById("loadCorrectionStatus");
+  if (!pageLoaded["load-correction"] && st) st.textContent = "ładowanie…";
+  try {
+    const payload = await fetchJson("/api/load-correction", 15000);
+    renderLoadCorrectionBlock(payload);
+    pageLoaded["load-correction"] = true;
+    if (st) st.textContent = "OK";
+    setUpdated(true);
+  } catch (e) {
+    if (st) st.textContent = String(e);
+    setUpdated(false);
+  }
+}
+
 function kpiSelectedDay() {
   const el = document.getElementById("kpiDay");
   return el && el.value ? el.value : new Date().toISOString().slice(0, 10);
@@ -1897,6 +2064,7 @@ const PAGE_LOADERS = {
   history: loadHistory,
   forecast: loadForecast,
   "pv-correction": loadPvCorrection,
+  "load-correction": loadLoadCorrection,
   kpi: loadKpi,
   slots: loadSlots,
   settings: loadSettings,
@@ -1908,6 +2076,7 @@ const PAGE_POLL_MS = {
   history: 15000,
   forecast: 60000,
   "pv-correction": 15000,
+  "load-correction": 15000,
   kpi: 60000,
   slots: 20000,
   settings: 20000,

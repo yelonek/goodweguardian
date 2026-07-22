@@ -89,6 +89,51 @@ def load_recent_average_kw(
     return sum(power_kw) / len(power_kw), len(power_kw)
 
 
+def load_minute_series_in_hour(now: datetime) -> list[dict[str, float | int]]:
+    """
+    Minutowa kumulacja load [kWh] w bieżącej godzinie lokalnej.
+
+    Jak PV: ostatnia znana moc w minucie × 1/60, skumulowana od :00.
+    """
+    path = TELEMETRY_DIR / f"telemetry_{now.date().isoformat()}.jsonl"
+    target_hour = now.hour
+    by_minute: dict[int, float] = {}
+
+    if not path.exists():
+        return []
+
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                    if int(row["local_hour"]) != target_hour:
+                        continue
+                    minute = int(row.get("local_minute", 0))
+                    if minute > now.minute:
+                        continue
+                    by_minute[minute] = float(row.get("consumption_w", 0.0)) / 1000.0
+                except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                    continue
+    except OSError as e:
+        log.debug("load minute series read failed %s: %s", path, e)
+        return []
+
+    if not by_minute:
+        return []
+
+    series: list[dict[str, float | int]] = []
+    cum_kwh = 0.0
+    for minute in sorted(by_minute):
+        load_kw = by_minute[minute]
+        cum_kwh += load_kw / 60.0
+        series.append({"minute": minute, "load_kw": load_kw, "cum_kwh": cum_kwh})
+    return series
+
+
 def load_energy_so_far_in_hour(now: datetime) -> tuple[float, int] | None:
     """
     Energia load [kWh] od początku bieżącej godziny lokalnej.

@@ -76,6 +76,16 @@ from planner.pv_planner_display import (
     build_pv_correction_meta_for_slot,
     planner_pv_milp_snapshot,
 )
+from planner.load_correction import (
+    LOAD_CORRECTION_ENABLED,
+    LOAD_CORRECTION_K_MAX,
+    LOAD_CORRECTION_K_MIN,
+    apply_load_plan_to_meta,
+    build_load_intra_meta,
+    load_minute_series_in_hour,
+    load_plan_current_hour_kwh,
+)
+from planner.load_planner_display import planner_load_milp_snapshot
 from tesla_wall_charger import hourly_ev_kwh_from_telemetry, twc_enabled
 
 app = FastAPI(title="GoodWeGuardian Dashboard", version="0.2.0")
@@ -1414,6 +1424,189 @@ def _get_pv_correction_cached() -> dict[str, Any]:
     return payload
 
 
+_LOAD_CORRECTION_TTL_S = 10.0
+_load_correction_cache: tuple[float, dict[str, Any]] | None = None
+
+
+def _load_correction_projection_curve(
+    *,
+    f50_kwh: float,
+    alpha: float,
+    a_so_far_kwh: float,
+    load_plan_kwh: float | None,
+    minute_series: list[dict[str, float | int]],
+) -> list[dict[str, float]]:
+    """Krzywe kumulatywne load [kWh]: forecast vs actual vs plan."""
+    actual_by_min: dict[int, float] = {
+        int(p["minute"]): float(p["cum_kwh"]) for p in minute_series
+    }
+    now_minute = max(0, min(59, int(round(alpha * 60))))
+    points: list[dict[str, float]] = []
+    for minute in range(0, 61):
+        forecast = f50_kwh * minute / 60.0
+        actual = actual_by_min.get(minute)
+        plan: float | None = None
+        if load_plan_kwh is not None and minute >= now_minute and now_minute < 60:
+            frac = (minute - now_minute) / max(1, 60 - now_minute)
+            plan = a_so_far_kwh + (load_plan_kwh - a_so_far_kwh) * frac
+        elif actual is not None:
+            plan = actual
+        points.append(
+            {
+                "minute": float(minute),
+                "forecast_kwh": forecast,
+                "actual_kwh": actual if actual is not None else None,
+                "plan_kwh": plan,
+            }
+        )
+    return points
+
+
+def _load_correction_payload() -> dict[str, Any]:
+    """Stan korekty load na bieżącą godzinę + kontekst doby (dashboard)."""
+    now = datetime.now(ZoneInfo(TELEMETRY_TZ)).replace(tzinfo=None)
+    today = now.date()
+    d_iso = today.isoformat()
+    current_hour = now.hour
+
+    hour_start = now.replace(minute=0, second=0, microsecond=0)
+    load_pack = forecast_load_hours(
+        start_dt=hour_start,
+        hours=max(26 - current_hour, 2),
+        lookback_days=guardian_settings.get_settings().planner_load_lookback_days,
+    )
+    load_by_hour: dict[int, dict[str, Any]] = {}
+    for row in load_pack.get("hours", []):
+        if str(row.get("date")) != d_iso:
+            continue
+        load_by_hour[int(row["hour"])] = row
+
+    f50_row = load_by_hour.get(current_hour, {})
+    f50_current = float(
+        f50_row.get("load_base_kwh_p50")
+        or f50_row.get("load_kwh_p50")
+        or 0.0
+    )
+    f25_current = float(
+        f50_row.get("load_kwh_p25") if f50_row.get("load_kwh_p25") is not None else f50_current
+    )
+    f75_current = float(
+        f50_row.get("load_kwh_p75") if f50_row.get("load_kwh_p75") is not None else f50_current
+    )
+
+    state = build_load_intra_meta(now)
+    state["f50_current_kwh"] = f50_current
+    state["enabled"] = LOAD_CORRECTION_ENABLED
+    alpha = float(state.get("alpha") or 0.0)
+    a_so_far = state.get("a_so_far_kwh")
+    minute_series = load_minute_series_in_hour(now)
+
+    if LOAD_CORRECTION_ENABLED and a_so_far is not None:
+        apply_load_plan_to_meta(state, f50_kwh=f50_current)
+
+    load_plan_kwh = state.get("load_plan_kwh")
+    k_intra = state.get("k_intra")
+    k_plan_only: float | None = None
+    rate_plan_only: float | None = None
+    if k_intra is not None and a_so_far is not None:
+        k_plan_only, _ = load_plan_current_hour_kwh(
+            f50_kwh=f50_current,
+            a_so_far_kwh=float(a_so_far),
+            alpha=alpha,
+            k_intra=float(k_intra),
+            recent_kw=state.get("recent_kw"),
+            rate_enabled=False,
+        )
+        recent_kw = state.get("recent_kw")
+        if recent_kw is not None:
+            rate_plan_only = max(
+                float(a_so_far),
+                float(a_so_far) + float(recent_kw) * (1.0 - alpha),
+            )
+
+    remaining_kwh: float | None = None
+    if load_plan_kwh is not None and a_so_far is not None:
+        remaining_kwh = max(0.0, float(load_plan_kwh) - float(a_so_far))
+
+    load_actual, _ = _telemetry_hourly_load_pv_actuals(today)
+    today_hours: list[dict[str, Any]] = []
+    for h in range(24):
+        row = load_by_hour.get(h)
+        act = load_actual.get(h)
+        f50_h = None
+        if row:
+            f50_h = float(
+                row.get("load_base_kwh_p50") or row.get("load_kwh_p50") or 0.0
+            )
+        if f50_h is None and act is None and h != current_hour:
+            continue
+        entry: dict[str, Any] = {
+            "hour": h,
+            "f50_kwh": f50_h,
+            "complete": h < current_hour,
+            "in_progress": h == current_hour,
+        }
+        if h < current_hour and act is not None:
+            entry["actual_kwh"] = act
+            entry["delta_kwh"] = act - float(f50_h or 0.0)
+        if h == current_hour:
+            entry["actual_so_far_kwh"] = a_so_far
+            entry["load_plan_kwh"] = load_plan_kwh
+            entry["f50_kwh"] = f50_current
+            if a_so_far is not None:
+                entry["delta_so_far_kwh"] = float(a_so_far) - f50_current * alpha
+        today_hours.append(entry)
+
+    milp_load = planner_load_milp_snapshot(
+        now=now,
+        date_iso=d_iso,
+        hour=current_hour,
+        load_p50_kwh=f50_current,
+        load_p25_kwh=f25_current,
+        load_p75_kwh=f75_current,
+        load_meta=dict(state),
+    )
+
+    return {
+        "now": now.isoformat(timespec="seconds"),
+        "date": d_iso,
+        "current_hour": current_hour,
+        "correction": {
+            **state,
+            "clip_min": LOAD_CORRECTION_K_MIN,
+            "clip_max": LOAD_CORRECTION_K_MAX,
+        },
+        "projections": {
+            "forecast_full_hour_kwh": f50_current,
+            "k_intra_only_kwh": k_plan_only,
+            "rate_only_kwh": rate_plan_only,
+            "final_plan_kwh": load_plan_kwh,
+            "remaining_kwh": remaining_kwh,
+        },
+        "minute_series": minute_series,
+        "projection_curve": _load_correction_projection_curve(
+            f50_kwh=f50_current,
+            alpha=alpha,
+            a_so_far_kwh=float(a_so_far or 0.0),
+            load_plan_kwh=float(load_plan_kwh) if load_plan_kwh is not None else None,
+            minute_series=minute_series,
+        ),
+        "today_hours": today_hours,
+        "remainder_bands": milp_load,
+    }
+
+
+def _get_load_correction_cached() -> dict[str, Any]:
+    global _load_correction_cache
+    mono = time.monotonic()
+    cached = _load_correction_cache
+    if cached is not None and (mono - cached[0]) < _LOAD_CORRECTION_TTL_S:
+        return cached[1]
+    payload = _load_correction_payload()
+    _load_correction_cache = (mono, payload)
+    return payload
+
+
 def _replan_rolling_after_ev_change() -> dict[str, Any]:
     """Po zmianie deklaracji EV — natychmiastowy rolling plan (jak cron co 10 min)."""
     plan = build_rolling_plan()
@@ -1590,6 +1783,12 @@ async def api_pv_pyramid() -> JSONResponse:
 @app.get("/api/pv-correction")
 async def api_pv_correction() -> JSONResponse:
     payload = await _run_heavy(_get_pv_correction_cached)
+    return JSONResponse(payload)
+
+
+@app.get("/api/load-correction")
+async def api_load_correction() -> JSONResponse:
+    payload = await _run_heavy(_get_load_correction_cached)
     return JSONResponse(payload)
 
 

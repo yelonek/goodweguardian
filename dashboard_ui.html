@@ -539,6 +539,7 @@
       <a href="#history" data-page="history">Historia</a>
       <a href="#forecast" data-page="forecast">Prognoza</a>
       <a href="#pv-correction" data-page="pv-correction">Korekta PV</a>
+      <a href="#load-correction" data-page="load-correction">Korekta load</a>
       <a href="#kpi" data-page="kpi">KPI</a>
       <a href="#slots" data-page="slots">Sloty</a>
       <a href="#settings" data-page="settings">Ustawienia</a>
@@ -765,6 +766,69 @@
           <tbody id="pvCorrectionDayRows"></tbody>
         </table>
         <div class="muted" id="pvCorrectionMeta" style="font-size:11px; margin-top:10px;"></div>
+      </div>
+    </section>
+
+    <section id="page-load-correction" class="page">
+      <div class="page-hdr">
+        <h2>Korekta load (k_intra)</h2>
+        <span class="muted" id="loadCorrectionStatus"></span>
+      </div>
+      <p class="muted setting-lead" style="font-size:12px; max-width:960px;">
+        Telemetria bieżącej godziny vs prognoza load p50. Planer używa skorygowanej wartości
+        (<strong>k_intra</strong> + opcjonalnie <strong>rate blend</strong>)
+        oraz <strong>zwężonych pasm p25/p75 reszty slotu</strong> (scenario MILP) — żeby mid-hour
+        nie zerował <code>load_rem</code>, gdy dom nadal ciągnie.
+      </p>
+      <div class="pv-correction-block card" id="loadCorrectionBlock">
+        <div class="pv-correction-metrics" id="loadCorrectionMetrics"></div>
+        <div class="pv-correction-cols">
+          <div>
+            <h3 style="margin:0 0 8px; font-size:1rem;">Kumulacja w bieżącej godzinie</h3>
+            <div class="pv-correction-chart-wrap">
+              <svg class="pv-correction-chart" id="loadCorrectionChart" viewBox="0 0 600 220" preserveAspectRatio="none"></svg>
+              <div class="pv-correction-legend">
+                <span><i class="solcast"></i>Forecast p50 (liniowo)</span>
+                <span><i class="actual"></i>Telemetria (skumulowana)</span>
+                <span><i class="plan"></i>Plan skorygowany</span>
+              </div>
+            </div>
+            <div class="pv-correction-bars" id="loadCorrectionBars"></div>
+            <h3 style="margin:16px 0 8px; font-size:1rem;">Pasma load — planer (MILP)</h3>
+            <p class="muted" style="font-size:11px; margin:0 0 8px;">
+              Pełna godzina (po k_intra / rate) vs reszta slotu po <code>load_remainder_bands_kwh</code> — to widzi scenario optimizer.
+            </p>
+            <div id="loadCorrectionBands"></div>
+          </div>
+          <div>
+            <h3 style="margin:0 0 8px; font-size:1rem;">Clip k_intra (stały)</h3>
+            <p class="muted" style="font-size:11px; margin:0 0 8px;">
+              Load używa stałego clipu <code>k ∈ [k_min, k_max]</code> (bez dynamicznego rozszerzania jak PV).
+              Rate blend z <code>recent_kw</code> podnosi plan, gdy dom nadal ciągnie.
+            </p>
+            <table class="pv-correction-clip">
+              <thead>
+                <tr><th></th><th>wartość</th></tr>
+              </thead>
+              <tbody id="loadCorrectionClipRows"></tbody>
+            </table>
+            <div class="muted" id="loadCorrectionClipNow" style="font-size:11px; margin-top:8px;"></div>
+          </div>
+        </div>
+        <h3 style="margin:16px 0 8px; font-size:1rem;">Dziś — forecast vs actual vs plan</h3>
+        <table class="pv-correction-day">
+          <thead>
+            <tr>
+              <th>h</th>
+              <th>forecast p50</th>
+              <th>actual</th>
+              <th>plan skoryg.</th>
+              <th>Δ</th>
+            </tr>
+          </thead>
+          <tbody id="loadCorrectionDayRows"></tbody>
+        </table>
+        <div class="muted" id="loadCorrectionMeta" style="font-size:11px; margin-top:10px;"></div>
       </div>
     </section>
 
