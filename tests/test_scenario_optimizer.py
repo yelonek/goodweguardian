@@ -300,3 +300,67 @@ def test_legacy_shared_battery_still_available(monkeypatch: pytest.MonkeyPatch) 
     )
     assert res.scenario_meta is not None
     assert res.scenario_meta.get("model") == "shared_battery_grid_recourse"
+    assert res.scenarios_detail is not None
+    assert res.scenarios_detail.model == "shared_battery_grid_recourse"
+    # Shared SOC: wszystkie scenariusze mają tę samą trajektorię.
+    socs = [s.soc_pct for s in res.scenarios_detail.scenarios.values()]
+    assert len(socs) == 3
+    assert socs[0] == socs[1] == socs[2]
+
+
+def test_tracking_scenarios_detail_has_three_soc_trajectories() -> None:
+    """Tracking-SP: scenarios_detail z 3 trajektoriami SOC (H+1) + net/CF_h (H)."""
+    bp = BatteryParams(capacity_kwh=10.0, soc_min_pct=10.0, soc_max_pct=100.0, max_power_kwh_per_h=5.0)
+    hours = _evening_export_morning_risk_hours()
+    res = optimize_horizon_scenarios(hours, soc_start_pct=61.0, params=bp)
+    detail = res.scenarios_detail
+    assert detail is not None
+    assert detail.model == "soc_tracking_recourse"
+    assert len(detail.soc_star_pct) == len(hours) + 1
+    assert detail.soc_star_pct == pytest.approx(res.soc_trajectory_pct)
+    assert set(detail.scenarios.keys()) == {"pessimistic", "base", "optimistic"}
+    assert len(detail.slots) == len(hours)
+    for name, series in detail.scenarios.items():
+        assert len(series.soc_pct) == len(hours) + 1, name
+        assert len(series.net_kwh) == len(hours), name
+        assert len(series.cashflow_hour_pln) == len(hours), name
+        assert series.weight > 0
+        assert abs(sum(series.cashflow_hour_pln) - series.cashflow_pln) < 1e-6
+
+
+def test_scenarios_detail_serializes_into_daily_plan() -> None:
+    """DailyPlan.model_dump zachowuje scenarios_detail (plan_latest)."""
+    from datetime import UTC, datetime
+
+    from planner.models import DailyPlan, ScenariosDetail, ScenarioSeriesDetail
+
+    bp = BatteryParams(capacity_kwh=10.0, soc_min_pct=10.0, soc_max_pct=100.0, max_power_kwh_per_h=5.0)
+    hours = _evening_export_morning_risk_hours()
+    res = optimize_horizon_scenarios(hours, soc_start_pct=50.0, params=bp)
+    assert res.scenarios_detail is not None
+
+    plan = DailyPlan(
+        plan_id="sc-viz-test",
+        local_date="2026-06-14",
+        generated_at=datetime.now(UTC).isoformat(),
+        timezone="Europe/Warsaw",
+        horizon_start="2026-06-14T21:00:00",
+        horizon_end="2026-06-15T20:00:00",
+        soc_start_pct=50.0,
+        soc_trajectory_pct=list(res.soc_trajectory_pct),
+        expected_total_cashflow_pln=res.total_cashflow_pln,
+        optimizer="lp_soc_tracking_v1",
+        inputs_snapshot={},
+        hours=res.hours,
+        scenarios_detail=res.scenarios_detail,
+    )
+    raw = plan.model_dump()
+    assert raw["scenarios_detail"] is not None
+    assert "pessimistic" in raw["scenarios_detail"]["scenarios"]
+    assert len(raw["scenarios_detail"]["scenarios"]["base"]["soc_pct"]) == len(hours) + 1
+    roundtrip = DailyPlan.model_validate(raw)
+    assert roundtrip.scenarios_detail is not None
+    assert isinstance(roundtrip.scenarios_detail, ScenariosDetail)
+    assert isinstance(
+        roundtrip.scenarios_detail.scenarios["base"], ScenarioSeriesDetail
+    )

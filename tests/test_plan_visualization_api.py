@@ -8,7 +8,13 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from planner.models import DailyPlan, HourInputs, HourPlan
+from planner.models import (
+    DailyPlan,
+    HourInputs,
+    HourPlan,
+    ScenarioSeriesDetail,
+    ScenariosDetail,
+)
 
 
 def _pricing_day(*, rce_by_hour: dict[int, float]) -> dict:
@@ -43,8 +49,9 @@ def plan_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> TestClient:
         horizon_start=f"{today_iso}T08:00:00",
         horizon_end=f"{today_iso}T19:00:00",
         soc_start_pct=50.0,
+        soc_trajectory_pct=[50.0 + h * 0.5 for h in range(13)],
         expected_total_cashflow_pln=12.5,
-        optimizer="test",
+        optimizer="lp_soc_tracking_v1",
         inputs_snapshot={},
         hours=[
             HourPlan(
@@ -58,6 +65,37 @@ def plan_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> TestClient:
             )
             for h in range(8, 20)
         ],
+        scenarios_detail=ScenariosDetail(
+            model="soc_tracking_recourse",
+            expected_cashflow_pln=12.5,
+            soc_star_pct=[50.0 + i for i in range(13)],
+            slots=[{"date": today_iso, "hour": h} for h in range(8, 20)],
+            tracking_penalty_pln=0.1,
+            tracking_lambda=0.12,
+            scenarios={
+                "pessimistic": ScenarioSeriesDetail(
+                    weight=0.25,
+                    cashflow_pln=8.0,
+                    soc_pct=[48.0 + i for i in range(13)],
+                    net_kwh=[0.1] * 12,
+                    cashflow_hour_pln=[8.0 / 12] * 12,
+                ),
+                "base": ScenarioSeriesDetail(
+                    weight=0.70,
+                    cashflow_pln=13.0,
+                    soc_pct=[50.0 + i for i in range(13)],
+                    net_kwh=[0.2] * 12,
+                    cashflow_hour_pln=[13.0 / 12] * 12,
+                ),
+                "optimistic": ScenarioSeriesDetail(
+                    weight=0.05,
+                    cashflow_pln=16.0,
+                    soc_pct=[52.0 + i for i in range(13)],
+                    net_kwh=[0.3] * 12,
+                    cashflow_hour_pln=[16.0 / 12] * 12,
+                ),
+            },
+        ),
     )
     latest = plans_dir / "plan_latest.json"
     latest.write_text(plan.model_dump_json(indent=2), encoding="utf-8")
@@ -121,6 +159,15 @@ def test_plan_visualization_24_hours_per_day(plan_client: TestClient) -> None:
     h10 = next(h for h in today_hours if h["hour"] == 10)
     assert h10["exec_mode"] is not None
     assert h10["target_net_kwh"] is not None
+
+    detail = body["scenarios_detail"]
+    assert detail is not None
+    assert detail["model"] == "soc_tracking_recourse"
+    assert len(detail["soc_star_pct"]) == 13
+    assert set(detail["scenarios"].keys()) == {"pessimistic", "base", "optimistic"}
+    assert len(detail["scenarios"]["base"]["soc_pct"]) == 13
+    assert len(detail["scenarios"]["base"]["net_kwh"]) == 12
+    assert body["meta"]["optimizer"] == "lp_soc_tracking_v1"
 
 
 def test_plan_visualization_unavailable_without_plan(monkeypatch: pytest.MonkeyPatch) -> None:

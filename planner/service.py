@@ -75,6 +75,7 @@ def build_rolling_plan(
         optimizer=optimizer_name,
         inputs_snapshot=snapshot,
         hours=export_hours,
+        scenarios_detail=opt.scenarios_detail,
     )
     save_plan(plan)
     pv_meta = snapshot.get("pv_forecast_meta") or {}

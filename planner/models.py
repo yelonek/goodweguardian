@@ -52,6 +52,28 @@ class HourPlan(BaseModel):
     battery_delta_kwh: float
 
 
+class ScenarioSeriesDetail(BaseModel):
+    """Szeregi jednego scenariusza (recourse) — do wizualizacji."""
+
+    weight: float
+    cashflow_pln: float
+    soc_pct: list[float]
+    net_kwh: list[float]
+    cashflow_hour_pln: list[float]
+
+
+class ScenariosDetail(BaseModel):
+    """Trzy plany scenariuszowe + wspólna wizja soc* (tracking-SP)."""
+
+    model: str
+    expected_cashflow_pln: float
+    soc_star_pct: list[float]
+    slots: list[dict[str, Any]] = Field(default_factory=list)
+    scenarios: dict[str, ScenarioSeriesDetail] = Field(default_factory=dict)
+    tracking_penalty_pln: float | None = None
+    tracking_lambda: float | None = None
+
+
 class DailyPlan(BaseModel):
     """Rolling plan — horyzont od bieżącej godziny do ostatniej z cenami."""
 
@@ -69,6 +91,8 @@ class DailyPlan(BaseModel):
     optimizer: str
     inputs_snapshot: dict[str, Any]
     hours: list[HourPlan]
+    # Szeregi pess/base/opt (tracking-SP); None przy deterministycznym / starym planie.
+    scenarios_detail: ScenariosDetail | None = None
 
 
 class AuditEvent(BaseModel):

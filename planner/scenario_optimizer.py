@@ -16,7 +16,7 @@ from planner.config import (
     planner_soc_tracking_enabled,
 )
 from planner.hour_remainder import remaining_battery_delta_kwh
-from planner.models import HourInputs, HourPlan
+from planner.models import HourInputs, HourPlan, ScenarioSeriesDetail, ScenariosDetail
 from planner.optimizer import OptimizeResult, _big_m, _soc_pct, _solve_milp
 from planner.scenarios import PlanningScenario, base_scenario_index, build_planning_scenarios
 
@@ -575,6 +575,10 @@ def _scenario_meta_dict(meta: ScenarioOptimizeMeta) -> dict:
     return out
 
 
+def _slots_from_hours(hours_in: list[HourInputs]) -> list[dict]:
+    return [{"date": hin.date, "hour": hin.hour} for hin in hours_in]
+
+
 def _result_from_tracking(
     x: np.ndarray,
     meta: ScenarioOptimizeMeta,
@@ -587,6 +591,7 @@ def _result_from_tracking(
     n_s = len(scenarios)
     _, layout = _tracking_var_layout(n_s, n_h)
     soc_star_idx = layout["soc_star_idx"]
+    soc_s_idx = layout["soc_s_idx"]
     ch_idx = layout["ch_idx"]
     dis_idx = layout["dis_idx"]
     imp_idx = layout["imp_idx"]
@@ -625,11 +630,49 @@ def _result_from_tracking(
         )
         traj.append(soc_end)
 
+    scenario_series: dict[str, ScenarioSeriesDetail] = {}
+    for s, sc in enumerate(scenarios):
+        soc_pct = [_soc_pct(float(x[soc_s_idx(s, h)]), params) for h in range(n_h + 1)]
+        net_kwh: list[float] = []
+        cf_hour: list[float] = []
+        for h, hin in enumerate(hours_in):
+            imp = float(x[imp_idx(s, h)])
+            exp = float(x[exp_idx(s, h)])
+            ch = float(x[ch_idx(s, h)])
+            dis = float(x[dis_idx(s, h)])
+            net = exp - imp
+            grid_cf = cashflow_pln_for_hour(
+                net,
+                rce_pln_per_kwh=hin.export_pln_per_kwh,
+                import_pln_per_kwh=hin.import_pln_per_kwh,
+            )
+            wear = battery_wear_pln_for_hour(ch, dis, cycle_cost_pln=cycle_cost)
+            net_kwh.append(net)
+            cf_hour.append(grid_cf - wear)
+        scenario_series[sc.name] = ScenarioSeriesDetail(
+            weight=float(sc.weight),
+            cashflow_pln=float(meta.scenario_cashflow_pln[s]),
+            soc_pct=soc_pct,
+            net_kwh=net_kwh,
+            cashflow_hour_pln=cf_hour,
+        )
+
+    detail = ScenariosDetail(
+        model=meta.model,
+        expected_cashflow_pln=float(meta.expected_cashflow_pln),
+        soc_star_pct=list(traj),
+        slots=_slots_from_hours(hours_in),
+        scenarios=scenario_series,
+        tracking_penalty_pln=float(meta.tracking_penalty_pln),
+        tracking_lambda=float(PLANNER_SOC_TRACKING_LAMBDA),
+    )
+
     return OptimizeResult(
         hours=plans,
         total_cashflow_pln=meta.expected_cashflow_pln,
         soc_trajectory_pct=traj,
         scenario_meta=_scenario_meta_dict(meta),
+        scenarios_detail=detail,
     )
 
 
@@ -683,11 +726,52 @@ def _result_from_shared(
         )
         traj.append(soc_end)
 
+    # Legacy shared SOC — jedna trajektoria; net/CF różnią się per scenariusz.
+    shared_wear_by_h = [
+        battery_wear_pln_for_hour(
+            float(x[ch_idx(h)]),
+            float(x[dis_idx(h)]),
+            cycle_cost_pln=cycle_cost,
+        )
+        for h in range(n_h)
+    ]
+    scenario_series: dict[str, ScenarioSeriesDetail] = {}
+    for s, sc in enumerate(scenarios):
+        net_kwh: list[float] = []
+        cf_hour: list[float] = []
+        for h, hin in enumerate(hours_in):
+            imp = float(x[imp_idx(s, h)])
+            exp = float(x[exp_idx(s, h)])
+            net = exp - imp
+            grid_cf = cashflow_pln_for_hour(
+                net,
+                rce_pln_per_kwh=hin.export_pln_per_kwh,
+                import_pln_per_kwh=hin.import_pln_per_kwh,
+            )
+            net_kwh.append(net)
+            cf_hour.append(grid_cf - shared_wear_by_h[h])
+        scenario_series[sc.name] = ScenarioSeriesDetail(
+            weight=float(sc.weight),
+            cashflow_pln=float(meta.scenario_cashflow_pln[s]),
+            soc_pct=list(traj),
+            net_kwh=net_kwh,
+            cashflow_hour_pln=cf_hour,
+        )
+
+    detail = ScenariosDetail(
+        model=meta.model,
+        expected_cashflow_pln=float(meta.expected_cashflow_pln),
+        soc_star_pct=list(traj),
+        slots=_slots_from_hours(hours_in),
+        scenarios=scenario_series,
+    )
+
     return OptimizeResult(
         hours=plans,
         total_cashflow_pln=meta.expected_cashflow_pln,
         soc_trajectory_pct=traj,
         scenario_meta=_scenario_meta_dict(meta),
+        scenarios_detail=detail,
     )
 
 

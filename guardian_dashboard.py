@@ -1522,6 +1522,10 @@ def _plan_visualization_payload(combined: dict[str, Any]) -> dict[str, Any]:
     if plan_latest.hours:
         soc_end_pct = float(plan_latest.hours[-1].soc_end_pct)
 
+    scenarios_detail = None
+    if plan_latest.scenarios_detail is not None:
+        scenarios_detail = plan_latest.scenarios_detail.model_dump()
+
     return {
         "available": True,
         "today": today_iso,
@@ -1538,7 +1542,9 @@ def _plan_visualization_payload(combined: dict[str, Any]) -> dict[str, Any]:
             "execution_enabled": plan_exec,
             "execution_source": plan_exec_src,
             "policy": policy_meta,
+            "optimizer": plan_latest.optimizer,
         },
+        "scenarios_detail": scenarios_detail,
         "days": [
             _build_day(today_iso, "Dziś"),
             _build_day(tomorrow_iso, "Jutro"),

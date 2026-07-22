@@ -17,7 +17,7 @@ from planner.battery import (
 )
 from planner.config import PLANNER_BATTERY_CYCLE_COST_PLN, planner_scenario_optimizer_enabled
 from planner.hour_remainder import balance_rhs_kwh, remaining_battery_delta_kwh
-from planner.models import HourInputs, HourPlan
+from planner.models import HourInputs, HourPlan, ScenariosDetail
 
 log = logging.getLogger("planner")
 
@@ -31,6 +31,7 @@ class OptimizeResult:
     total_cashflow_pln: float
     soc_trajectory_pct: list[float]
     scenario_meta: dict | None = None
+    scenarios_detail: ScenariosDetail | None = None
 
 
 def _big_m(hours_in: list[HourInputs], params: BatteryParams) -> float:

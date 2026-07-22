@@ -394,6 +394,232 @@ function renderPlanDayBoard(day, dimmed) {
   );
 }
 
+const SCENARIO_ORDER = ["pessimistic", "base", "optimistic"];
+const SCENARIO_LABELS = {
+  pessimistic: "pesymistyczny",
+  base: "bazowy",
+  optimistic: "optymistyczny",
+};
+const SCENARIO_CSS = {
+  pessimistic: "pess",
+  base: "base",
+  optimistic: "opt",
+};
+
+let _planScSecondaryMode = "cum"; // cum | net
+let _planScDetailCache = null;
+
+function _cumSum(arr) {
+  const out = [];
+  let s = 0;
+  for (const v of arr) {
+    s += Number(v) || 0;
+    out.push(s);
+  }
+  return out;
+}
+
+function _linePath(xs, ys, toX, toY) {
+  const pts = [];
+  for (let i = 0; i < ys.length; i++) {
+    const y = ys[i];
+    if (y == null || Number.isNaN(Number(y))) continue;
+    pts.push(`${toX(xs[i]).toFixed(1)},${toY(Number(y)).toFixed(1)}`);
+  }
+  if (pts.length < 2) return "";
+  return `M ${pts.join(" L ")}`;
+}
+
+function renderScenarioSocSvg(detail) {
+  const star = (detail.soc_star_pct || []).map(Number);
+  const sc = detail.scenarios || {};
+  const pess = (sc.pessimistic?.soc_pct || []).map(Number);
+  const base = (sc.base?.soc_pct || []).map(Number);
+  const opt = (sc.optimistic?.soc_pct || []).map(Number);
+  const n = star.length;
+  if (n < 2) return "";
+  const all = [...star, ...pess, ...base, ...opt].filter((y) => !Number.isNaN(y));
+  const minY = Math.max(0, Math.min(...all) - 3);
+  const maxY = Math.min(100, Math.max(...all) + 3);
+  const span = maxY - minY || 1;
+  const w = 640;
+  const h = 180;
+  const padL = 8;
+  const padR = 8;
+  const padT = 10;
+  const padB = 16;
+  const toX = (i) => padL + (i / Math.max(1, n - 1)) * (w - padL - padR);
+  const toY = (y) => padT + (1 - (y - minY) / span) * (h - padT - padB);
+  const xs = Array.from({ length: n }, (_, i) => i);
+
+  let envelope = "";
+  if (pess.length === n && opt.length === n) {
+    const top = [];
+    const bot = [];
+    for (let i = 0; i < n; i++) {
+      const a = pess[i];
+      const b = opt[i];
+      top.push(`${toX(i).toFixed(1)},${toY(Math.max(a, b)).toFixed(1)}`);
+      bot.push(`${toX(n - 1 - i).toFixed(1)},${toY(Math.min(pess[n - 1 - i], opt[n - 1 - i])).toFixed(1)}`);
+    }
+    envelope = `<path class="envelope" d="M ${top.join(" L ")} L ${bot.join(" L ")} Z"/>`;
+  }
+
+  const paths = [
+    envelope,
+    _linePath(xs, pess, toX, toY) ? `<path class="line-pess" d="${_linePath(xs, pess, toX, toY)}"/>` : "",
+    _linePath(xs, opt, toX, toY) ? `<path class="line-opt" d="${_linePath(xs, opt, toX, toY)}"/>` : "",
+    _linePath(xs, base, toX, toY) ? `<path class="line-base" d="${_linePath(xs, base, toX, toY)}"/>` : "",
+    _linePath(xs, star, toX, toY) ? `<path class="line-star" d="${_linePath(xs, star, toX, toY)}"/>` : "",
+  ].filter(Boolean).join("");
+
+  return (
+    `<div class="plan-sc-chart-wrap">` +
+    `<svg class="plan-sc-chart" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">${paths}</svg>` +
+    `</div>`
+  );
+}
+
+function renderScenarioSecondarySvg(detail, mode) {
+  const sc = detail.scenarios || {};
+  const names = SCENARIO_ORDER.filter((n) => sc[n]);
+  if (!names.length) return "";
+  const series = {};
+  let n = 0;
+  for (const name of names) {
+    const raw = mode === "net"
+      ? (sc[name].net_kwh || [])
+      : _cumSum(sc[name].cashflow_hour_pln || []);
+    series[name] = raw.map(Number);
+    n = Math.max(n, series[name].length);
+  }
+  if (n < 1) return "";
+  const all = names.flatMap((name) => series[name]).filter((y) => !Number.isNaN(y));
+  const minY = Math.min(0, ...all);
+  const maxY = Math.max(0, ...all);
+  const span = (maxY - minY) || 1;
+  const w = 640;
+  const h = 160;
+  const padL = 8;
+  const padR = 8;
+  const padT = 10;
+  const padB = 14;
+  const toX = (i) => padL + ((i + 0.5) / n) * (w - padL - padR);
+  const toY = (y) => padT + (1 - (y - minY) / span) * (h - padT - padB);
+  const zeroY = toY(0);
+  const groupW = (w - padL - padR) / n;
+  const barW = Math.max(2, Math.min(10, (groupW * 0.7) / names.length));
+
+  let body = `<line class="zero" x1="${padL}" y1="${zeroY.toFixed(1)}" x2="${(w - padR).toFixed(1)}" y2="${zeroY.toFixed(1)}"/>`;
+  if (mode === "cum") {
+    const xs = Array.from({ length: n }, (_, i) => i);
+    const lineToX = (i) => padL + (i / Math.max(1, n - 1)) * (w - padL - padR);
+    for (const name of names) {
+      const cls = `line-${SCENARIO_CSS[name]}`;
+      const d = _linePath(xs, series[name], lineToX, toY);
+      if (d) body += `<path class="${cls}" d="${d}"/>`;
+    }
+  } else {
+    for (let i = 0; i < n; i++) {
+      names.forEach((name, ki) => {
+        const y = series[name][i];
+        if (y == null || Number.isNaN(y)) return;
+        const cx = toX(i) + (ki - (names.length - 1) / 2) * (barW + 1);
+        const y1 = toY(y);
+        const top = Math.min(y1, zeroY);
+        const height = Math.abs(y1 - zeroY);
+        body += `<rect class="bar-${SCENARIO_CSS[name]}" x="${(cx - barW / 2).toFixed(1)}" y="${top.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(1, height).toFixed(1)}"/>`;
+      });
+    }
+  }
+  return (
+    `<div class="plan-sc-chart-wrap">` +
+    `<svg class="plan-sc-chart" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">${body}</svg>` +
+    `</div>`
+  );
+}
+
+function renderScenariosPanel(detail) {
+  if (!detail || !detail.scenarios || !Object.keys(detail.scenarios).length) {
+    return "";
+  }
+  _planScDetailCache = detail;
+  const isTracking = String(detail.model || "").includes("tracking");
+  const eCf = detail.expected_cashflow_pln != null
+    ? Number(detail.expected_cashflow_pln).toFixed(2)
+    : "—";
+  const pen = detail.tracking_penalty_pln != null
+    ? Number(detail.tracking_penalty_pln).toFixed(2)
+    : null;
+
+  const kpiCards = [
+    `<div class="plan-sc-kpi star"><div class="k">E[CF]</div><div class="v">${eCf} PLN</div>` +
+    (pen != null ? `<div class="w">penalty λ·|ΔSOC| ${pen} PLN</div>` : "") +
+    `</div>`,
+  ];
+  for (const name of SCENARIO_ORDER) {
+    const s = detail.scenarios[name];
+    if (!s) continue;
+    const w = Number(s.weight || 0);
+    const cf = Number(s.cashflow_pln || 0);
+    const contrib = w * cf;
+    kpiCards.push(
+      `<div class="plan-sc-kpi">` +
+      `<div class="k">${SCENARIO_LABELS[name] || name}</div>` +
+      `<div class="v">${cf.toFixed(2)} PLN</div>` +
+      `<div class="w">π=${w.toFixed(2)} · π·CF=${contrib.toFixed(2)}</div>` +
+      `</div>`
+    );
+  }
+
+  const legend =
+    `<div class="plan-sc-legend">` +
+    `<span><i class="star"></i>soc*</span>` +
+    `<span><i class="pess"></i>pesymistyczny</span>` +
+    `<span><i class="base"></i>bazowy</span>` +
+    `<span><i class="opt"></i>optymistyczny</span>` +
+    `</div>`;
+
+  const note = isTracking
+    ? `<p class="muted" style="font-size:11px;margin:0 0 8px;">Wspólna wizja <strong>soc*</strong>; linie scenariuszy = recourse (osobne ch/dis).</p>`
+    : `<p class="muted" style="font-size:11px;margin:0 0 8px;">Legacy shared ch/dis — jedna trajektoria SOC, różne net/CF per scenariusz.</p>`;
+
+  const mode = _planScSecondaryMode;
+  const toggle =
+    `<div class="plan-sc-toggle" id="planScToggle">` +
+    `<button type="button" data-mode="cum" class="${mode === "cum" ? "active" : ""}">kumulatywny CF</button>` +
+    `<button type="button" data-mode="net" class="${mode === "net" ? "active" : ""}">net godz. (exp−imp)</button>` +
+    `</div>`;
+
+  return (
+    `<div class="plan-scenarios" id="planScenariosPanel">` +
+    `<h4>Scenariusze planu</h4>` +
+    note +
+    `<div class="plan-sc-kpis">${kpiCards.join("")}</div>` +
+    legend +
+    renderScenarioSocSvg(detail) +
+    toggle +
+    `<div id="planScSecondary">${renderScenarioSecondarySvg(detail, mode)}</div>` +
+    `</div>`
+  );
+}
+
+function bindPlanScenariosToggle() {
+  const toggle = document.getElementById("planScToggle");
+  const secondary = document.getElementById("planScSecondary");
+  if (!toggle || !secondary || !_planScDetailCache) return;
+  toggle.querySelectorAll("button").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const mode = btn.getAttribute("data-mode") || "cum";
+      _planScSecondaryMode = mode;
+      toggle.querySelectorAll("button").forEach((b) => {
+        b.classList.toggle("active", b.getAttribute("data-mode") === mode);
+      });
+      secondary.innerHTML = renderScenarioSecondarySvg(_planScDetailCache, mode);
+    });
+  });
+}
+
 function renderPlanTimeline(p) {
   const block = document.getElementById("planTimelineBlock");
   const content = document.getElementById("planTimelineContent");
@@ -425,11 +651,14 @@ function renderPlanTimeline(p) {
   const legend = PLAN_MODE_LEGEND.map(([cls, label]) =>
     `<span><i class="plan-hour-mode ${cls}"></i>${label}</span>`
   ).join("");
+  const scenariosHtml = renderScenariosPanel(p.scenarios_detail);
   content.innerHTML =
     hero +
+    scenariosHtml +
     `<div class="plan-day-boards">${boards}</div>` +
     `<div class="plan-legend">${legend}</div>` +
     (tomorrowDim ? `<p class="muted" style="font-size:11px;margin:8px 0 0;">Jutro: RCE jeszcze nieopublikowane — panel przygaszony.</p>` : "");
+  bindPlanScenariosToggle();
 }
 
 function renderPvPyramidTable(segment, tbodyId, cheapGr) {
