@@ -7,6 +7,7 @@ from typing import Any
 
 from planner.load_correction import (
     LOAD_BAND_NARROW_ENABLED,
+    apply_load_plan_to_meta,
     build_load_intra_meta,
     load_remainder_bands_kwh,
 )
@@ -91,19 +92,35 @@ def _remaining_load_kwh(
     now: datetime,
     load_meta: dict[str, Any],
 ) -> tuple[float, float, float]:
-    """Pasma load na resztę bieżącej godziny (p50, p25, p75)."""
-    full_p25 = hin.load_kwh_p25 if hin.load_kwh_p25 is not None else hin.load_kwh
-    full_p75 = hin.load_kwh_p75 if hin.load_kwh_p75 is not None else hin.load_kwh
+    """Pasma load na resztę bieżącej godziny (p50, p25, p75).
+
+    Gdy jest telemetria: najpierw centralny ``load_plan`` (k_intra + rate blend),
+    potem pasma wokół skorygowanego p50.
+    """
+    f50 = float(hin.load_kwh)
+    full_p25 = float(hin.load_kwh_p25) if hin.load_kwh_p25 is not None else f50
+    full_p75 = float(hin.load_kwh_p75) if hin.load_kwh_p75 is not None else f50
     frac = hour_remaining_fraction(now, date=hin.date, hour=hin.hour)
     a_so_far = load_meta.get("a_so_far_kwh")
     if a_so_far is not None:
+        apply_load_plan_to_meta(load_meta, f50_kwh=f50)
+        p50_full = f50
+        plan = load_meta.get("load_plan_kwh")
+        if plan is not None and float(plan) > 0.0 and f50 > 1e-9:
+            p50_full = float(plan)
+            scale = p50_full / f50
+            full_p25 = full_p25 * scale
+            full_p75 = full_p75 * scale
+        elif plan is not None:
+            p50_full = max(float(a_so_far), float(plan))
+
         narrow = load_meta.get("band_narrow_enabled", LOAD_BAND_NARROW_ENABLED)
         alpha = float(load_meta.get("alpha", hour_elapsed_fraction(now)))
         recent_kw = load_meta.get("recent_kw")
         if recent_kw is not None:
             recent_kw = float(recent_kw)
         return load_remainder_bands_kwh(
-            p50_full=hin.load_kwh,
+            p50_full=p50_full,
             p25_full=full_p25,
             p75_full=full_p75,
             a_so_far=float(a_so_far),
@@ -112,7 +129,7 @@ def _remaining_load_kwh(
             narrow_enabled=bool(narrow),
         )
 
-    return hin.load_kwh * frac, full_p25 * frac, full_p75 * frac
+    return f50 * frac, full_p25 * frac, full_p75 * frac
 
 
 def scale_hour_inputs_for_remainder(
