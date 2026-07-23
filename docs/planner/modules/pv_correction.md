@@ -86,8 +86,12 @@ Efekt: pesymistyczny scenariusz reszty slotu nie zeruje PV, gdy słońce już je
 - pv_plan(11h) = 0,125 + 0,5 × 2,0 × 0,65 = **0,775 kWh**
 - pv_plan(12h) = 0,65 × F50_12h
 
-## Świadomie poza zakresem
+## Świadomie poza zakresem / eksperymenty
 
 - Globalne okno 3 h (`k` z wcześniejszej specyfikacji) — **nie** implementowane.
-- Prognoza pogody (OpenWeather itd.) — osobny moduł na horyzont 2–6 h, opcjonalnie później.
-- `u` (p10/p50/p90) — pasma reszty bieżącej h wpływają na scenario MILP (patrz sekcja wyżej); pełne pasma h+2… nadal surowe Solcast.
+- **OWM Tier1 (eksperymentalne):** [`planner/pv_weather_correction.py`](../../planner/pv_weather_correction.py)
+  skaluje Solcast na **h+2…h+6** przez `k_wx` z One Call (`clouds`/`uvi`/`pop`/`weather`/`rain`,
+  opcjonalnie `minutely` na h+2). Wymaga `OPENWEATHER_API_KEY` + lat/lon; snapshot w
+  `inputs_snapshot.pv_weather_correction`. Tier2 (temp/wilgotność) — później.
+- `u` (p10/p50/p90) — pasma reszty bieżącej h wpływają na scenario MILP (patrz sekcja wyżej);
+  pasma h+2… po OWM dziedziczą `k_scale` z `planner/inputs.py` gdy slot jest w `pv_corrected`.

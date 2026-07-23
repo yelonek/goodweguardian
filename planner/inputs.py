@@ -17,6 +17,7 @@ from planner.models import HourInputs
 from planner.hour_remainder import scale_hour_inputs_for_remainder
 from planner.load_correction import build_load_intra_meta
 from planner.pv_correction import apply_pv_correction
+from planner.pv_weather_correction import apply_pv_weather_correction
 from pv_forecast import fetch_hourly_pv_forecast
 
 log = logging.getLogger("planner")
@@ -69,6 +70,13 @@ def build_hour_inputs_for_slots(
     now_local = now or _local_now().replace(tzinfo=None)
     pv_corrected, pv_sources, pv_correction_meta = apply_pv_correction(
         slots, pv_by_key, now=now_local
+    )
+    pv_corrected, pv_sources, pv_weather_meta = apply_pv_weather_correction(
+        slots,
+        pv_by_key,
+        pv_corrected,
+        pv_sources,
+        now=now_local,
     )
 
     slot_dates = {d for d, _ in slots}
@@ -158,6 +166,7 @@ def build_hour_inputs_for_slots(
             for k in ("timezone", "source", "cached", "fetched_at", "error")
         },
         "pv_correction": pv_correction_meta,
+        "pv_weather_correction": pv_weather_meta,
         "load_correction": load_intra_meta,
         "pricing_dates": list(pricing_cache.keys()),
         "ev_charging_plans": ev_plans_by_date,
