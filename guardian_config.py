@@ -86,7 +86,7 @@ SOLCAST_PROXY_BASE_URL = (
 )
 PROXY_HTTP_TIMEOUT_S = _float_env("PROXY_HTTP_TIMEOUT_S", 10.0)
 
-# OpenWeatherMap One Call 3.0 — korekta PV h+2…h+6 (puste key = wyłączone).
+# OpenWeatherMap Free (Current + 5-day/3h) — korekta PV h+2…h+6 (puste key = wyłączone).
 OPENWEATHER_API_KEY = (os.environ.get("OPENWEATHER_API_KEY") or "").strip()
 _owm_lat_raw = (os.environ.get("OPENWEATHER_LAT") or "").strip()
 _owm_lon_raw = (os.environ.get("OPENWEATHER_LON") or "").strip()

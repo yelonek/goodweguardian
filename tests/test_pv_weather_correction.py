@@ -68,6 +68,38 @@ def test_minutely_derate_only_when_flagged() -> None:
     assert k1 < k0
 
 
+def test_expand_forecast_3h_covers_three_local_hours() -> None:
+    from datetime import timezone
+
+    from weather_owm import expand_forecast_3h_to_hourly, hourly_by_local_slot
+
+    # 2026-06-11 12:00 UTC → 14:00 Europe/Warsaw (CEST)
+    dt = int(datetime(2026, 6, 11, 12, 0, 0, tzinfo=timezone.utc).timestamp())
+    rows = expand_forecast_3h_to_hourly(
+        [
+            {
+                "dt": dt,
+                "main": {"temp": 22.0},
+                "clouds": {"all": 77},
+                "pop": 0.4,
+                "weather": [{"id": 803, "main": "Clouds", "description": "broken clouds"}],
+                "rain": {"3h": 1.5},
+            }
+        ],
+        tz_name="Europe/Warsaw",
+    )
+    keys = {(r["local_date"], r["local_hour"]) for r in rows}
+    assert ("2026-06-11", 14) in keys
+    assert ("2026-06-11", 15) in keys
+    assert ("2026-06-11", 16) in keys
+    assert len(keys) == 3
+    pack = {"hourly": rows}
+    by_hour = hourly_by_local_slot(pack, tz_name="Europe/Warsaw")
+    assert by_hour[("2026-06-11", 14)]["clouds"] == 77
+    assert by_hour[("2026-06-11", 14)]["rain_1h"] == pytest.approx(0.5)
+    assert by_hour[("2026-06-11", 14)]["uvi"] is None
+
+
 def test_apply_scales_h2_to_h6_skips_intra(monkeypatch: pytest.MonkeyPatch) -> None:
     now = datetime(2026, 6, 11, 10, 20, 0)
     slots = [

@@ -1,7 +1,8 @@
 """Eksperymentalna korekta PV pogodą OWM (Tier1) na horyzoncie h+2…h+6.
 
-Pola Tier1: ``clouds``, ``uvi``, ``pop``, ``weather.id``, ``rain``/``snow``,
-oraz średnie ``minutely.precipitation`` (sygnał frontu).
+Źródło: darmowe Current Weather + 5-day/3h forecast (nie One Call).
+Pola: ``clouds``, ``pop``, ``weather.id``, ``rain``/``snow`` (3h→≈1h).
+``uvi`` / minutely — niedostępne w Free; clearness polega na clouds/pop/weather.
 
 Solcast już zawiera chmury — ``k_wx`` jest **względne** do referencyjnego
 clearness (nie mnożymy surowego zachmurzenia drugi raz od zera).
@@ -16,7 +17,7 @@ from typing import Any
 from guardian_config import PV_WEATHER_CORRECTION_ENABLED
 from weather_owm import (
     current_tier1,
-    fetch_onecall,
+    fetch_weather_pack,
     hourly_by_local_slot,
     minutely_mean_precip_mmh,
     owm_configured,
@@ -164,6 +165,7 @@ def apply_pv_weather_correction(
     sources: dict[HorizonSlot, str],
     *,
     now: datetime,
+    weather_pack: dict[str, Any] | None = None,
     onecall: dict[str, Any] | None = None,
     enabled: bool | None = None,
 ) -> tuple[dict[HorizonSlot, float], dict[HorizonSlot, str], dict[str, Any]]:
@@ -171,6 +173,7 @@ def apply_pv_weather_correction(
     Skaluje Solcast (lub już skorygowane wartości) na slotach h+2…h+6 przez ``k_wx``.
 
     Nie rusza slotów z ``pv_intra_*`` (bieżąca / h+1 zostają przy ``k_intra``).
+    ``onecall`` — alias wsteczny dla ``weather_pack``.
     """
     if enabled is None:
         enabled = PV_WEATHER_CORRECTION_ENABLED
@@ -179,6 +182,7 @@ def apply_pv_weather_correction(
         "enabled": bool(enabled),
         "applied": False,
         "tier": 1,
+        "api": "openweathermap_free_2_5",
         "horizon_start_h": PV_WEATHER_HORIZON_START_H,
         "horizon_end_h": PV_WEATHER_HORIZON_END_H,
         "reason": "disabled",
@@ -194,7 +198,8 @@ def apply_pv_weather_correction(
     if not enabled:
         return out_corr, out_src, meta
 
-    if not owm_configured() and onecall is None:
+    pack_arg = weather_pack if weather_pack is not None else onecall
+    if not owm_configured() and pack_arg is None:
         meta["reason"] = "not_configured"
         return out_corr, out_src, meta
 
@@ -203,7 +208,7 @@ def apply_pv_weather_correction(
         return out_corr, out_src, meta
 
     try:
-        pack = onecall if onecall is not None else fetch_onecall()
+        pack = pack_arg if pack_arg is not None else fetch_weather_pack()
     except Exception as e:
         log.warning("PV weather: OWM fetch error: %s", e)
         meta["reason"] = f"fetch_error:{e}"
@@ -237,7 +242,7 @@ def apply_pv_weather_correction(
         if wx is None:
             continue
 
-        # Minutely dotyczy najbliższej godziny — derate tylko na pierwszym slocie wx (h+2).
+        # Minutely niedostępne w Free; flaga zostaje dla kompatybilności testów.
         apply_minutely = offset == PV_WEATHER_HORIZON_START_H
         k, k_meta = k_wx_from_tier1(
             clouds=float(wx["clouds"]),
@@ -262,7 +267,17 @@ def apply_pv_weather_correction(
                 "pv_kwh_before": base,
                 "pv_kwh": value,
                 "k_wx": k,
-                **{kk: k_meta[kk] for kk in ("clearness", "clouds", "uvi", "pop", "weather_id", "minutely_applied")},
+                **{
+                    kk: k_meta[kk]
+                    for kk in (
+                        "clearness",
+                        "clouds",
+                        "uvi",
+                        "pop",
+                        "weather_id",
+                        "minutely_applied",
+                    )
+                },
             }
         )
 
