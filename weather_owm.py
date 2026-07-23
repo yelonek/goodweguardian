@@ -113,8 +113,16 @@ def fetch_onecall(
             resp.raise_for_status()
             data = resp.json()
     except (httpx.HTTPError, ValueError, TypeError) as e:
-        log.warning("OWM One Call fetch failed: %s", e)
-        meta["error"] = str(e)
+        # Nie loguj pełnego URL — query string zawiera appid.
+        err = f"{type(e).__name__}: HTTP {getattr(getattr(e, 'response', None), 'status_code', '?')}"
+        if isinstance(e, httpx.HTTPStatusError) and e.response is not None:
+            err = f"HTTP {e.response.status_code}"
+        elif isinstance(e, httpx.RequestError):
+            err = f"RequestError: {type(e).__name__}"
+        else:
+            err = type(e).__name__
+        log.warning("OWM One Call fetch failed: %s", err)
+        meta["error"] = err
         stale = None
         if path.exists():
             try:
