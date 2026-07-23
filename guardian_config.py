@@ -86,6 +86,16 @@ SOLCAST_PROXY_BASE_URL = (
 )
 PROXY_HTTP_TIMEOUT_S = _float_env("PROXY_HTTP_TIMEOUT_S", 10.0)
 
+# OpenWeatherMap One Call 3.0 — korekta PV h+2…h+6 (puste key = wyłączone).
+OPENWEATHER_API_KEY = (os.environ.get("OPENWEATHER_API_KEY") or "").strip()
+_owm_lat_raw = (os.environ.get("OPENWEATHER_LAT") or "").strip()
+_owm_lon_raw = (os.environ.get("OPENWEATHER_LON") or "").strip()
+OPENWEATHER_LAT: float | None = float(_owm_lat_raw) if _owm_lat_raw else None
+OPENWEATHER_LON: float | None = float(_owm_lon_raw) if _owm_lon_raw else None
+OPENWEATHER_CACHE_TTL_S = _float_env("OPENWEATHER_CACHE_TTL_S", 900.0)
+OPENWEATHER_HTTP_TIMEOUT_S = _float_env("OPENWEATHER_HTTP_TIMEOUT_S", 10.0)
+PV_WEATHER_CORRECTION_ENABLED = _bool_env("PV_WEATHER_CORRECTION_ENABLED", True)
+
 # Tesla Wall Connector Gen 3 — lokalne API /api/1/lifetime (puste = wyłączone)
 TESLA_WC_HOST = (
     os.environ.get("TESLA_WC_HOST") or os.environ.get("TESLA_WC_IP") or ""
