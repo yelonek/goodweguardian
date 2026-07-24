@@ -241,7 +241,9 @@ def fetch_hourly_pv_forecast_with_history(
     Łączy ``/history`` (zakończone godziny) z ``/forecasts`` (bieżąca i przyszłe).
 
     Zakończona godzina H: prognoza z najnowszego ``fetched_at`` < H:00 lokalnego.
-    Bieżąca / przyszła godzina: bieżący snapshot ``/forecasts``.
+    Bieżąca / przyszła godzina: bieżący snapshot ``/forecasts``; gdy live nie ma już
+    slotów tej godziny (typowo po wypadnięciu obu 30‑min okien z feedu), fallback na
+    ten sam snapshot z ``/history`` sprzed :00.
     """
     if not SOLCAST_PROXY_BASE_URL:
         raise RuntimeError("SOLCAST_PROXY_BASE_URL is empty")
@@ -282,9 +284,23 @@ def fetch_hourly_pv_forecast_with_history(
         hour_complete = slot_end <= now_local
         if hour_complete:
             items = _pre_hour_forecast_items(history_items, date_s=date_s, hour=hour)
+            row = _aggregate_single_hour(items, date_s=date_s, hour=hour)
         else:
             items = _items_for_local_hour(forecasts_items, date_s=date_s, hour=hour)
-        row = _aggregate_single_hour(items, date_s=date_s, hour=hour)
+            row = _aggregate_single_hour(items, date_s=date_s, hour=hour)
+            if row is None:
+                # Live /forecasts drops elapsed 30-min slots; mid-hour the current
+                # hour can vanish entirely while neighbors stay in the feed.
+                items = _pre_hour_forecast_items(
+                    history_items, date_s=date_s, hour=hour
+                )
+                row = _aggregate_single_hour(items, date_s=date_s, hour=hour)
+                if row is not None:
+                    log.info(
+                        "solcast hour %s %02d: /forecasts miss → history pre-:00 fallback",
+                        date_s,
+                        hour,
+                    )
         if row is not None:
             rows.append(row)
 

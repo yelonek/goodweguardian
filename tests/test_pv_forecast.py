@@ -139,3 +139,87 @@ def test_fetch_with_history_uses_start_end_tz(monkeypatch: pytest.MonkeyPatch) -
     h10 = [h for h in out["hours"] if h["date"] == "2026-07-09" and h["hour"] == 10]
     assert len(h10) == 1
     assert h10[0]["pv_kw"] == pytest.approx(3.6, rel=0.01)
+
+
+def test_in_progress_hour_falls_back_to_history_when_forecasts_miss(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Po wypadnięciu slotów bieżącej godziny z /forecasts — snapshot sprzed :00."""
+
+    class FakeResp:
+        def __init__(self, payload: dict) -> None:
+            self._payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return self._payload
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, url: str, params: dict | None = None):
+            if url.endswith("/forecasts"):
+                # Live ma tylko godzinę 12+; sloty h11 już wypadły.
+                return FakeResp(
+                    {
+                        "data": {
+                            "forecasts": [
+                                {
+                                    "period_end": "2026-07-24T10:00:00.0000000Z",  # h12
+                                    "pv_estimate": 6.0,
+                                    "pv_estimate10": 4.8,
+                                    "pv_estimate90": 7.2,
+                                },
+                                {
+                                    "period_end": "2026-07-24T10:30:00.0000000Z",
+                                    "pv_estimate": 6.2,
+                                    "pv_estimate10": 5.0,
+                                    "pv_estimate90": 7.4,
+                                },
+                            ]
+                        },
+                        "cached": False,
+                        "fetched_at": "2026-07-24T11:52:00",
+                    }
+                )
+            return FakeResp(
+                {
+                    "forecasts": [
+                        _hist_item(
+                            fetched_at="2026-07-24T10:55:01",
+                            period_end="2026-07-24T09:00:00.0000000Z",  # h11
+                            pv=5.0,
+                        ),
+                        _hist_item(
+                            fetched_at="2026-07-24T10:55:01",
+                            period_end="2026-07-24T09:30:00.0000000Z",
+                            pv=5.4,
+                        ),
+                    ]
+                }
+            )
+
+    monkeypatch.setattr("pv_forecast.SOLCAST_PROXY_BASE_URL", "http://proxy.test")
+    monkeypatch.setattr("pv_forecast.httpx.Client", FakeClient)
+
+    now = datetime(2026, 7, 24, 11, 52, tzinfo=TZ)
+    out = fetch_hourly_pv_forecast_with_history(
+        hours_back=2,
+        hours_forward=2,
+        now=now,
+    )
+    h11 = [h for h in out["hours"] if h["date"] == "2026-07-24" and h["hour"] == 11]
+    assert len(h11) == 1
+    assert h11[0]["pv_kw"] == pytest.approx(5.2, rel=0.01)
+    h12 = [h for h in out["hours"] if h["date"] == "2026-07-24" and h["hour"] == 12]
+    assert len(h12) == 1
+    assert h12[0]["pv_kw"] == pytest.approx(6.1, rel=0.01)
