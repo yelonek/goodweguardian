@@ -224,6 +224,79 @@
     .plan-sc-chart .bar-base { fill: rgba(74, 127, 196, 0.65); }
     .plan-sc-chart .bar-opt { fill: rgba(200, 140, 40, 0.55); }
     .plan-sc-chart line.zero { stroke: rgba(127,127,127,0.45); stroke-width: 1; }
+
+    /* Day forecast charts (Prognoza) */
+    .forecast-day-charts {
+      margin: 14px 0 18px;
+      max-width: 1100px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .forecast-day-chart-block h3 {
+      margin: 0 0 4px;
+      font-size: 0.95rem;
+    }
+    .forecast-day-chart-block .chart-lead {
+      font-size: 11px;
+      opacity: 0.75;
+      margin: 0 0 8px;
+      line-height: 1.35;
+    }
+    .forecast-day-chart-wrap {
+      width: 100%;
+      border-radius: 8px;
+      background: rgba(127,127,127,0.04);
+      border: 1px solid rgba(127,127,127,0.15);
+      overflow: hidden;
+    }
+    .forecast-day-chart {
+      width: 100%;
+      height: 200px;
+      display: block;
+    }
+    .forecast-day-chart.tall { height: 240px; }
+    .forecast-day-chart .axis-line { stroke: rgba(127,127,127,0.35); stroke-width: 1; }
+    .forecast-day-chart .zero-line { stroke: rgba(127,127,127,0.65); stroke-width: 1.25; }
+    .forecast-day-chart .grid-line { stroke: rgba(127,127,127,0.18); stroke-width: 1; }
+    .forecast-day-chart .tick-label { fill: currentColor; opacity: 0.65; font-size: 10px; }
+    .forecast-day-chart .now-v { stroke: rgba(200, 160, 40, 0.95); stroke-width: 1.25; stroke-dasharray: 4 3; }
+    .forecast-day-chart .now-label { fill: currentColor; font-size: 10px; opacity: 0.85; }
+    .forecast-day-chart .band-pv { fill: rgba(13, 128, 80, 0.22); stroke: none; }
+    .forecast-day-chart .line-pv { fill: none; stroke: #0d8050; stroke-width: 2; }
+    .forecast-day-chart .line-pv-actual { fill: none; stroke: currentColor; stroke-width: 2.2; }
+    .forecast-day-chart .dot-pv-actual { fill: currentColor; }
+    .forecast-day-chart .bar-ev { fill: rgba(200, 140, 40, 0.9); }
+    .forecast-day-chart .bar-load-p25 { fill: rgba(74, 106, 136, 0.95); }
+    .forecast-day-chart .bar-load-mid { fill: rgba(107, 140, 174, 0.9); }
+    .forecast-day-chart .bar-load-hi { fill: rgba(155, 180, 200, 0.85); }
+    .forecast-day-chart .bar-pv { fill: rgba(13, 128, 80, 0.85); }
+    .forecast-day-chart .bar-grid { fill: rgba(140, 155, 175, 0.75); }
+    .forecast-day-chart .bar-load { fill: rgba(107, 140, 174, 0.9); }
+    .forecast-day-chart .line-soc { fill: none; stroke: #2a9dad; stroke-width: 2.25; }
+    .forecast-day-chart .dot-soc { fill: #2a9dad; }
+    .forecast-day-legend {
+      display: flex; flex-wrap: wrap; gap: 8px 14px;
+      font-size: 11px; opacity: 0.9; margin: 6px 0 0;
+    }
+    .forecast-day-legend span { display: inline-flex; align-items: center; gap: 6px; }
+    .forecast-day-legend i {
+      display: inline-block; width: 12px; height: 12px; border-radius: 2px;
+    }
+    .forecast-day-legend i.pv { background: #0d8050; }
+    .forecast-day-legend i.pv-band { background: rgba(13, 128, 80, 0.35); }
+    .forecast-day-legend i.actual { background: currentColor; opacity: 0.85; }
+    .forecast-day-legend i.ev { background: rgba(200, 140, 40, 0.9); }
+    .forecast-day-legend i.load-p25 { background: rgba(74, 106, 136, 0.95); }
+    .forecast-day-legend i.load-mid { background: rgba(107, 140, 174, 0.9); }
+    .forecast-day-legend i.load-hi { background: rgba(155, 180, 200, 0.85); }
+    .forecast-day-legend i.grid { background: rgba(140, 155, 175, 0.75); }
+    .forecast-day-legend i.load { background: rgba(107, 140, 174, 0.9); }
+    .forecast-day-legend i.soc { background: #2a9dad; height: 3px; width: 14px; border-radius: 1px; }
+    .forecast-day-legend i.now {
+      width: 14px; height: 0; border-top: 2px dashed rgba(200, 160, 40, 0.95);
+      background: transparent; border-radius: 0;
+    }
     .plan-sc-legend {
       display: flex; flex-wrap: wrap; gap: 10px 16px;
       font-size: 11px; opacity: 0.9; margin: 0 0 8px;
@@ -708,6 +781,52 @@
         <div class="ev-charging-warnings" id="evChargingWarnings"></div>
         <div class="muted" id="evChargingStatus" style="font-size:11px; margin-top:4px;"></div>
       </div>
+
+      <div class="forecast-day-charts" id="forecastDayCharts">
+        <div class="forecast-day-chart-block">
+          <h3>PV — dzień (<span id="forecastDayChartsDate">—</span>)</h3>
+          <p class="chart-lead">Pasmo p10–p90 vs p50 / plan; biała/kontrastowa linia = actual w zakończonych godzinach.</p>
+          <div class="forecast-day-chart-wrap">
+            <svg class="forecast-day-chart" id="forecastPvDayChart" viewBox="0 0 720 200" preserveAspectRatio="xMidYMid meet"></svg>
+          </div>
+          <div class="forecast-day-legend">
+            <span><i class="pv-band"></i>p10–p90</span>
+            <span><i class="pv"></i>p50 / plan</span>
+            <span><i class="actual"></i>actual</span>
+            <span><i class="now"></i>teraz</span>
+          </div>
+        </div>
+        <div class="forecast-day-chart-block">
+          <h3>Load+EV względem PV</h3>
+          <p class="chart-lead">Stos od −PV: EV → load p25 → (p50−p25) → (p75−p50). Powyżej zera = konsumpcja przekracza PV.</p>
+          <div class="forecast-day-chart-wrap">
+            <svg class="forecast-day-chart tall" id="forecastLoadResidualChart" viewBox="0 0 720 240" preserveAspectRatio="xMidYMid meet"></svg>
+          </div>
+          <div class="forecast-day-legend">
+            <span><i class="ev"></i>EV</span>
+            <span><i class="load-p25"></i>load p25</span>
+            <span><i class="load-mid"></i>p50−p25</span>
+            <span><i class="load-hi"></i>p75−p50</span>
+            <span><i class="now"></i>teraz</span>
+          </div>
+        </div>
+        <div class="forecast-day-chart-block">
+          <h3>Bilans + SOC</h3>
+          <p class="chart-lead">PV i import sieci w górę; load domu i EV w dół; linia SOC na prawej osi (%).</p>
+          <div class="forecast-day-chart-wrap">
+            <svg class="forecast-day-chart tall" id="forecastBalanceSocChart" viewBox="0 0 720 240" preserveAspectRatio="xMidYMid meet"></svg>
+          </div>
+          <div class="forecast-day-legend">
+            <span><i class="pv"></i>PV</span>
+            <span><i class="grid"></i>Grid import</span>
+            <span><i class="load"></i>Load (dom)</span>
+            <span><i class="ev"></i>EV</span>
+            <span><i class="soc"></i>SOC %</span>
+            <span><i class="now"></i>teraz</span>
+          </div>
+        </div>
+      </div>
+
       <table class="forecast" id="forecastTable">
         <thead>
           <tr>

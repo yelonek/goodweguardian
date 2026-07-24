@@ -923,6 +923,355 @@ async function clearEvChargingPlan() {
   await loadForecast(true);
 }
 
+function _numOrNull(v) {
+  if (v == null || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function _numOr0(v) {
+  const n = _numOrNull(v);
+  return n == null ? 0 : n;
+}
+
+function forecastTodayRows(forecast) {
+  const today = forecast.today;
+  if (!today) return [];
+  return (forecast.rows || []).filter((r) => r.date === today);
+}
+
+function forecastNowHourFrac(forecast) {
+  const raw = forecast && forecast.now;
+  if (typeof raw === "string" && raw.length >= 13) {
+    const m = raw.match(/T(\d{2}):(\d{2})/);
+    if (m) return Number(m[1]) + Number(m[2]) / 60;
+  }
+  const { hour } = localNowParts();
+  return hour + new Date().getMinutes() / 60;
+}
+
+function forecastHourPvKwh(r) {
+  if (r.hour_complete && r.pv_kwh_actual != null) return Math.max(0, _numOr0(r.pv_kwh_actual));
+  return Math.max(0, _numOr0(r.pv_kwh));
+}
+
+function forecastHourEvKwh(r) {
+  const act = _numOrNull(r.ev_kwh_actual);
+  if (act != null && act > 0) return act;
+  const plan = _numOrNull(r.ev_planned_kwh);
+  return plan != null && plan > 0 ? plan : 0;
+}
+
+function forecastHourDomLoadKwh(r, ev) {
+  if (r.hour_complete && r.load_base_kwh_actual != null) {
+    return Math.max(0, _numOr0(r.load_base_kwh_actual));
+  }
+  if (r.hour_complete && r.load_kwh_actual != null) {
+    return Math.max(0, _numOr0(r.load_kwh_actual) - ev);
+  }
+  const p50 = _numOr0(r.load_kwh_p50);
+  return Math.max(0, p50 - ev);
+}
+
+function forecastHourLoadBands(r) {
+  let p25 = Math.max(0, _numOr0(r.load_kwh_p25));
+  let p50 = Math.max(0, _numOr0(r.load_kwh_p50));
+  let p75 = Math.max(0, _numOr0(r.load_kwh_p75));
+  if (p50 < p25) p50 = p25;
+  if (p75 < p50) p75 = p50;
+  return { p25, p50, p75 };
+}
+
+function forecastHourGridImportKwh(r, pv, dom, ev) {
+  const bat = _numOrNull(r.policy_battery_delta_kwh);
+  if (bat != null) {
+    return Math.max(0, dom + ev + Math.max(bat, 0) - pv - Math.max(-bat, 0));
+  }
+  const net = _numOrNull(r.net_kwh);
+  if (net != null) return Math.max(0, -net);
+  return Math.max(0, dom + ev - pv);
+}
+
+/** Shared SVG frame: Y ticks, X hour ticks, optional zero line, now marker. */
+function svgDayChartAxes({
+  w, h, pad, minY, maxY, nHours = 24, nowFrac = null, showZero = false, yUnit = "",
+  rightAxis = null,
+}) {
+  const innerW = w - pad.l - pad.r;
+  const innerH = h - pad.t - pad.b;
+  const span = (maxY - minY) || 1;
+  const toX = (hour) => pad.l + (hour / Math.max(1, nHours - 1 || 23)) * innerW;
+  const toXCenter = (hour, n = nHours) => pad.l + ((hour + 0.5) / n) * innerW;
+  const toY = (v) => pad.t + (1 - (v - minY) / span) * innerH;
+  const parts = [];
+
+  const niceSteps = [0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 25, 50, 100];
+  const targetTicks = 5;
+  const rawStep = span / targetTicks;
+  let step = niceSteps[niceSteps.length - 1];
+  for (const s of niceSteps) {
+    if (s >= rawStep) { step = s; break; }
+  }
+  const y0 = Math.ceil(minY / step) * step;
+  for (let v = y0; v <= maxY + 1e-9; v += step) {
+    const y = toY(v);
+    parts.push(`<line class="grid-line" x1="${pad.l}" y1="${y.toFixed(1)}" x2="${(w - pad.r).toFixed(1)}" y2="${y.toFixed(1)}"/>`);
+    const label = Number.isInteger(step) ? String(Math.round(v)) : v.toFixed(step < 1 ? 1 : 0);
+    parts.push(`<text class="tick-label" x="${(pad.l - 4).toFixed(1)}" y="${(y + 3).toFixed(1)}" text-anchor="end">${label}</text>`);
+  }
+  if (yUnit) {
+    parts.push(`<text class="tick-label" x="4" y="${(pad.t + 8).toFixed(1)}">${escapeHtml(yUnit)}</text>`);
+  }
+
+  if (rightAxis) {
+    const { min: rMin, max: rMax, unit } = rightAxis;
+    const rSpan = (rMax - rMin) || 1;
+    const toYR = (v) => pad.t + (1 - (v - rMin) / rSpan) * innerH;
+    for (const v of [0, 25, 50, 75, 100]) {
+      if (v < rMin - 1e-9 || v > rMax + 1e-9) continue;
+      const y = toYR(v);
+      parts.push(`<text class="tick-label" x="${(w - pad.r + 4).toFixed(1)}" y="${(y + 3).toFixed(1)}" fill="#2a9dad">${v}</text>`);
+    }
+    if (unit) {
+      parts.push(`<text class="tick-label" x="${(w - 4).toFixed(1)}" y="${(pad.t + 8).toFixed(1)}" text-anchor="end" fill="#2a9dad">${escapeHtml(unit)}</text>`);
+    }
+  }
+
+  const xTicks = [0, 6, 12, 18, 23];
+  for (const hr of xTicks) {
+    const x = toX(hr);
+    parts.push(`<text class="tick-label" x="${x.toFixed(1)}" y="${(h - 6).toFixed(1)}" text-anchor="middle">${hr}</text>`);
+  }
+
+  if (showZero && minY < 0 && maxY > 0) {
+    const z = toY(0);
+    parts.push(`<line class="zero-line" x1="${pad.l}" y1="${z.toFixed(1)}" x2="${(w - pad.r).toFixed(1)}" y2="${z.toFixed(1)}"/>`);
+  }
+
+  if (nowFrac != null && nowFrac >= 0 && nowFrac <= 24) {
+    const nx = pad.l + (nowFrac / 24) * innerW;
+    parts.push(`<line class="now-v" x1="${nx.toFixed(1)}" y1="${pad.t}" x2="${nx.toFixed(1)}" y2="${(h - pad.b).toFixed(1)}"/>`);
+    parts.push(`<text class="now-label" x="${Math.min(w - pad.r - 4, nx + 4).toFixed(1)}" y="${(pad.t + 10).toFixed(1)}">teraz</text>`);
+  }
+
+  return { toX, toXCenter, toY, html: parts.join(""), innerW, innerH };
+}
+
+function _linePathHours(hours, values, toX, toY) {
+  let d = "";
+  let started = false;
+  for (let i = 0; i < hours.length; i++) {
+    const v = values[i];
+    if (v == null || Number.isNaN(v)) {
+      started = false;
+      continue;
+    }
+    const x = toX(hours[i]).toFixed(1);
+    const y = toY(v).toFixed(1);
+    d += `${started ? "L" : "M"}${x},${y} `;
+    started = true;
+  }
+  return d.trim();
+}
+
+function renderForecastPvDayChart(rows, nowFrac) {
+  const svg = document.getElementById("forecastPvDayChart");
+  if (!svg) return;
+  if (!rows.length) {
+    svg.innerHTML = "";
+    return;
+  }
+  const w = 720;
+  const h = 200;
+  const pad = { l: 40, r: 14, t: 16, b: 26 };
+  const hours = rows.map((r) => Number(r.hour));
+  const p10 = rows.map((r) => _numOr0(r.pv_kwh_p10));
+  const p50 = rows.map((r) => _numOr0(r.pv_kwh));
+  const p90 = rows.map((r) => _numOr0(r.pv_kwh_p90));
+  const act = rows.map((r) => (r.hour_complete ? _numOrNull(r.pv_kwh_actual) : null));
+  const ymax = Math.max(0.05, ...p10, ...p50, ...p90, ...act.filter((v) => v != null));
+  const { toX, toY, html: axes } = svgDayChartAxes({
+    w, h, pad, minY: 0, maxY: ymax * 1.05, nHours: 24, nowFrac, yUnit: "kWh",
+  });
+
+  let band = "";
+  if (hours.length) {
+    const top = hours.map((hr, i) => `${toX(hr).toFixed(1)},${toY(p90[i]).toFixed(1)}`);
+    const bot = [...hours].reverse().map((hr, i) => {
+      const idx = hours.length - 1 - i;
+      return `${toX(hr).toFixed(1)},${toY(p10[idx]).toFixed(1)}`;
+    });
+    band = `<path class="band-pv" d="M ${top.join(" L ")} L ${bot.join(" L ")} Z"/>`;
+  }
+  const d50 = _linePathHours(hours, p50, toX, toY);
+  const dAct = _linePathHours(hours, act, toX, toY);
+  let dots = "";
+  for (let i = 0; i < hours.length; i++) {
+    if (act[i] == null) continue;
+    dots += `<circle class="dot-pv-actual" cx="${toX(hours[i]).toFixed(1)}" cy="${toY(act[i]).toFixed(1)}" r="2.5">` +
+      `<title>h${hours[i]} actual ${act[i].toFixed(3)} kWh</title></circle>`;
+  }
+  svg.innerHTML =
+    `<rect x="0" y="0" width="${w}" height="${h}" fill="transparent"/>` +
+    axes + band +
+    (d50 ? `<path class="line-pv" d="${d50}"/>` : "") +
+    (dAct ? `<path class="line-pv-actual" d="${dAct}"/>` : "") +
+    dots;
+}
+
+function renderForecastLoadResidualChart(rows, nowFrac) {
+  const svg = document.getElementById("forecastLoadResidualChart");
+  if (!svg) return;
+  if (!rows.length) {
+    svg.innerHTML = "";
+    return;
+  }
+  const w = 720;
+  const h = 240;
+  const pad = { l: 40, r: 14, t: 16, b: 26 };
+  const n = 24;
+  let minY = 0;
+  let maxY = 0.05;
+  const stacks = rows.map((r) => {
+    const pv = forecastHourPvKwh(r);
+    const ev = forecastHourEvKwh(r);
+    const { p25, p50, p75 } = forecastHourLoadBands(r);
+    const base = -pv;
+    const top = base + ev + p75;
+    minY = Math.min(minY, base);
+    maxY = Math.max(maxY, top, 0);
+    return { hour: Number(r.hour), pv, ev, p25, p50, p75, base, top };
+  });
+  const padY = Math.max(0.05, (maxY - minY) * 0.06);
+  const { toXCenter, toY, html: axes } = svgDayChartAxes({
+    w, h, pad, minY: minY - padY, maxY: maxY + padY, nHours: n, nowFrac, showZero: true, yUnit: "kWh",
+  });
+  const barW = Math.max(4, ((w - pad.l - pad.r) / n) * 0.72);
+  let bars = "";
+  for (const s of stacks) {
+    const cx = toXCenter(s.hour, n);
+    let yCursor = s.base;
+    const segs = [
+      { h: s.ev, cls: "bar-ev", label: "EV" },
+      { h: s.p25, cls: "bar-load-p25", label: "p25" },
+      { h: Math.max(0, s.p50 - s.p25), cls: "bar-load-mid", label: "p50−p25" },
+      { h: Math.max(0, s.p75 - s.p50), cls: "bar-load-hi", label: "p75−p50" },
+    ];
+    const title = `h${String(s.hour).padStart(2, "0")}: PV ${s.pv.toFixed(2)} · EV ${s.ev.toFixed(2)} · ` +
+      `load ${s.p25.toFixed(2)}/${s.p50.toFixed(2)}/${s.p75.toFixed(2)} · top ${s.top.toFixed(2)} kWh`;
+    bars += `<g><title>${escapeHtml(title)}</title>`;
+    for (const seg of segs) {
+      if (seg.h <= 1e-9) continue;
+      const y1 = toY(yCursor + seg.h);
+      const y0 = toY(yCursor);
+      const top = Math.min(y0, y1);
+      const height = Math.max(1, Math.abs(y0 - y1));
+      bars += `<rect class="${seg.cls}" x="${(cx - barW / 2).toFixed(1)}" y="${top.toFixed(1)}" ` +
+        `width="${barW.toFixed(1)}" height="${height.toFixed(1)}"/>`;
+      yCursor += seg.h;
+    }
+    bars += `</g>`;
+  }
+  svg.innerHTML =
+    `<rect x="0" y="0" width="${w}" height="${h}" fill="transparent"/>` +
+    axes + bars;
+}
+
+function renderForecastBalanceSocChart(rows, nowFrac) {
+  const svg = document.getElementById("forecastBalanceSocChart");
+  if (!svg) return;
+  if (!rows.length) {
+    svg.innerHTML = "";
+    return;
+  }
+  const w = 720;
+  const h = 240;
+  const pad = { l: 40, r: 40, t: 16, b: 26 };
+  const n = 24;
+  const series = rows.map((r) => {
+    const pv = forecastHourPvKwh(r);
+    const ev = forecastHourEvKwh(r);
+    const dom = forecastHourDomLoadKwh(r, ev);
+    const grid = forecastHourGridImportKwh(r, pv, dom, ev);
+    const soc = _numOrNull(r.soc_pct);
+    return { hour: Number(r.hour), pv, ev, dom, grid, soc };
+  });
+  let maxUp = 0.05;
+  let maxDown = 0.05;
+  for (const s of series) {
+    maxUp = Math.max(maxUp, s.pv + s.grid);
+    maxDown = Math.max(maxDown, s.dom + s.ev);
+  }
+  const lim = Math.max(maxUp, maxDown) * 1.08;
+  const { toXCenter, toY, html: axes } = svgDayChartAxes({
+    w, h, pad, minY: -lim, maxY: lim, nHours: n, nowFrac, showZero: true, yUnit: "kWh",
+    rightAxis: { min: 0, max: 100, unit: "SOC%" },
+  });
+  const toYSoc = (v) => pad.t + (1 - v / 100) * (h - pad.t - pad.b);
+  const barW = Math.max(4, ((w - pad.l - pad.r) / n) * 0.7);
+  let bars = "";
+  for (const s of series) {
+    const cx = toXCenter(s.hour, n);
+    const title = `h${String(s.hour).padStart(2, "0")}: PV ${s.pv.toFixed(2)} · grid↑ ${s.grid.toFixed(2)} · ` +
+      `dom ${s.dom.toFixed(2)} · EV ${s.ev.toFixed(2)}` +
+      (s.soc != null ? ` · SOC ${s.soc.toFixed(0)}%` : "");
+    bars += `<g><title>${escapeHtml(title)}</title>`;
+    // positive stack
+    let yPos = 0;
+    for (const seg of [
+      { h: s.pv, cls: "bar-pv" },
+      { h: s.grid, cls: "bar-grid" },
+    ]) {
+      if (seg.h <= 1e-9) continue;
+      const y1 = toY(yPos + seg.h);
+      const y0 = toY(yPos);
+      bars += `<rect class="${seg.cls}" x="${(cx - barW / 2).toFixed(1)}" y="${Math.min(y0, y1).toFixed(1)}" ` +
+        `width="${barW.toFixed(1)}" height="${Math.max(1, Math.abs(y0 - y1)).toFixed(1)}"/>`;
+      yPos += seg.h;
+    }
+    // negative stack
+    let yNeg = 0;
+    for (const seg of [
+      { h: s.dom, cls: "bar-load" },
+      { h: s.ev, cls: "bar-ev" },
+    ]) {
+      if (seg.h <= 1e-9) continue;
+      const y1 = toY(-(yNeg + seg.h));
+      const y0 = toY(-yNeg);
+      bars += `<rect class="${seg.cls}" x="${(cx - barW / 2).toFixed(1)}" y="${Math.min(y0, y1).toFixed(1)}" ` +
+        `width="${barW.toFixed(1)}" height="${Math.max(1, Math.abs(y0 - y1)).toFixed(1)}"/>`;
+      yNeg += seg.h;
+    }
+    bars += `</g>`;
+  }
+  const hours = series.map((s) => s.hour);
+  const socs = series.map((s) => s.soc);
+  const dSoc = _linePathHours(hours, socs, (hr) => toXCenter(hr, n), toYSoc);
+  let dots = "";
+  for (const s of series) {
+    if (s.soc == null) continue;
+    dots += `<circle class="dot-soc" cx="${toXCenter(s.hour, n).toFixed(1)}" cy="${toYSoc(s.soc).toFixed(1)}" r="2.4"/>`;
+  }
+  svg.innerHTML =
+    `<rect x="0" y="0" width="${w}" height="${h}" fill="transparent"/>` +
+    axes + bars +
+    (dSoc ? `<path class="line-soc" d="${dSoc}"/>` : "") +
+    dots;
+}
+
+function renderForecastDayCharts(forecast) {
+  const dateEl = document.getElementById("forecastDayChartsDate");
+  const rows = forecastTodayRows(forecast);
+  if (dateEl) dateEl.textContent = forecast.today || "—";
+  const nowFrac = forecastNowHourFrac(forecast);
+  // Only draw "teraz" on today's chart when viewing today
+  const { date: localDate } = localNowParts();
+  const showNow = !forecast.today || forecast.today === localDate ? nowFrac : null;
+  renderForecastPvDayChart(rows, showNow);
+  renderForecastLoadResidualChart(rows, showNow);
+  renderForecastBalanceSocChart(rows, showNow);
+}
+
 function renderForecastBlock(forecast) {
   const fcell = (v, d) => (v == null) ? `<td class="nodata">—</td>` : `<td>${Number(v).toFixed(d)}</td>`;
   const twcOn = !!forecast.twc_enabled;
@@ -1035,6 +1384,7 @@ function renderForecastBlock(forecast) {
     renderEvChargingPanel(evPlan);
   }
   updateEvChargingAuthHint();
+  renderForecastDayCharts(forecast);
 }
 
 async function loadForecast(force) {

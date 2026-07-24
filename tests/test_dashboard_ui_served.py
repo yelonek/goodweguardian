@@ -22,3 +22,8 @@ def test_index_uses_external_ui_file() -> None:
     assert "application/javascript" in js.headers.get("content-type", "")
     assert "function navigate(" in js.text
     assert "class=\"tag\">ACTIVE" in js.text
+    assert 'id="forecastPvDayChart"' in body
+    assert 'id="forecastLoadResidualChart"' in body
+    assert 'id="forecastBalanceSocChart"' in body
+    assert "function renderForecastDayCharts(" in js.text
+    assert "function renderForecastLoadResidualChart(" in js.text
