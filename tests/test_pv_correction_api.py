@@ -27,6 +27,7 @@ def test_pv_correction_api_returns_payload(pv_corr_client: TestClient) -> None:
         "projection_curve": [],
         "clip_timeline": [],
         "today_hours": [],
+        "weather": {"enabled": True, "configured": False, "hours": [], "reason": "not_configured"},
     }
     with patch("guardian_dashboard._get_pv_correction_cached", return_value=fake):
         r = pv_corr_client.get("/api/pv-correction")
@@ -45,4 +46,9 @@ def test_dashboard_ui_has_pv_correction_page(pv_corr_client: TestClient) -> None
     assert "loadPvCorrection" in js.text
     assert '"pv-correction": loadPvCorrection' in js.text
     assert "renderPvCorrectionBands" in js.text
+    assert "renderPvWeatherBlock" in js.text
     assert 'id="pvCorrectionBands"' in r.text
+    assert 'id="pvWeatherBlock"' in r.text
+    settings = pv_corr_client.get("/api/settings").json()
+    assert "pv_weather_correction_enabled" in settings["effective"]
+    assert "pv_weather_correction_enabled" in settings["schema"]["properties"]

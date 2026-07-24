@@ -361,6 +361,43 @@
     .pv-correction-bar > span { display: block; height: 100%; border-radius: 4px; background: rgba(80, 180, 100, 0.8); }
     .pv-correction-bar > span.alt { background: rgba(200, 120, 40, 0.85); }
     .pv-correction-bar > span.base { background: rgba(120, 180, 255, 0.75); }
+    .pv-weather-compare { display: grid; gap: 10px; margin: 12px 0; }
+    .pv-weather-hour {
+      display: grid;
+      grid-template-columns: 52px 1fr;
+      gap: 8px 12px;
+      align-items: center;
+      font-size: 12px;
+    }
+    .pv-weather-hour .hw { font-variant-numeric: tabular-nums; opacity: 0.85; }
+    .pv-weather-dual { display: grid; gap: 4px; }
+    .pv-weather-dual .pair {
+      display: grid;
+      grid-template-columns: 72px 1fr 64px;
+      gap: 6px;
+      align-items: center;
+    }
+    .pv-weather-dual .pair .lbl { opacity: 0.7; font-size: 11px; }
+    .pv-weather-dual .pair .num {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      font-size: 11px;
+    }
+    .pv-weather-dual .bar {
+      height: 10px;
+      border-radius: 4px;
+      background: rgba(127,127,127,0.15);
+      overflow: hidden;
+    }
+    .pv-weather-dual .bar > span {
+      display: block;
+      height: 100%;
+      border-radius: 4px;
+      background: rgba(120, 180, 255, 0.75);
+    }
+    .pv-weather-dual .bar > span.wx { background: rgba(80, 180, 100, 0.85); }
+    .pv-weather-dual .bar > span.wx-down { background: rgba(200, 100, 80, 0.85); }
+    .pv-weather-dual.inactive { opacity: 0.45; }
     .pv-correction-legend { display: flex; flex-wrap: wrap; gap: 12px 18px; font-size: 11px; margin-top: 8px; }
     .pv-correction-legend i { display: inline-block; width: 18px; height: 3px; vertical-align: middle; margin-right: 4px; }
     .pv-correction-legend i.solcast { background: rgba(120, 180, 255, 0.85); }
@@ -766,6 +803,36 @@
           <tbody id="pvCorrectionDayRows"></tbody>
         </table>
         <div class="muted" id="pvCorrectionMeta" style="font-size:11px; margin-top:10px;"></div>
+      </div>
+
+      <div class="pv-correction-block card" id="pvWeatherBlock" style="margin-top:16px;">
+        <div class="page-hdr" style="margin-bottom:8px;">
+          <h3 style="margin:0; font-size:1.05rem;">Korekta pogodą OWM (h+2…h+6)</h3>
+          <span class="muted" id="pvWeatherStatus"></span>
+        </div>
+        <p class="muted" style="font-size:12px; max-width:960px; margin:0 0 12px;">
+          Free Current + prognoza 3h → lokalne godziny. Skala <strong>k_wx</strong> względem Solcast
+          (clouds / pop / weather). Przełącznik w <em>Ustawienia → Planer</em>.
+          Gdy wyłączone — poniżej nadal widać podgląd, ale planer go nie stosuje.
+        </p>
+        <div class="pv-correction-metrics" id="pvWeatherMetrics"></div>
+        <div class="pv-weather-compare" id="pvWeatherBars"></div>
+        <table class="pv-correction-day" style="margin-top:12px;">
+          <thead>
+            <tr>
+              <th>h</th>
+              <th>Solcast</th>
+              <th>× k_wx</th>
+              <th>po OWM</th>
+              <th>Δ</th>
+              <th>clouds</th>
+              <th>pop</th>
+              <th>wx</th>
+            </tr>
+          </thead>
+          <tbody id="pvWeatherHourRows"></tbody>
+        </table>
+        <div class="muted" id="pvWeatherMeta" style="font-size:11px; margin-top:10px;"></div>
       </div>
     </section>
 

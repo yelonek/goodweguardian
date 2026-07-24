@@ -1122,6 +1122,107 @@ function renderPvCorrectionBands(bands) {
     `</tbody></table>`;
 }
 
+function renderPvWeatherBlock(weather) {
+  const metrics = document.getElementById("pvWeatherMetrics");
+  const bars = document.getElementById("pvWeatherBars");
+  const rows = document.getElementById("pvWeatherHourRows");
+  const meta = document.getElementById("pvWeatherMeta");
+  const st = document.getElementById("pvWeatherStatus");
+  if (!weather) {
+    if (metrics) metrics.innerHTML = "";
+    if (bars) bars.innerHTML = "<p class=\"muted\" style=\"font-size:12px;margin:0;\">Brak danych pogodowych.</p>";
+    if (rows) rows.innerHTML = "";
+    if (meta) meta.textContent = "";
+    if (st) st.textContent = "";
+    return;
+  }
+
+  const enabled = !!weather.enabled;
+  const configured = !!weather.configured;
+  const affects = !!weather.affects_plan;
+  const hours = weather.hours || [];
+  const cur = weather.current || {};
+  const deltaSum = weather.delta_kwh_sum;
+
+  if (st) {
+    if (!configured) st.textContent = "OWM nie skonfigurowane";
+    else if (!enabled) st.textContent = "wyłączone w Ustawieniach (podgląd)";
+    else if (affects) st.textContent = "wpływa na plan";
+    else st.textContent = weather.reason || "OK";
+  }
+
+  if (metrics) {
+    const deltaTxt = deltaSum == null
+      ? "—"
+      : ((deltaSum >= 0 ? "+" : "") + Number(deltaSum).toFixed(2) + " kWh");
+    metrics.innerHTML =
+      pvCorrMetric("Przełącznik", enabled ? "wł." : "wył.", enabled ? "hero" : "") +
+      pvCorrMetric("Na plan", affects ? "tak" : "nie", affects ? "hero" : "") +
+      pvCorrMetric("Σ Δ h+2…h+6", deltaTxt, "", "Suma (po OWM − Solcast) na horyzoncie") +
+      pvCorrMetric("clouds teraz", cur.clouds != null ? `${Number(cur.clouds).toFixed(0)}%` : "—") +
+      pvCorrMetric("weather", cur.weather_id != null ? `${cur.weather_id} ${cur.weather_main || ""}` : "—") +
+      pvCorrMetric("Status", fmt(weather.reason));
+  }
+
+  if (bars) {
+    if (!hours.length) {
+      bars.innerHTML = configured
+        ? "<p class=\"muted\" style=\"font-size:12px;margin:0;\">Brak dopasowanych godzin OWM na h+2…h+6.</p>"
+        : "<p class=\"muted\" style=\"font-size:12px;margin:0;\">Ustaw OPENWEATHER_API_KEY + LAT/LON w .env.</p>";
+    } else {
+      const max = Math.max(
+        0.05,
+        ...hours.map((h) => Math.max(Number(h.solcast_kwh || 0), Number(h.wx_kwh || 0)))
+      );
+      bars.className = "pv-weather-compare" + (affects ? "" : " inactive");
+      bars.innerHTML = hours.map((h) => {
+        const sol = Number(h.solcast_kwh || 0);
+        const wx = Number(h.wx_kwh || 0);
+        const solPct = Math.max(2, (sol / max) * 100);
+        const wxPct = Math.max(2, (wx / max) * 100);
+        const wxCls = wx + 1e-9 < sol ? "wx wx-down" : "wx";
+        const label = `${String(h.hour).padStart(2, "0")}:00 · k_wx=${h.k_wx != null ? Number(h.k_wx).toFixed(2) : "—"}`;
+        return `<div class="pv-weather-hour"><div class="hw">${escapeHtml(label)}</div>` +
+          `<div class="pv-weather-dual">` +
+          `<div class="pair"><span class="lbl">Solcast</span><div class="bar"><span style="width:${solPct.toFixed(0)}%"></span></div>` +
+          `<span class="num">${fmtKwh(sol, 2)}</span></div>` +
+          `<div class="pair"><span class="lbl">po OWM</span><div class="bar"><span class="${wxCls}" style="width:${wxPct.toFixed(0)}%"></span></div>` +
+          `<span class="num">${fmtKwh(wx, 2)}</span></div>` +
+          `</div></div>`;
+      }).join("");
+    }
+  }
+
+  if (rows) {
+    rows.innerHTML = hours.map((h) => {
+      const d = Number(h.delta_kwh || 0);
+      const dTxt = (d >= 0 ? "+" : "") + d.toFixed(2);
+      const pop = h.pop != null ? `${(Number(h.pop) * 100).toFixed(0)}%` : "—";
+      return `<tr>` +
+        `<td>${String(h.hour).padStart(2, "0")}</td>` +
+        `<td>${fmtKwh(h.solcast_kwh, 2)}</td>` +
+        `<td>${h.k_wx != null ? Number(h.k_wx).toFixed(2) : "—"}</td>` +
+        `<td>${fmtKwh(h.wx_kwh, 2)}</td>` +
+        `<td>${dTxt}</td>` +
+        `<td>${h.clouds != null ? Number(h.clouds).toFixed(0) + "%" : "—"}</td>` +
+        `<td>${pop}</td>` +
+        `<td>${h.weather_id != null ? h.weather_id : "—"}</td>` +
+        `</tr>`;
+    }).join("");
+  }
+
+  if (meta) {
+    const om = weather.owm_meta || {};
+    meta.textContent = [
+      `api: ${weather.api || "—"}`,
+      om.cached ? "cache hit" : "live",
+      om.error ? `owm: ${om.error}` : "",
+      `horyzont h+${weather.horizon_start_h}…h+${weather.horizon_end_h}`,
+      hours.length ? `${hours.length} slotów` : "",
+    ].filter(Boolean).join(" · ");
+  }
+}
+
 function renderPvCorrectionBlock(payload) {
   const c = payload.correction || {};
   const p = payload.projections || {};
@@ -1148,6 +1249,7 @@ function renderPvCorrectionBlock(payload) {
   renderPvCorrectionChart(payload.projection_curve || [], Number(c.alpha || 0));
   renderPvCorrectionBars(p);
   renderPvCorrectionBands(payload.remainder_bands);
+  renderPvWeatherBlock(payload.weather);
 
   const clipRows = document.getElementById("pvCorrectionClipRows");
   if (clipRows) {

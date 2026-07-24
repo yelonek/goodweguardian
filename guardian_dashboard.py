@@ -72,6 +72,10 @@ from planner.pv_correction import (
     pv_plan_current_hour_kwh,
     pv_plan_next_hour_kwh,
 )
+from planner.pv_weather_correction import (
+    PV_WEATHER_HORIZON_END_H,
+    build_pv_weather_dashboard,
+)
 from planner.pv_planner_display import (
     build_pv_correction_meta_for_slot,
     planner_pv_milp_snapshot,
@@ -1311,6 +1315,21 @@ def _pv_correction_payload() -> dict[str, Any]:
 
     corrected, sources, apply_meta = apply_pv_correction(slots, pv_by_key, now=now)
 
+    # Horyzont h+0…h+6 pod wizualizację korekty pogodowej (OWM Free).
+    wx_slots: list[tuple[str, int]] = []
+    cursor = now.replace(minute=0, second=0, microsecond=0)
+    for _i in range(PV_WEATHER_HORIZON_END_H + 1):
+        wx_slots.append((cursor.date().isoformat(), cursor.hour))
+        cursor = cursor + timedelta(hours=1)
+    wx_corrected, wx_sources, _ = apply_pv_correction(wx_slots, pv_by_key, now=now)
+    weather_payload = build_pv_weather_dashboard(
+        wx_slots,
+        pv_by_key,
+        wx_corrected,
+        wx_sources,
+        now=now,
+    )
+
     pv_plan_kwh = corrected.get(current_key)
     pv_plan_next = corrected.get(slots[1])
     k_plan_only: float | None = None
@@ -1410,6 +1429,7 @@ def _pv_correction_payload() -> dict[str, Any]:
         "clip_timeline": clip_samples,
         "today_hours": today_hours,
         "remainder_bands": milp_pv,
+        "weather": weather_payload,
     }
 
 
