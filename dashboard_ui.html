@@ -271,7 +271,8 @@
     .forecast-day-chart .bar-load-mid { fill: rgba(107, 140, 174, 0.9); }
     .forecast-day-chart .bar-load-hi { fill: rgba(155, 180, 200, 0.85); }
     .forecast-day-chart .bar-pv { fill: rgba(13, 128, 80, 0.85); }
-    .forecast-day-chart .bar-grid { fill: rgba(140, 155, 175, 0.75); }
+    .forecast-day-chart .bar-grid-imp { fill: rgba(140, 155, 175, 0.75); }
+    .forecast-day-chart .bar-grid-exp { fill: rgba(45, 160, 140, 0.8); }
     .forecast-day-chart .bar-load { fill: rgba(107, 140, 174, 0.9); }
     .forecast-day-chart .line-soc { fill: none; stroke: #2a9dad; stroke-width: 2.25; }
     .forecast-day-chart .dot-soc { fill: #2a9dad; }
@@ -290,7 +291,8 @@
     .forecast-day-legend i.load-p25 { background: rgba(74, 106, 136, 0.95); }
     .forecast-day-legend i.load-mid { background: rgba(107, 140, 174, 0.9); }
     .forecast-day-legend i.load-hi { background: rgba(155, 180, 200, 0.85); }
-    .forecast-day-legend i.grid { background: rgba(140, 155, 175, 0.75); }
+    .forecast-day-legend i.grid-imp { background: rgba(140, 155, 175, 0.75); }
+    .forecast-day-legend i.grid-exp { background: rgba(45, 160, 140, 0.8); }
     .forecast-day-legend i.load { background: rgba(107, 140, 174, 0.9); }
     .forecast-day-legend i.soc { background: #2a9dad; height: 3px; width: 14px; border-radius: 1px; }
     .forecast-day-legend i.now {
@@ -812,15 +814,16 @@
         </div>
         <div class="forecast-day-chart-block">
           <h3>Bilans + SOC</h3>
-          <p class="chart-lead">PV i import sieci w górę; load domu i EV w dół; linia SOC na prawej osi (%).</p>
+          <p class="chart-lead">PV i import w górę; load, EV i eksport w dół; linia SOC na prawej osi (%).</p>
           <div class="forecast-day-chart-wrap">
             <svg class="forecast-day-chart tall" id="forecastBalanceSocChart" viewBox="0 0 720 240" preserveAspectRatio="xMidYMid meet"></svg>
           </div>
           <div class="forecast-day-legend">
             <span><i class="pv"></i>PV</span>
-            <span><i class="grid"></i>Grid import</span>
+            <span><i class="grid-imp"></i>Grid import</span>
             <span><i class="load"></i>Load (dom)</span>
             <span><i class="ev"></i>EV</span>
+            <span><i class="grid-exp"></i>Grid export</span>
             <span><i class="soc"></i>SOC %</span>
             <span><i class="now"></i>teraz</span>
           </div>

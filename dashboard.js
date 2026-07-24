@@ -982,14 +982,22 @@ function forecastHourLoadBands(r) {
   return { p25, p50, p75 };
 }
 
-function forecastHourGridImportKwh(r, pv, dom, ev) {
+/** Grid import / export from house balance (no simultaneous imp+exp in one hour). */
+function forecastHourGridFlowsKwh(r, pv, dom, ev) {
   const bat = _numOrNull(r.policy_battery_delta_kwh);
+  let residual;
   if (bat != null) {
-    return Math.max(0, dom + ev + Math.max(bat, 0) - pv - Math.max(-bat, 0));
+    // pv + discharge − dom − ev − charge  →  + = export, − = import
+    residual = pv + Math.max(-bat, 0) - dom - ev - Math.max(bat, 0);
+  } else {
+    const net = _numOrNull(r.net_kwh);
+    if (net != null) {
+      return { imp: Math.max(0, -net), exp: Math.max(0, net) };
+    }
+    residual = pv - dom - ev;
   }
-  const net = _numOrNull(r.net_kwh);
-  if (net != null) return Math.max(0, -net);
-  return Math.max(0, dom + ev - pv);
+  if (residual >= 0) return { imp: 0, exp: residual };
+  return { imp: -residual, exp: 0 };
 }
 
 /** Shared SVG frame: Y ticks, X hour ticks, optional zero line, now marker. */
@@ -1192,15 +1200,15 @@ function renderForecastBalanceSocChart(rows, nowFrac) {
     const pv = forecastHourPvKwh(r);
     const ev = forecastHourEvKwh(r);
     const dom = forecastHourDomLoadKwh(r, ev);
-    const grid = forecastHourGridImportKwh(r, pv, dom, ev);
+    const { imp: gridImp, exp: gridExp } = forecastHourGridFlowsKwh(r, pv, dom, ev);
     const soc = _numOrNull(r.soc_pct);
-    return { hour: Number(r.hour), pv, ev, dom, grid, soc };
+    return { hour: Number(r.hour), pv, ev, dom, gridImp, gridExp, soc };
   });
   let maxUp = 0.05;
   let maxDown = 0.05;
   for (const s of series) {
-    maxUp = Math.max(maxUp, s.pv + s.grid);
-    maxDown = Math.max(maxDown, s.dom + s.ev);
+    maxUp = Math.max(maxUp, s.pv + s.gridImp);
+    maxDown = Math.max(maxDown, s.dom + s.ev + s.gridExp);
   }
   const lim = Math.max(maxUp, maxDown) * 1.08;
   const { toXCenter, toY, html: axes } = svgDayChartAxes({
@@ -1212,15 +1220,16 @@ function renderForecastBalanceSocChart(rows, nowFrac) {
   let bars = "";
   for (const s of series) {
     const cx = toXCenter(s.hour, n);
-    const title = `h${String(s.hour).padStart(2, "0")}: PV ${s.pv.toFixed(2)} · grid↑ ${s.grid.toFixed(2)} · ` +
+    const title = `h${String(s.hour).padStart(2, "0")}: PV ${s.pv.toFixed(2)} · ` +
+      `imp ${s.gridImp.toFixed(2)} · exp ${s.gridExp.toFixed(2)} · ` +
       `dom ${s.dom.toFixed(2)} · EV ${s.ev.toFixed(2)}` +
       (s.soc != null ? ` · SOC ${s.soc.toFixed(0)}%` : "");
     bars += `<g><title>${escapeHtml(title)}</title>`;
-    // positive stack
+    // positive stack: sources into the house
     let yPos = 0;
     for (const seg of [
       { h: s.pv, cls: "bar-pv" },
-      { h: s.grid, cls: "bar-grid" },
+      { h: s.gridImp, cls: "bar-grid-imp" },
     ]) {
       if (seg.h <= 1e-9) continue;
       const y1 = toY(yPos + seg.h);
@@ -1229,11 +1238,12 @@ function renderForecastBalanceSocChart(rows, nowFrac) {
         `width="${barW.toFixed(1)}" height="${Math.max(1, Math.abs(y0 - y1)).toFixed(1)}"/>`;
       yPos += seg.h;
     }
-    // negative stack
+    // negative stack: sinks / outflow
     let yNeg = 0;
     for (const seg of [
       { h: s.dom, cls: "bar-load" },
       { h: s.ev, cls: "bar-ev" },
+      { h: s.gridExp, cls: "bar-grid-exp" },
     ]) {
       if (seg.h <= 1e-9) continue;
       const y1 = toY(-(yNeg + seg.h));
