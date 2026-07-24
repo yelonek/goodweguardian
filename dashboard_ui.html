@@ -432,9 +432,10 @@
     }
     .pv-pyramid-col h4 { margin: 0 0 10px; font-size: 0.95rem; }
     .pv-pyramid-nums { display: flex; flex-wrap: wrap; gap: 12px 20px; margin-bottom: 10px; }
-    .pv-pyramid-num { min-width: 7rem; }
+    .pv-pyramid-num { min-width: 8.5rem; }
     .pv-pyramid-num .label { font-size: 11px; opacity: 0.75; line-height: 1.3; }
     .pv-pyramid-num .val { font-size: 1.45rem; font-weight: 700; color: #0d8050; font-variant-numeric: tabular-nums; }
+    .pv-pyramid-num .band { font-size: 11px; opacity: 0.72; margin-top: 2px; font-variant-numeric: tabular-nums; }
     .pv-pyramid-num.net .val { font-size: 1.1rem; font-weight: 600; color: inherit; opacity: 0.92; }
     table.pv-pyramid { width: 100%; font-size: 12px; }
     table.pv-pyramid .pv-bar-wrap { min-width: 80px; }
@@ -608,8 +609,9 @@
       <div class="pv-pyramid-block card" id="pvPyramidBlock" style="display:none;">
         <h3>Tania energia PV (RCE &lt;59 gr)</h3>
         <p class="muted setting-lead" style="font-size:12px; margin:0 0 8px;">
-          Ile <strong>taniego PV</strong> zostało dziś i ile będzie jutro (prognoza p50).
-          <strong>Po load</strong> — nadwyżka po odjęciu domu (load_base p50), jak w planowaniu EV.
+          Ile <strong>taniego PV</strong> zostało dziś i ile będzie jutro (p10 / p50 / p90).
+          <strong>Po load</strong> — nadwyżka po domu: p10 = PV p10 − load p75 (bezpieczny budżet na ładowanie),
+          p50 = oczekiwana, p90 = optymistyczna.
         </p>
         <div class="pv-pyramid-compact">
           <div class="pv-pyramid-col" id="pvPyramidTodayCol">

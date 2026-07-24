@@ -1,4 +1,4 @@
-"""Piramida PV × RCE — prognoza na dziś+jutro (fakty + p50), tylko UX."""
+"""Piramida PV × RCE — prognoza na dziś+jutro (fakty + p10/p50/p90), tylko UX."""
 
 from __future__ import annotations
 
@@ -27,10 +27,10 @@ def _price_by_hour(pricing: dict[str, Any] | None) -> dict[int, dict[str, Any]]:
     return {int(h["hour"]): h for h in pricing.get("hours", [])}
 
 
-def _pv_forecast_kwh(pv_row: dict[str, Any] | None) -> float | None:
+def _pv_kw_field(pv_row: dict[str, Any] | None, key: str) -> float | None:
     if not pv_row:
         return None
-    raw = pv_row.get("pv_kw")
+    raw = pv_row.get(key)
     if raw is None:
         return None
     try:
@@ -38,6 +38,29 @@ def _pv_forecast_kwh(pv_row: dict[str, Any] | None) -> float | None:
     except (TypeError, ValueError):
         return None
     return max(0.0, v)
+
+
+def _pv_forecast_kwh(pv_row: dict[str, Any] | None) -> float | None:
+    return _pv_kw_field(pv_row, "pv_kw")
+
+
+def _pv_forecast_bands(
+    pv_row: dict[str, Any] | None,
+) -> tuple[float | None, float | None, float | None]:
+    """Zwraca (p10, p50, p90) z Solcast; brak p10/p90 → kopia p50."""
+    p50 = _pv_kw_field(pv_row, "pv_kw")
+    if p50 is None:
+        return None, None, None
+    p10 = _pv_kw_field(pv_row, "pv_kw_p10")
+    p90 = _pv_kw_field(pv_row, "pv_kw_p90")
+    if p10 is None:
+        p10 = p50
+    if p90 is None:
+        p90 = p50
+    # Uporządkuj na wypadek dziwnych odpowiedzi API
+    p10 = min(p10, p50)
+    p90 = max(p90, p50)
+    return p10, p50, p90
 
 
 CHEAP_THRESHOLD_PLN = 0.59
@@ -61,6 +84,31 @@ def export_kwh_for_slot(
     return max(0.0, pv_kwh - load_base_kwh)
 
 
+def surplus_bands_kwh(
+    *,
+    pv_p10: float,
+    pv_p50: float,
+    pv_p90: float,
+    load_p25: float,
+    load_p50: float,
+    load_p75: float,
+    surplus_p50: float,
+) -> tuple[float, float, float]:
+    """
+    Nadwyżka p10/p50/p90 jak w scenariuszach planera:
+    p10 (pesymistyczna) = PV p10 − load p75,
+    p90 (optymistyczna) = PV p90 − load p25.
+    p50 pochodzi z export_kwh_for_slot (plan lub PV p50 − load p50).
+    """
+    s10 = max(0.0, pv_p10 - load_p75)
+    s90 = max(0.0, pv_p90 - load_p25)
+    s50 = max(0.0, float(surplus_p50))
+    # Zachowaj spójność pasm względem p50
+    s10 = min(s10, s50)
+    s90 = max(s90, s50)
+    return s10, s50, s90
+
+
 def _load_base_kwh_for_hour(
     *,
     hour: int,
@@ -70,17 +118,67 @@ def _load_base_kwh_for_hour(
     twc_on: bool,
     load_row: dict[str, Any] | None,
 ) -> float:
+    bands = _load_base_bands_for_hour(
+        hour=hour,
+        hour_complete=hour_complete,
+        load_actual_map=load_actual_map,
+        ev_map=ev_map,
+        twc_on=twc_on,
+        load_row=load_row,
+    )
+    return bands[1]
+
+
+def _load_base_bands_for_hour(
+    *,
+    hour: int,
+    hour_complete: bool,
+    load_actual_map: dict[int, float],
+    ev_map: dict[int, float],
+    twc_on: bool,
+    load_row: dict[str, Any] | None,
+) -> tuple[float, float, float]:
+    """Zwraca (p25, p50, p75). Fakt → wszystkie trzy = load_base faktyczny."""
     if hour_complete:
         load_actual = load_actual_map.get(hour)
         if load_actual is not None:
             if twc_on and hour in ev_map:
-                return max(0.0, float(load_actual) - float(ev_map[hour]))
-            return float(load_actual)
+                actual = max(0.0, float(load_actual) - float(ev_map[hour]))
+            else:
+                actual = float(load_actual)
+            return actual, actual, actual
     if load_row is not None:
-        return float(
+        p50 = float(
             load_row.get("load_base_kwh_p50") or load_row.get("load_kwh_p50") or 0.0
         )
-    return 0.0
+        p25 = float(
+            load_row.get("load_base_kwh_p25")
+            or load_row.get("load_kwh_p25")
+            or p50
+        )
+        p75 = float(
+            load_row.get("load_base_kwh_p75")
+            or load_row.get("load_kwh_p75")
+            or p50
+        )
+        p25 = min(p25, p50)
+        p75 = max(p75, p50)
+        return max(0.0, p25), max(0.0, p50), max(0.0, p75)
+    return 0.0, 0.0, 0.0
+
+
+def _sum_band(hour_rows: list[dict[str, Any]], key: str, *, cheap_only: bool, cheap_threshold_pln: float) -> float:
+    total = 0.0
+    for r in hour_rows:
+        if r.get(key) is None:
+            continue
+        if cheap_only:
+            if r.get("rce_pln_kwh") is None:
+                continue
+            if float(r["rce_pln_kwh"]) >= cheap_threshold_pln:
+                continue
+        total += float(r[key])
+    return total
 
 
 def _aggregate_pv_rce(
@@ -108,19 +206,29 @@ def _aggregate_pv_rce(
         if r.get("pv_kwh") is not None and float(r["rce_pln_kwh"]) >= cheap_threshold_pln
     )
 
-    cheap_kwh = sum(
-        float(r["pv_kwh"])
-        for r in hour_rows
-        if r.get("pv_kwh") is not None and float(r["rce_pln_kwh"]) < cheap_threshold_pln
-    )
+    cheap_kwh_p10 = _sum_band(hour_rows, "pv_kwh_p10", cheap_only=True, cheap_threshold_pln=cheap_threshold_pln)
+    cheap_kwh_p50 = _sum_band(hour_rows, "pv_kwh", cheap_only=True, cheap_threshold_pln=cheap_threshold_pln)
+    cheap_kwh_p90 = _sum_band(hour_rows, "pv_kwh_p90", cheap_only=True, cheap_threshold_pln=cheap_threshold_pln)
 
-    cheap_surplus_kwh = sum(
-        float(r["surplus_kwh"])
-        for r in hour_rows
-        if r.get("surplus_kwh") is not None
-        and r.get("rce_pln_kwh") is not None
-        and float(r["rce_pln_kwh"]) < cheap_threshold_pln
+    # Fallback: stare wiersze bez pasm → p50
+    if not any(r.get("pv_kwh_p10") is not None for r in hour_rows):
+        cheap_kwh_p10 = cheap_kwh_p50
+    if not any(r.get("pv_kwh_p90") is not None for r in hour_rows):
+        cheap_kwh_p90 = cheap_kwh_p50
+
+    cheap_surplus_p10 = _sum_band(
+        hour_rows, "surplus_kwh_p10", cheap_only=True, cheap_threshold_pln=cheap_threshold_pln
     )
+    cheap_surplus_p50 = _sum_band(
+        hour_rows, "surplus_kwh", cheap_only=True, cheap_threshold_pln=cheap_threshold_pln
+    )
+    cheap_surplus_p90 = _sum_band(
+        hour_rows, "surplus_kwh_p90", cheap_only=True, cheap_threshold_pln=cheap_threshold_pln
+    )
+    if not any(r.get("surplus_kwh_p10") is not None for r in hour_rows):
+        cheap_surplus_p10 = cheap_surplus_p50
+    if not any(r.get("surplus_kwh_p90") is not None for r in hour_rows):
+        cheap_surplus_p90 = cheap_surplus_p50
 
     load_base_kwh = sum(
         float(r["load_base_kwh"])
@@ -147,8 +255,14 @@ def _aggregate_pv_rce(
 
     return {
         "pv_total_kwh": round(pv_total, 4),
-        "cheap_kwh": round(cheap_kwh, 4),
-        "cheap_surplus_kwh": round(cheap_surplus_kwh, 4),
+        "cheap_kwh": round(cheap_kwh_p50, 4),
+        "cheap_kwh_p10": round(cheap_kwh_p10, 4),
+        "cheap_kwh_p50": round(cheap_kwh_p50, 4),
+        "cheap_kwh_p90": round(cheap_kwh_p90, 4),
+        "cheap_surplus_kwh": round(cheap_surplus_p50, 4),
+        "cheap_surplus_kwh_p10": round(cheap_surplus_p10, 4),
+        "cheap_surplus_kwh_p50": round(cheap_surplus_p50, 4),
+        "cheap_surplus_kwh_p90": round(cheap_surplus_p90, 4),
         "load_base_kwh": round(load_base_kwh, 4),
         "above_60_kwh": round(above_60, 4),
         "tiers": tiers,
@@ -160,7 +274,7 @@ def build_pv_pyramid_payload(now: datetime | None = None) -> dict[str, Any]:
     """
     Horyzont 48 h od północy dziś (dziś + jutro).
 
-    Godzina zakończona → PV z telemetrii (Δ E_pv); w trakcie / przyszła → prognoza p50.
+    Godzina zakończona → PV z telemetrii (Δ E_pv); w trakcie / przyszła → prognoza p10/p50/p90.
     Progi RCE skumulowane (gr); osobno wiersz ≥ progu taniości.
     """
     from guardian_dashboard import (  # noqa: PLC0415 — unik circular import
@@ -249,6 +363,8 @@ def build_pv_pyramid_payload(now: datetime | None = None) -> dict[str, Any]:
                     "hour": h,
                     "hour_complete": hour_complete,
                     "pv_kwh": None,
+                    "pv_kwh_p10": None,
+                    "pv_kwh_p90": None,
                     "pv_source": "missing",
                     "rce_pln_kwh": None,
                 }
@@ -263,23 +379,34 @@ def build_pv_pyramid_payload(now: datetime | None = None) -> dict[str, Any]:
 
         pv_actual_map = pv_actual_by_date.get(d_iso, {})
         pv_actual = pv_actual_map.get(h) if hour_complete else None
-        pv_forecast = _pv_forecast_kwh(pv_by_dh.get((d_iso, h)))
+        pv_p10_f, pv_p50_f, pv_p90_f = _pv_forecast_bands(pv_by_dh.get((d_iso, h)))
 
         pv_kwh: float | None
+        pv_kwh_p10: float | None
+        pv_kwh_p90: float | None
         pv_source: PvSource
         if hour_complete and pv_actual is not None:
-            pv_kwh = max(0.0, float(pv_actual))
+            actual = max(0.0, float(pv_actual))
+            pv_kwh = actual
+            pv_kwh_p10 = actual
+            pv_kwh_p90 = actual
             pv_source = "actual"
-        elif pv_forecast is not None:
-            pv_kwh = pv_forecast
+        elif pv_p50_f is not None:
+            pv_kwh = pv_p50_f
+            pv_kwh_p10 = pv_p10_f
+            pv_kwh_p90 = pv_p90_f
             pv_source = "forecast"
         elif hour_complete and pv_actual is None:
-            pv_kwh = pv_forecast
-            pv_source = "forecast" if pv_forecast is not None else "missing"
+            pv_kwh = pv_p50_f
+            pv_kwh_p10 = pv_p10_f
+            pv_kwh_p90 = pv_p90_f
+            pv_source = "forecast" if pv_p50_f is not None else "missing"
             if pv_kwh is None:
                 warnings.append(f"brak PV (fakt/prognoza): {d_iso} h{h:02d}")
         else:
             pv_kwh = None
+            pv_kwh_p10 = None
+            pv_kwh_p90 = None
             pv_source = "missing"
             warnings.append(f"brak prognozy PV: {d_iso} h{h:02d}")
 
@@ -289,7 +416,7 @@ def build_pv_pyramid_payload(now: datetime | None = None) -> dict[str, Any]:
         if load_row is None and not hour_complete:
             base = predict_load_one_hour(slot.date(), h, lookback_days, load_cache)
             load_row = base
-        load_base_kwh = _load_base_kwh_for_hour(
+        load_p25, load_p50, load_p75 = _load_base_bands_for_hour(
             hour=h,
             hour_complete=hour_complete,
             load_actual_map=load_actual_map,
@@ -297,17 +424,31 @@ def build_pv_pyramid_payload(now: datetime | None = None) -> dict[str, Any]:
             twc_on=twc_on,
             load_row=load_row,
         )
-        surplus_kwh = (
-            export_kwh_for_slot(
+        load_base_kwh = load_p50
+
+        surplus_kwh: float | None = None
+        surplus_p10: float | None = None
+        surplus_p90: float | None = None
+        if pv_kwh is not None and pv_kwh_p10 is not None and pv_kwh_p90 is not None:
+            surplus_mid = export_kwh_for_slot(
                 d_iso,
                 h,
                 pv_kwh=float(pv_kwh),
                 load_base_kwh=load_base_kwh,
                 plan=rolling_plan,
             )
-            if pv_kwh is not None
-            else None
-        )
+            s10, s50, s90 = surplus_bands_kwh(
+                pv_p10=float(pv_kwh_p10),
+                pv_p50=float(pv_kwh),
+                pv_p90=float(pv_kwh_p90),
+                load_p25=load_p25,
+                load_p50=load_p50,
+                load_p75=load_p75,
+                surplus_p50=surplus_mid,
+            )
+            surplus_kwh = s50
+            surplus_p10 = s10
+            surplus_p90 = s90
 
         hour_rows.append(
             {
@@ -315,10 +456,16 @@ def build_pv_pyramid_payload(now: datetime | None = None) -> dict[str, Any]:
                 "hour": h,
                 "hour_complete": hour_complete,
                 "pv_kwh": pv_kwh,
+                "pv_kwh_p10": pv_kwh_p10,
+                "pv_kwh_p90": pv_kwh_p90,
                 "pv_source": pv_source,
                 "rce_pln_kwh": rce_f,
                 "load_base_kwh": round(load_base_kwh, 4),
+                "load_base_kwh_p25": round(load_p25, 4),
+                "load_base_kwh_p75": round(load_p75, 4),
                 "surplus_kwh": round(surplus_kwh, 4) if surplus_kwh is not None else None,
+                "surplus_kwh_p10": round(surplus_p10, 4) if surplus_p10 is not None else None,
+                "surplus_kwh_p90": round(surplus_p90, 4) if surplus_p90 is not None else None,
             }
         )
 

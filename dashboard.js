@@ -681,16 +681,37 @@ function renderPvPyramidTable(segment, tbodyId, cheapGr) {
       <td class="pv-bar-wrap"><span class="pv-bar" style="width:${abovePct}%; opacity:0.55;"></span></td></tr>`;
 }
 
+function _pyramidBand(p10, p50, p90) {
+  const a = Number(p10);
+  const b = Number(p50);
+  const c = Number(p90);
+  if (![a, b, c].every(Number.isFinite)) return "";
+  if (Math.abs(a - b) < 0.05 && Math.abs(c - b) < 0.05) return "";
+  return `<div class="band">p10 ${a.toFixed(1)} · p90 ${c.toFixed(1)}</div>`;
+}
+
 function renderPvPyramidNums(segment, elId, cheapGr) {
   const el = document.getElementById(elId);
   if (!el) return;
-  const cheap = Number(segment?.cheap_kwh || 0);
-  const surplus = Number(segment?.cheap_surplus_kwh || 0);
+  const cheapP50 = Number(
+    segment?.cheap_kwh_p50 ?? segment?.cheap_kwh ?? 0
+  );
+  const cheapP10 = Number(segment?.cheap_kwh_p10 ?? cheapP50);
+  const cheapP90 = Number(segment?.cheap_kwh_p90 ?? cheapP50);
+  const surplusP50 = Number(
+    segment?.cheap_surplus_kwh_p50 ?? segment?.cheap_surplus_kwh ?? 0
+  );
+  const surplusP10 = Number(segment?.cheap_surplus_kwh_p10 ?? surplusP50);
+  const surplusP90 = Number(segment?.cheap_surplus_kwh_p90 ?? surplusP50);
   el.innerHTML =
     `<div class="pv-pyramid-num"><div class="label">PV tanio (&lt;${cheapGr} gr)</div>` +
-    `<div class="val">${cheap.toFixed(1)} kWh</div></div>` +
+    `<div class="val">${cheapP50.toFixed(1)} kWh</div>` +
+    _pyramidBand(cheapP10, cheapP50, cheapP90) +
+    `</div>` +
     `<div class="pv-pyramid-num net"><div class="label">Po load (nadwyżka)</div>` +
-    `<div class="val">${surplus.toFixed(1)} kWh</div></div>`;
+    `<div class="val">${surplusP50.toFixed(1)} kWh</div>` +
+    _pyramidBand(surplusP10, surplusP50, surplusP90) +
+    `</div>`;
 }
 
 function renderPvPyramid(p) {
