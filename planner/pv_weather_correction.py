@@ -14,7 +14,6 @@ import logging
 from datetime import datetime
 from typing import Any
 
-from guardian_config import PV_WEATHER_CORRECTION_ENABLED
 from weather_owm import (
     current_tier1,
     fetch_weather_pack,
@@ -39,6 +38,13 @@ PV_WEATHER_K_MAX = 1.25
 # Minutely: średnie mm/h powyżej progu → lekki derate na najbliższych slotach wx.
 PV_WEATHER_MINUTELY_PRECIP_MMH = 0.15
 PV_WEATHER_MINUTELY_FACTOR = 0.85
+
+
+def pv_weather_correction_enabled() -> bool:
+    """Przełącznik z Ustawień (``state/settings.json``), nie z ``.env``."""
+    from guardian_settings import get_settings
+
+    return bool(get_settings().pv_weather_correction_enabled)
 
 
 def clip_k(value: float, *, k_min: float, k_max: float) -> float:
@@ -176,7 +182,7 @@ def apply_pv_weather_correction(
     ``onecall`` — alias wsteczny dla ``weather_pack``.
     """
     if enabled is None:
-        enabled = PV_WEATHER_CORRECTION_ENABLED
+        enabled = pv_weather_correction_enabled()
 
     meta: dict[str, Any] = {
         "enabled": bool(enabled),
@@ -285,3 +291,92 @@ def apply_pv_weather_correction(
     meta["applied"] = bool(adjusted)
     meta["reason"] = "ok" if adjusted else "no_matching_hourly"
     return out_corr, out_src, meta
+
+
+def build_pv_weather_dashboard(
+    slots: list[HorizonSlot],
+    pv_by_key: dict[HorizonSlot, dict],
+    corrected_intra: dict[HorizonSlot, float],
+    sources_intra: dict[HorizonSlot, str],
+    *,
+    now: datetime,
+    weather_pack: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Snapshot do panelu dashboardu: zawsze liczy podgląd ``k_wx`` (gdy OWM skonfigurowane),
+    a ``affects_plan`` zależy od przełącznika w Ustawieniach.
+    """
+    settings_on = pv_weather_correction_enabled()
+    configured = owm_configured() or weather_pack is not None
+
+    base: dict[str, Any] = {
+        "enabled": settings_on,
+        "configured": bool(owm_configured()),
+        "affects_plan": False,
+        "tier": 1,
+        "api": "openweathermap_free_2_5",
+        "horizon_start_h": PV_WEATHER_HORIZON_START_H,
+        "horizon_end_h": PV_WEATHER_HORIZON_END_H,
+        "reason": "disabled",
+        "owm_meta": None,
+        "current": None,
+        "hours": [],
+        "delta_kwh_sum": None,
+    }
+
+    if not configured and weather_pack is None:
+        base["reason"] = "not_configured"
+        return base
+
+    # Podgląd zawsze z enabled=True — UI pokazuje wpływ nawet gdy przełącznik off.
+    _corr, _src, preview = apply_pv_weather_correction(
+        slots,
+        pv_by_key,
+        corrected_intra,
+        sources_intra,
+        now=now,
+        weather_pack=weather_pack,
+        enabled=True,
+    )
+
+    hours: list[dict[str, Any]] = []
+    delta_sum = 0.0
+    for row in preview.get("slots_adjusted") or []:
+        before = float(row.get("pv_kwh_before") or 0.0)
+        after = float(row.get("pv_kwh") or 0.0)
+        delta = after - before
+        delta_sum += delta
+        hours.append(
+            {
+                "date": row.get("date"),
+                "hour": row.get("hour"),
+                "hour_offset": row.get("hour_offset"),
+                "solcast_kwh": before,
+                "wx_kwh": after,
+                "delta_kwh": delta,
+                "k_wx": row.get("k_wx"),
+                "clearness": row.get("clearness"),
+                "clouds": row.get("clouds"),
+                "uvi": row.get("uvi"),
+                "pop": row.get("pop"),
+                "weather_id": row.get("weather_id"),
+                "affects_plan": bool(settings_on and preview.get("applied")),
+            }
+        )
+
+    reason = str(preview.get("reason") or "ok")
+    if not settings_on:
+        reason = "disabled_in_settings" if reason in ("ok", "disabled") else reason
+
+    base.update(
+        {
+            "affects_plan": bool(settings_on and preview.get("applied")),
+            "reason": reason,
+            "owm_meta": preview.get("owm_meta"),
+            "current": preview.get("current"),
+            "hours": hours,
+            "delta_kwh_sum": delta_sum if hours else None,
+            "preview_applied": bool(preview.get("applied")),
+        }
+    )
+    return base

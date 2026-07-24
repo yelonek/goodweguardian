@@ -8,6 +8,7 @@ import pytest
 
 from planner.pv_weather_correction import (
     apply_pv_weather_correction,
+    build_pv_weather_dashboard,
     clearness_proxy,
     k_wx_from_tier1,
     weather_id_penalty,
@@ -203,6 +204,62 @@ def test_apply_scales_h2_to_h6_skips_intra(monkeypatch: pytest.MonkeyPatch) -> N
     assert new_src[("2026-06-11", 17)] == "solcast_proxy"  # h+7
     assert new_corr[("2026-06-11", 12)] < 4.0  # pochmurno → w dół
     assert new_corr[("2026-06-11", 13)] >= 4.0  # jasno → w górę (do clip)
+
+
+def test_build_pv_weather_dashboard_preview_when_settings_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import planner.pv_weather_correction as wx_mod
+
+    now = datetime(2026, 6, 11, 10, 20, 0)
+    slots = [("2026-06-11", h) for h in range(10, 17)]
+    pv_by_key = {s: {"pv_kw": 4.0} for s in slots}
+    corrected = {s: 4.0 for s in slots}
+    sources = {s: "solcast_proxy" for s in slots}
+    sources[("2026-06-11", 10)] = "pv_intra_current"
+    sources[("2026-06-11", 11)] = "pv_intra_next"
+
+    monkeypatch.setattr(wx_mod, "pv_weather_correction_enabled", lambda: False)
+    monkeypatch.setattr(wx_mod, "owm_configured", lambda: True)
+    monkeypatch.setattr(
+        wx_mod,
+        "hourly_by_local_slot",
+        lambda _pack, **_kw: {
+            ("2026-06-11", 12): {
+                "clouds": 90,
+                "uvi": None,
+                "pop": 0.5,
+                "weather_id": 804,
+                "rain_1h": 0.0,
+                "snow_1h": 0.0,
+            },
+            ("2026-06-11", 13): {
+                "clouds": 10,
+                "uvi": None,
+                "pop": 0.0,
+                "weather_id": 800,
+                "rain_1h": 0.0,
+                "snow_1h": 0.0,
+            },
+        },
+    )
+    monkeypatch.setattr(wx_mod, "minutely_mean_precip_mmh", lambda _p: None)
+    monkeypatch.setattr(wx_mod, "current_tier1", lambda _p: {"clouds": 80, "weather_id": 803})
+
+    dash = build_pv_weather_dashboard(
+        slots,
+        pv_by_key,
+        corrected,
+        sources,
+        now=now,
+        weather_pack={"_meta": {"error": None}, "hourly": [{}]},
+    )
+    assert dash["enabled"] is False
+    assert dash["reason"] == "disabled_in_settings"
+    assert dash["affects_plan"] is False
+    assert len(dash["hours"]) >= 1
+    assert dash["hours"][0]["solcast_kwh"] == 4.0
+    assert dash["hours"][0]["affects_plan"] is False
 
 
 def test_apply_skips_when_disabled() -> None:

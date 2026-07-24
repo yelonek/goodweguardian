@@ -92,7 +92,8 @@ Efekt: pesymistyczny scenariusz reszty slotu nie zeruje PV, gdy słońce już je
 - **OWM Tier1 (eksperymentalne):** [`planner/pv_weather_correction.py`](../../planner/pv_weather_correction.py)
   skaluje Solcast na **h+2…h+6** przez `k_wx` z **Free** Current + 5-day/3h
   (`clouds`/`pop`/`weather`/`rain`; kroki 3h → godziny lokalne). Bez uvi/minutely.
-  Wymaga `OPENWEATHER_API_KEY` + lat/lon; snapshot w `inputs_snapshot.pv_weather_correction`.
+  Przełącznik: Ustawienia → `pv_weather_correction_enabled`. Klucz/lat/lon w `.env`.
+  Podgląd na stronie **Korekta PV** (`/api/pv-correction` → `weather`).
   Tier2 (temp/wilgotność) — później.
 - `u` (p10/p50/p90) — pasma reszty bieżącej h wpływają na scenario MILP (patrz sekcja wyżej);
   pasma h+2… po OWM dziedziczą `k_scale` z `planner/inputs.py` gdy slot jest w `pv_corrected`.

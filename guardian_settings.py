@@ -208,6 +208,14 @@ class GuardianSettings(BaseModel):
             "Za duże ≈ nadmierna ostrożność; za małe ≈ wizja jak p50."
         ),
     )
+    pv_weather_correction_enabled: bool = Field(
+        True,
+        json_schema_extra=_meta("planner"),
+        description=(
+            "Korekta PV pogodą OWM (Free: clouds/pop/weather) na h+2…h+6. "
+            "Wymaga OPENWEATHER_API_KEY + lat/lon w .env. Wyłączony = surowy Solcast od h+2."
+        ),
+    )
 
 
 _FIELD_NAMES: frozenset[str] = frozenset(GuardianSettings.model_fields.keys())

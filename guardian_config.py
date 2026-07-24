@@ -94,7 +94,6 @@ OPENWEATHER_LAT: float | None = float(_owm_lat_raw) if _owm_lat_raw else None
 OPENWEATHER_LON: float | None = float(_owm_lon_raw) if _owm_lon_raw else None
 OPENWEATHER_CACHE_TTL_S = _float_env("OPENWEATHER_CACHE_TTL_S", 900.0)
 OPENWEATHER_HTTP_TIMEOUT_S = _float_env("OPENWEATHER_HTTP_TIMEOUT_S", 10.0)
-PV_WEATHER_CORRECTION_ENABLED = _bool_env("PV_WEATHER_CORRECTION_ENABLED", True)
 
 # Tesla Wall Connector Gen 3 — lokalne API /api/1/lifetime (puste = wyłączone)
 TESLA_WC_HOST = (
