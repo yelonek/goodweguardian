@@ -1060,7 +1060,13 @@ function renderPvCorrectionChart(curve, alpha) {
   const innerH = h - pad.t - pad.b;
   const ymax = Math.max(
     0.05,
-    ...curve.map((p) => Math.max(p.solcast_kwh || 0, p.actual_kwh || 0, p.plan_kwh || 0))
+    ...curve.map((p) => Math.max(
+      p.solcast_p10_kwh || 0,
+      p.solcast_kwh || 0,
+      p.solcast_p90_kwh || 0,
+      p.actual_kwh || 0,
+      p.plan_kwh || 0
+    ))
   );
   const x = (m) => pad.l + (m / 60) * innerW;
   const y = (v) => pad.t + innerH - (v / ymax) * innerH;
@@ -1069,12 +1075,23 @@ function renderPvCorrectionChart(curve, alpha) {
     if (!pts.length) return "";
     return pts.map((p, i) => `${i ? "L" : "M"}${x(p.minute).toFixed(1)},${y(p[key]).toFixed(1)}`).join(" ");
   };
+  const endLabel = (key, text) => {
+    const last = [...curve].reverse().find((p) => p[key] != null);
+    if (!last) return "";
+    return `<text x="${(x(last.minute) - 2).toFixed(1)}" y="${(y(last[key]) - 3).toFixed(1)}" ` +
+      `text-anchor="end" font-size="9" fill="rgba(120, 180, 255, 0.95)">${text}</text>`;
+  };
   const nowX = x(Math.min(60, Math.max(0, alpha * 60)));
   svg.innerHTML =
     `<rect x="0" y="0" width="${w}" height="${h}" fill="transparent"/>` +
     `<text x="${pad.l}" y="${h - 6}" font-size="10" fill="currentColor" opacity="0.6">:00</text>` +
     `<text x="${w - pad.r - 16}" y="${h - 6}" font-size="10" fill="currentColor" opacity="0.6">:60</text>` +
+    `<path class="line-solcast" d="${linePath("solcast_p10_kwh")}"/>` +
     `<path class="line-solcast" d="${linePath("solcast_kwh")}"/>` +
+    `<path class="line-solcast" d="${linePath("solcast_p90_kwh")}"/>` +
+    endLabel("solcast_p10_kwh", "p10") +
+    endLabel("solcast_kwh", "p50") +
+    endLabel("solcast_p90_kwh", "p90") +
     `<path class="line-actual" d="${linePath("actual_kwh")}"/>` +
     `<path class="line-plan" d="${linePath("plan_kwh")}"/>` +
     `<line class="now-v" x1="${nowX.toFixed(1)}" y1="${pad.t}" x2="${nowX.toFixed(1)}" y2="${h - pad.b}"/>` +

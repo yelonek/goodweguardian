@@ -1249,30 +1249,39 @@ _pv_correction_cache: tuple[float, dict[str, Any]] | None = None
 def _pv_correction_projection_curve(
     *,
     f50_kwh: float,
+    f10_kwh: float | None = None,
+    f90_kwh: float | None = None,
     alpha: float,
     a_so_far_kwh: float,
     pv_plan_kwh: float | None,
     minute_series: list[dict[str, float | int]],
 ) -> list[dict[str, float]]:
-    """Krzywe kumulatywne [kWh] do wykresu: Solcast vs actual vs plan."""
+    """Krzywe kumulatywne [kWh] do wykresu: Solcast p10/p50/p90 vs actual vs plan."""
     actual_by_min: dict[int, float] = {
         int(p["minute"]): float(p["cum_kwh"]) for p in minute_series
     }
     now_minute = max(0, min(59, int(round(alpha * 60))))
+    f10 = float(f10_kwh) if f10_kwh is not None else float(f50_kwh)
+    f90 = float(f90_kwh) if f90_kwh is not None else float(f50_kwh)
     points: list[dict[str, float]] = []
     for minute in range(0, 61):
-        solcast = f50_kwh * minute / 60.0
+        frac = minute / 60.0
+        solcast = f50_kwh * frac
+        solcast_p10 = f10 * frac
+        solcast_p90 = f90 * frac
         actual = actual_by_min.get(minute)
         plan: float | None = None
         if pv_plan_kwh is not None and minute >= now_minute and now_minute < 60:
-            frac = (minute - now_minute) / max(1, 60 - now_minute)
-            plan = a_so_far_kwh + (pv_plan_kwh - a_so_far_kwh) * frac
+            rem_frac = (minute - now_minute) / max(1, 60 - now_minute)
+            plan = a_so_far_kwh + (pv_plan_kwh - a_so_far_kwh) * rem_frac
         elif actual is not None:
             plan = actual
         points.append(
             {
                 "minute": float(minute),
                 "solcast_kwh": solcast,
+                "solcast_p10_kwh": solcast_p10,
+                "solcast_p90_kwh": solcast_p90,
                 "actual_kwh": actual if actual is not None else None,
                 "plan_kwh": plan,
             }
@@ -1306,6 +1315,10 @@ def _pv_correction_payload() -> dict[str, Any]:
 
     f50_row = pv_by_key.get(current_key, {})
     f50_current = float(f50_row.get("pv_kw") or 0.0)
+    f10_raw = f50_row.get("pv_kw_p10")
+    f90_raw = f50_row.get("pv_kw_p90")
+    f10_current = float(f10_raw) if f10_raw is not None else f50_current
+    f90_current = float(f90_raw) if f90_raw is not None else f50_current
 
     state = build_pv_intra_state(now, f50_current_kwh=f50_current)
     alpha = float(state.get("alpha") or 0.0)
@@ -1413,6 +1426,8 @@ def _pv_correction_payload() -> dict[str, Any]:
         },
         "projections": {
             "solcast_full_hour_kwh": f50_current,
+            "solcast_p10_full_hour_kwh": f10_current,
+            "solcast_p90_full_hour_kwh": f90_current,
             "k_intra_only_kwh": k_plan_only,
             "rate_only_kwh": rate_plan_only,
             "final_plan_kwh": pv_plan_kwh,
@@ -1421,6 +1436,8 @@ def _pv_correction_payload() -> dict[str, Any]:
         "minute_series": minute_series,
         "projection_curve": _pv_correction_projection_curve(
             f50_kwh=f50_current,
+            f10_kwh=f10_current,
+            f90_kwh=f90_current,
             alpha=alpha,
             a_so_far_kwh=float(a_so_far or 0.0),
             pv_plan_kwh=float(pv_plan_kwh) if pv_plan_kwh is not None else None,

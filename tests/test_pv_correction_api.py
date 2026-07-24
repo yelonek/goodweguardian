@@ -42,13 +42,35 @@ def test_dashboard_ui_has_pv_correction_page(pv_corr_client: TestClient) -> None
     assert r.status_code == 200
     assert 'id="page-pv-correction"' in r.text
     assert 'data-page="pv-correction"' in r.text
+    assert "Solcast p10 / p50 / p90" in r.text
     js = pv_corr_client.get("/dashboard.js")
     assert "loadPvCorrection" in js.text
     assert '"pv-correction": loadPvCorrection' in js.text
     assert "renderPvCorrectionBands" in js.text
     assert "renderPvWeatherBlock" in js.text
+    assert "solcast_p10_kwh" in js.text
+    assert "solcast_p90_kwh" in js.text
     assert 'id="pvCorrectionBands"' in r.text
     assert 'id="pvWeatherBlock"' in r.text
     settings = pv_corr_client.get("/api/settings").json()
     assert "pv_weather_correction_enabled" in settings["effective"]
     assert "pv_weather_correction_enabled" in settings["schema"]["properties"]
+
+
+def test_pv_correction_projection_curve_includes_bands() -> None:
+    from guardian_dashboard import _pv_correction_projection_curve
+
+    pts = _pv_correction_projection_curve(
+        f50_kwh=3.0,
+        f10_kwh=2.0,
+        f90_kwh=4.5,
+        alpha=0.5,
+        a_so_far_kwh=1.0,
+        pv_plan_kwh=2.5,
+        minute_series=[],
+    )
+    assert len(pts) == 61
+    assert pts[60]["solcast_kwh"] == pytest.approx(3.0)
+    assert pts[60]["solcast_p10_kwh"] == pytest.approx(2.0)
+    assert pts[60]["solcast_p90_kwh"] == pytest.approx(4.5)
+    assert pts[30]["solcast_p10_kwh"] == pytest.approx(1.0)
