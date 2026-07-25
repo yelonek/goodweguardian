@@ -338,6 +338,39 @@ def pv_plan_next_hour_kwh(*, f50_kwh: float, k_intra: float) -> float:
     return max(0.0, f50_kwh * k_intra)
 
 
+def telemetry_rate_plan_viable(
+    *,
+    alpha: float,
+    a_so_far_kwh: float | None,
+    recent_kw: float | None,
+    eps_kwh: float = PV_CORRECTION_EPS_KWH,
+) -> bool:
+    """Czy telemetria wystarczy do planu bieżącej h, gdy ``k_intra`` niedostępne (F50≈0)."""
+    if float(alpha) <= 0.0 or a_so_far_kwh is None:
+        return False
+    if recent_kw is not None and float(recent_kw) > 0.0:
+        return True
+    return float(a_so_far_kwh) > float(eps_kwh)
+
+
+def pv_plan_current_hour_from_rate(
+    *,
+    a_so_far_kwh: float,
+    alpha: float,
+    recent_kw: float | None,
+) -> tuple[float, dict[str, Any]]:
+    """Plan pełnej bieżącej godziny wyłącznie z telemetrii (bez F50 / k_intra)."""
+    rem_kw = float(recent_kw) if recent_kw is not None else 0.0
+    rate_plan = max(0.0, float(a_so_far_kwh) + rem_kw * max(0.0, 1.0 - float(alpha)))
+    plan = max(float(a_so_far_kwh), rate_plan)
+    return plan, {
+        "method": "telemetry_rate",
+        "rate_plan_kwh": rate_plan,
+        "rate_blend_weight": 1.0,
+        "recent_kw": recent_kw,
+    }
+
+
 def pv_remainder_bands_kwh(
     *,
     p50_full: float,
@@ -352,7 +385,8 @@ def pv_remainder_bands_kwh(
     Pasma PV [kWh] na **resztę** bieżącej godziny (p50, p10, p90).
 
     Niepewność zwęża się z ``(1 − α)``; ``P10_total ≥ A_so_far``; opcjonalny
-    floor reszty z ``recent_kw`` gdy produkcja trwa.
+    floor reszty z ``recent_kw`` gdy produkcja trwa (także na **p50** — inaczej
+    przy F50=0 baza mid-hour widzi resztę 0 mimo żywej mocy).
     """
     if narrow_enabled is None:
         narrow_enabled = PV_BAND_NARROW_ENABLED
@@ -387,8 +421,10 @@ def pv_remainder_bands_kwh(
         and al >= PV_BAND_RATE_MIN_ALPHA
     ):
         frac = max(0.0, 1.0 - al)
-        rate_p10 = float(recent_kw) * frac * PV_BAND_RATE_P10_FACTOR
-        rate_p90 = float(recent_kw) * frac * PV_BAND_RATE_P90_FACTOR
+        rate_p50 = float(recent_kw) * frac
+        rate_p10 = rate_p50 * PV_BAND_RATE_P10_FACTOR
+        rate_p90 = rate_p50 * PV_BAND_RATE_P90_FACTOR
+        p50_rem = max(p50_rem, rate_p50)
         p10_rem = max(p10_rem, rate_p10)
         p90_rem = max(p90_rem, p10_rem, rate_p90)
 
@@ -456,6 +492,8 @@ def apply_pv_correction(
     Zwraca skorygowane pv_kwh per slot oraz metadane korekty.
 
     - bieżąca h: A_so_far + (1−α)×F50×k_intra (gdy k_intra aktywne)
+    - bieżąca h (fallback): A_so_far + recent_kw×(1−α) gdy F50≈0 / brak k_intra,
+      ale telemetria pokazuje produkcję (regresja 2026-07-25 06:40)
     - h+1: k_intra × F50
     - pozostałe: surowy F50 (pv_kw z Solcast)
     """
@@ -470,6 +508,11 @@ def apply_pv_correction(
     f50_current = float(f50_row.get("pv_kw") or 0.0)
     state = build_pv_intra_state(now, f50_current_kwh=f50_current)
     k_intra = state.get("k_intra")
+    use_rate_fallback = k_intra is None and telemetry_rate_plan_viable(
+        alpha=float(state.get("alpha") or 0.0),
+        a_so_far_kwh=state.get("a_so_far_kwh"),
+        recent_kw=state.get("recent_kw"),
+    )
 
     corrected: dict[HorizonSlot, float] = {}
     sources: dict[HorizonSlot, str] = {}
@@ -498,6 +541,20 @@ def apply_pv_correction(
             elif slot == next_slot:
                 value = pv_plan_next_hour_kwh(f50_kwh=f50, k_intra=float(k_intra))
                 source = "pv_intra_next"
+        elif use_rate_fallback and slot == current_slot:
+            value, plan_meta = pv_plan_current_hour_from_rate(
+                a_so_far_kwh=float(state["a_so_far_kwh"]),
+                alpha=float(state["alpha"]),
+                recent_kw=state.get("recent_kw"),
+            )
+            state["k_intra_reason"] = state.get("reason")
+            state["plan_method"] = plan_meta.get("method")
+            state["pv_plan_kwh"] = value
+            state["rate_plan_kwh"] = plan_meta.get("rate_plan_kwh")
+            state["rate_blend_weight"] = plan_meta.get("rate_blend_weight")
+            state["applied"] = True
+            state["reason"] = "telemetry_rate_fallback"
+            source = "pv_telemetry_rate"
 
         corrected[slot] = value
         sources[slot] = source

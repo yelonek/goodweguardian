@@ -293,6 +293,73 @@ def test_pv_remainder_bands_no_rate_floor_at_night() -> None:
     assert p90 == pytest.approx(0.125)
 
 
+def test_pv_remainder_bands_f50_zero_lifts_p50_from_recent() -> None:
+    """Regresja 2026-07-25 06:40: F50=0 + żywe PV → p50_rem z rate, nie 0."""
+    p50, p10, p90 = pv_remainder_bands_kwh(
+        p50_full=0.0,
+        p10_full=0.0,
+        p90_full=0.0,
+        a_so_far=0.61,
+        alpha=40.0 / 60.0,
+        recent_kw=1.64375,
+    )
+    frac = 20.0 / 60.0
+    assert p50 == pytest.approx(1.64375 * frac, rel=1e-4)
+    assert p10 == pytest.approx(p50 * 0.70, rel=1e-4)
+    assert p90 == pytest.approx(p50 * 1.15, rel=1e-4)
+    assert p10 <= p50 <= p90
+
+
+def test_apply_pv_correction_f50_missing_uses_telemetry_rate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regresja 2026-07-25 06:40: brak slotu Solcast → plan z recent_kw, nie PV=0."""
+    import planner.pv_correction as pv_mod
+
+    now = datetime(2026, 7, 25, 6, 40, 0)
+    slots = [
+        ("2026-07-25", 6),
+        ("2026-07-25", 7),
+        ("2026-07-25", 8),
+    ]
+    # Bieżąca h wypadła z forecastu (jak Solcast mid-hour).
+    pv_by_key = {
+        ("2026-07-25", 7): {"pv_kw": 1.22},
+        ("2026-07-25", 8): {"pv_kw": 2.68},
+    }
+
+    monkeypatch.setattr(pv_mod, "PV_CORRECTION_ENABLED", True)
+    monkeypatch.setattr(
+        pv_mod,
+        "build_pv_intra_state",
+        lambda _now, f50_current_kwh: {
+            "enabled": True,
+            "applied": False,
+            "alpha": 40.0 / 60.0,
+            "f50_current_kwh": f50_current_kwh,
+            "a_so_far_kwh": 0.61,
+            "telemetry_samples": 41,
+            "recent_kw": 1.64375,
+            "recent_samples": 16,
+            "f_elapsed_kwh": 0.0,
+            "k_intra": None,
+            "reason": "f_elapsed_below_eps",
+            "plan_method": None,
+        },
+    )
+
+    corrected, sources, meta = apply_pv_correction(slots, pv_by_key, now=now)
+    expected = 0.61 + 1.64375 * (20.0 / 60.0)
+    assert corrected[("2026-07-25", 6)] == pytest.approx(expected, rel=1e-4)
+    assert sources[("2026-07-25", 6)] == "pv_telemetry_rate"
+    assert corrected[("2026-07-25", 7)] == pytest.approx(1.22)
+    assert sources[("2026-07-25", 7)] == "solcast_proxy"
+    assert meta["applied"] is True
+    assert meta["reason"] == "telemetry_rate_fallback"
+    assert meta["k_intra_reason"] == "f_elapsed_below_eps"
+    assert meta["plan_method"] == "telemetry_rate"
+
+
 def test_pv_remainder_bands_kill_switch_uses_subtract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
