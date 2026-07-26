@@ -27,3 +27,10 @@ def test_index_uses_external_ui_file() -> None:
     assert 'id="forecastBalanceSocChart"' in body
     assert "function renderForecastDayCharts(" in js.text
     assert "function renderForecastLoadResidualChart(" in js.text
+    assert "function forecastHourGridFlowsKwh(" in js.text
+    # Bilans+SOC must use authoritative net_kwh for imp/exp (same as table), not
+    # reconstruct from PV/load/EV + policy_battery_delta_kwh.
+    assert "r.net_kwh" in js.text
+    assert "policy_battery_delta_kwh" not in js.text.split("function forecastHourGridFlowsKwh(")[1].split(
+        "function "
+    )[0]

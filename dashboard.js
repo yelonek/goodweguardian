@@ -982,20 +982,17 @@ function forecastHourLoadBands(r) {
   return { p25, p50, p75 };
 }
 
-/** Grid import / export from house balance (no simultaneous imp+exp in one hour). */
+/**
+ * Grid import / export from authoritative net_kwh (same source as the forecast table).
+ * net+ = export, net− = import; never both in one hour.
+ * Fallback (net missing): residual from display PV − dom − EV (no battery reconstruction).
+ */
 function forecastHourGridFlowsKwh(r, pv, dom, ev) {
-  const bat = _numOrNull(r.policy_battery_delta_kwh);
-  let residual;
-  if (bat != null) {
-    // pv + discharge − dom − ev − charge  →  + = export, − = import
-    residual = pv + Math.max(-bat, 0) - dom - ev - Math.max(bat, 0);
-  } else {
-    const net = _numOrNull(r.net_kwh);
-    if (net != null) {
-      return { imp: Math.max(0, -net), exp: Math.max(0, net) };
-    }
-    residual = pv - dom - ev;
+  const net = _numOrNull(r.net_kwh);
+  if (net != null) {
+    return { imp: Math.max(0, -net), exp: Math.max(0, net) };
   }
+  const residual = pv - dom - ev;
   if (residual >= 0) return { imp: 0, exp: residual };
   return { imp: -residual, exp: 0 };
 }
