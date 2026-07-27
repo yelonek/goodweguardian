@@ -35,6 +35,20 @@
       margin-left: auto;
     }
     body.eco-override-active .topbar { border-bottom-color: #b32d2d; }
+    .eco-enabled-banner {
+      display: block;
+      padding: 10px 18px;
+      background: #7a6200;
+      color: #ffe566;
+      border-bottom: 2px solid #574500;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    .eco-enabled-banner[hidden] { display: none !important; }
+    .eco-enabled-banner .eco-override-inner { max-width: 1200px; }
+    .eco-enabled-banner strong { font-size: 14px; }
+    .eco-enabled-banner a { color: #ffe566; font-weight: 700; text-decoration: underline; margin-left: auto; }
+    body.eco-enabled-warned .topbar { border-bottom-color: #b8940a; }
     nav { display: flex; flex-wrap: wrap; gap: 6px; }
     nav a { text-decoration: none; color: inherit; padding: 6px 12px; border-radius: 8px; border: 1px solid transparent; font-size: 13px; }
     nav a:hover { border-color: rgba(127,127,127,0.4); }
@@ -666,6 +680,13 @@
       <strong>Inny eco slot aktywny — plan Guardiana nie działa</strong>
       <span class="eco-override-detail" id="ecoOverrideDetail"></span>
       <a href="#slots">Wyłącz w zakładce Sloty →</a>
+    </div>
+  </div>
+  <div id="ecoEnabledBanner" class="eco-enabled-banner" hidden role="status" aria-live="polite">
+    <div class="eco-override-inner">
+      <strong>Inny eco slot włączony</strong>
+      <span class="eco-override-detail" id="ecoEnabledDetail"></span>
+      <a href="#slots">Zarządzaj w zakładce Sloty →</a>
     </div>
   </div>
 

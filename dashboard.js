@@ -100,15 +100,15 @@ function fmtEcoSlotPower(pct) {
   return `${kind} ${Math.abs(n)}%`;
 }
 
-function describeEcoOverrideSlots(slots) {
+function describeEcoOverrideSlots(slots, { showStart = false } = {}) {
   if (!Array.isArray(slots) || !slots.length) return "";
   return slots.map((s) => {
     const label = s.slot_label || s.slot_id || "slot";
     const power = fmtEcoSlotPower(s.power_pct);
-    const end = s.end ? `do ${s.end}` : "";
+    const timeRange = s.start && s.end ? `${s.start}–${s.end}` : s.end ? `do ${s.end}` : "";
     const parts = [label];
     if (power) parts.push(power);
-    if (end) parts.push(end);
+    if (timeRange) parts.push(timeRange);
     return parts.join(", ");
   }).join(" · ");
 }
@@ -116,21 +116,43 @@ function describeEcoOverrideSlots(slots) {
 function renderEcoOverrideBanner(status) {
   const el = document.getElementById("ecoOverrideBanner");
   const detail = document.getElementById("ecoOverrideDetail");
-  if (!el) return;
+  const elEnabled = document.getElementById("ecoEnabledBanner");
+  const detailEnabled = document.getElementById("ecoEnabledDetail");
+
   const ov = status && status.ecoslot_override;
+
+  // --- czerwony baner: slot aktywny teraz ---
+  if (!el) return;
   if (!ov || !ov.active) {
     el.hidden = true;
     document.body.classList.remove("eco-override-active");
-    return;
+  } else {
+    el.hidden = false;
+    document.body.classList.add("eco-override-active");
+    const slotText = describeEcoOverrideSlots(ov.slots);
+    const parts = [];
+    if (slotText) parts.push(slotText);
+    else if (ov.runner_other_eco) parts.push("wykryto w logu Guardiana");
+    if (ov.snapshot_at) parts.push(`snapshot ${ov.snapshot_at.slice(11, 19)}`);
+    if (detail) detail.textContent = parts.length ? `(${parts.join(" · ")})` : "";
   }
-  el.hidden = false;
-  document.body.classList.add("eco-override-active");
-  const slotText = describeEcoOverrideSlots(ov.slots);
-  const parts = [];
-  if (slotText) parts.push(slotText);
-  else if (ov.runner_other_eco) parts.push("wykryto w logu Guardiana");
-  if (ov.snapshot_at) parts.push(`snapshot ${ov.snapshot_at.slice(11, 19)}`);
-  if (detail) detail.textContent = parts.length ? `(${parts.join(" · ")})` : "";
+
+  // --- żółty baner: slot włączony (ale nie koniecznie aktywny teraz) ---
+  if (!elEnabled) return;
+  const enabledSlots = (ov && ov.enabled_slots) ? ov.enabled_slots.filter(s => !s.active_now) : [];
+  if (!ov || !ov.enabled_slots || enabledSlots.length === 0 || (ov && ov.active)) {
+    // ukryj żółty jeśli: brak danych, żadnego włączonego-nieaktywnego, albo czerwony już widoczny
+    elEnabled.hidden = true;
+    document.body.classList.remove("eco-enabled-warned");
+  } else {
+    elEnabled.hidden = false;
+    document.body.classList.add("eco-enabled-warned");
+    const slotText = describeEcoOverrideSlots(enabledSlots, { showStart: true });
+    const parts = [];
+    if (slotText) parts.push(slotText);
+    if (ov.snapshot_at) parts.push(`snapshot ${ov.snapshot_at.slice(11, 19)}`);
+    if (detailEnabled) detailEnabled.textContent = parts.length ? `(${parts.join(" · ")})` : "";
+  }
 }
 
 async function refreshEcoOverrideBanner() {
