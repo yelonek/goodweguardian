@@ -21,9 +21,6 @@ from planner.models import HourInputs, HourPlan, ScenariosDetail
 
 log = logging.getLogger("planner")
 
-# Kara za jednoczesne ładowanie i rozładowanie (degeneracja numeryczna).
-_SIMULTANEOUS_PENALTY = 1e-4
-
 
 @dataclass
 class OptimizeResult:
@@ -92,12 +89,10 @@ def _solve_milp(
     for h, hin in enumerate(hours_in):
         i = hour_idx(h, layout["imp"])
         e = hour_idx(h, layout["exp"])
-        ch = hour_idx(h, layout["ch"])
         dis = hour_idx(h, layout["dis"])
         c[i] = hin.import_pln_per_kwh
         c[e] = -hin.export_pln_per_kwh
-        c[ch] += _SIMULTANEOUS_PENALTY
-        c[dis] += _SIMULTANEOUS_PENALTY + wear_per_dis_kwh
+        c[dis] += wear_per_dis_kwh
 
     eq_rows: list[np.ndarray] = []
     eq_rhs: list[float] = []

@@ -22,8 +22,6 @@ from planner.scenarios import PlanningScenario, base_scenario_index, build_plann
 
 log = logging.getLogger("planner")
 
-_SIMULTANEOUS_PENALTY = 1e-4
-
 
 @dataclass
 class ScenarioOptimizeMeta:
@@ -144,8 +142,7 @@ def _solve_tracking_milp(
         for h, hin in enumerate(hours_in):
             c[imp_idx(s, h)] += pi * hin.import_pln_per_kwh
             c[exp_idx(s, h)] -= pi * hin.export_pln_per_kwh
-            c[ch_idx(s, h)] += _SIMULTANEOUS_PENALTY
-            c[dis_idx(s, h)] += _SIMULTANEOUS_PENALTY + pi * wear_per_dis
+            c[dis_idx(s, h)] += pi * wear_per_dis
             if lam > 0.0:
                 c[dpos_idx(s, h)] += pi * lam
                 c[dneg_idx(s, h)] += pi * lam
@@ -368,8 +365,7 @@ def _solve_shared_milp(
             c[imp_idx(s, h)] += pi * hin.import_pln_per_kwh
             c[exp_idx(s, h)] -= pi * hin.export_pln_per_kwh
     for h in range(n_h):
-        c[ch_idx(h)] += _SIMULTANEOUS_PENALTY
-        c[dis_idx(h)] += _SIMULTANEOUS_PENALTY + wear_per_dis
+        c[dis_idx(h)] += wear_per_dis
 
     eq_rows: list[np.ndarray] = []
     eq_rhs: list[float] = []
