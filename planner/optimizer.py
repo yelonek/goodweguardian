@@ -12,6 +12,7 @@ from economics import battery_wear_pln_for_hour, cashflow_pln_for_hour
 from planner.battery import (
     BatteryParams,
     apply_battery_step,
+    effective_soc_floor_kwh,
     max_power_for_hour,
     soc_kwh,
 )
@@ -146,13 +147,13 @@ def _solve_milp(
     a_ub = np.vstack(ineq_rows)
     ub_constraint = LinearConstraint(a_ub, -np.inf * np.ones(len(ineq_rhs)), np.array(ineq_rhs))
 
-    soc_min = soc_kwh(params.soc_min_pct, params)
+    soc_floor = effective_soc_floor_kwh(soc_start_pct, params)
     soc_max = soc_kwh(params.soc_max_pct, params)
 
     lb = np.zeros(n_vars)
     ub = np.full(n_vars, np.inf)
     for h in range(n_h + 1):
-        lb[h] = soc_min
+        lb[h] = soc_floor
         ub[h] = soc_max
     for h in range(n_h):
         p_h = max_power_for_hour(hours_in[h], params)

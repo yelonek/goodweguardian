@@ -9,6 +9,7 @@ import pytest
 from planner.battery import (
     BatteryParams,
     apply_battery_step,
+    effective_soc_floor_kwh,
     eta_one_way_from_rt,
     soc_kwh,
 )
@@ -48,3 +49,16 @@ def test_round_trip_recovers_eta_rt_not_eta_squared() -> None:
 def test_battery_params_eta_one_way_property() -> None:
     p = BatteryParams(eta=0.64, max_power_kwh_per_h=5.0)
     assert p.eta_one_way == pytest.approx(0.8)
+
+
+def test_effective_soc_floor_respects_start_below_configured_min() -> None:
+    bp = BatteryParams(
+        capacity_kwh=10.77,
+        soc_min_pct=11.0,
+        soc_max_pct=100.0,
+        max_power_kwh_per_h=5.0,
+    )
+    # Start poniżej min planera → floor = start (nie 11%).
+    assert effective_soc_floor_kwh(10.0, bp) == pytest.approx(soc_kwh(10.0, bp))
+    # Start powyżej min → floor = skonfigurowane min.
+    assert effective_soc_floor_kwh(50.0, bp) == pytest.approx(soc_kwh(11.0, bp))

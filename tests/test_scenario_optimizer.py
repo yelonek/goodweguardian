@@ -123,7 +123,13 @@ def test_optimize_horizon_uses_tracking_when_enabled(
 def test_tracking_keeps_dawn_reserve_vs_p50(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Tracking z silną wagą p10 trzyma wyższą rezerwę po nocy niż czysty p50."""
+    """Tracking-SP używa det MILP p50 jako planu egzekucji (nie winduje SOC przez scenariusze).
+
+    Po refaktorze (2026-07-29): plan egzekucji pochodzi z deterministycznego MILP p50.
+    scenario_optimizer służy do obliczania E[cashflow] i metadanych ryzyka, ale NIE
+    zmienia trajektorii SOC względem czystego p50. Dzięki temu planer nie eksportuje
+    PV rano za niską cenę żeby potem odkupować z sieci — ładuje baterię z PV.
+    """
     import planner.config as cfg
     import planner.scenario_optimizer as so
     import planner.scenarios as scen
@@ -147,9 +153,9 @@ def test_tracking_keeps_dawn_reserve_vs_p50(
 
     assert tracked.scenario_meta is not None
     assert tracked.scenario_meta.get("model") == "soc_tracking_recourse"
-    # Sloty: h21, h22, h6, h10, h20 → traj[2] = SOC po nocy (koniec h22).
+    # Plan egzekucji = det MILP p50: trajektoria SOC identyczna z p50.
     assert len(tracked.soc_trajectory_pct) >= 3
-    assert tracked.soc_trajectory_pct[2] > p50.soc_trajectory_pct[2] + 5.0
+    assert tracked.soc_trajectory_pct[2] == pytest.approx(p50.soc_trajectory_pct[2], abs=1.0)
 
 
 def test_midday_pv_soak_raises_soc_star_not_export_then_grid(

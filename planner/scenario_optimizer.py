@@ -9,7 +9,12 @@ import numpy as np
 from scipy.optimize import Bounds, LinearConstraint, milp
 
 from economics import battery_wear_pln_for_hour, cashflow_pln_for_hour
-from planner.battery import BatteryParams, max_power_for_hour, soc_kwh
+from planner.battery import (
+    BatteryParams,
+    effective_soc_floor_kwh,
+    max_power_for_hour,
+    soc_kwh,
+)
 from planner.config import (
     PLANNER_BATTERY_CYCLE_COST_PLN,
     PLANNER_SOC_TRACKING_LAMBDA,
@@ -110,6 +115,12 @@ def _solve_tracking_milp(
     max Σ_s π_s · CF_s − λ · Σ_s π_s · Σ_h |soc_s,h − soc*_h|
 
     ``tracking_lambda`` [PLN/kWh energii magazynu].
+
+    soc* jest wyznaczane przez bazowy scenariusz (p50 PV, p50 load) — nie przez
+    ważoną sumę wszystkich scenariuszy. Dzięki temu plan egzekucji (first-stage)
+    odpowiada deterministycznemu MILP na p50, a scenariusze pesymistyczny i
+    optymistyczny mają niezależne recourse ch/dis/imp/exp bez wpływu na soc*.
+    Constraint: soc_star[h] == soc_s_base[h] dla każdego h.
     """
     cycle_cost = float(PLANNER_BATTERY_CYCLE_COST_PLN)
     wear_per_dis = cycle_cost if cycle_cost > 0.0 else 0.0
@@ -134,7 +145,7 @@ def _solve_tracking_milp(
     c = np.zeros(n_vars)
     eta1 = params.eta_one_way
     soc0 = soc_kwh(soc_start_pct, params)
-    soc_min = soc_kwh(params.soc_min_pct, params)
+    soc_floor = effective_soc_floor_kwh(soc_start_pct, params)
     soc_max = soc_kwh(params.soc_max_pct, params)
 
     for s, sc in enumerate(scenarios):
@@ -225,11 +236,11 @@ def _solve_tracking_milp(
     lb = np.zeros(n_vars)
     ub = np.full(n_vars, np.inf)
     for h in range(n_h + 1):
-        lb[soc_star_idx(h)] = soc_min
+        lb[soc_star_idx(h)] = soc_floor
         ub[soc_star_idx(h)] = soc_max
     for s in range(n_s):
         for h in range(n_h + 1):
-            lb[soc_s_idx(s, h)] = soc_min
+            lb[soc_s_idx(s, h)] = soc_floor
             ub[soc_s_idx(s, h)] = soc_max
         for h in range(n_h):
             p_h = max_power_for_hour(hours_in[h], params)
@@ -427,13 +438,13 @@ def _solve_shared_milp(
         np.array(exclusivity_ub),
     )
 
-    soc_min = soc_kwh(params.soc_min_pct, params)
+    soc_floor = effective_soc_floor_kwh(soc_start_pct, params)
     soc_max = soc_kwh(params.soc_max_pct, params)
 
     lb = np.zeros(n_vars)
     ub = np.full(n_vars, np.inf)
     for h in range(n_h + 1):
-        lb[soc_idx(h)] = soc_min
+        lb[soc_idx(h)] = soc_floor
         ub[soc_idx(h)] = soc_max
     for h in range(n_h):
         p_h = max_power_for_hour(hours_in[h], params)
@@ -582,7 +593,10 @@ def _result_from_tracking(
     scenarios: list[PlanningScenario],
     params: BatteryParams,
 ) -> OptimizeResult:
-    cycle_cost = float(PLANNER_BATTERY_CYCLE_COST_PLN)
+    # Plan egzekucji pochodzi z deterministycznego MILP na p50 (bazowy scenariusz).
+    # Dzięki temu plan ładuje baterię z nadwyżki PV zamiast eksportować za grosze
+    # i odkupować z sieci. SP (x, meta) służy wyłącznie do obliczenia
+    # oczekiwanego cashflow (risk-adjusted E[CF]) i metadanych scenariuszowych.
     n_h = len(hours_in)
     n_s = len(scenarios)
     _, layout = _tracking_var_layout(n_s, n_h)
@@ -594,37 +608,82 @@ def _result_from_tracking(
     exp_idx = layout["exp_idx"]
     s_base = base_scenario_index(scenarios)
 
-    plans: list[HourPlan] = []
-    traj: list[float] = [_soc_pct(float(x[soc_star_idx(0)]), params)]
+    soc_start_pct = _soc_pct(float(x[soc_star_idx(0)]), params)
+    det_solved = _solve_milp(hours_in, soc_start_pct=soc_start_pct, params=params)
 
-    for h, hin in enumerate(hours_in):
-        soc_start = _soc_pct(float(x[soc_star_idx(h)]), params)
-        soc_end = _soc_pct(float(x[soc_star_idx(h + 1)]), params)
-        imp = float(x[imp_idx(s_base, h)])
-        exp = float(x[exp_idx(s_base, h)])
-        ch = float(x[ch_idx(s_base, h)])
-        dis = float(x[dis_idx(s_base, h)])
-        net = exp - imp
-        bd = remaining_battery_delta_kwh(hin, net)
-        grid_cf = cashflow_pln_for_hour(
-            net,
-            rce_pln_per_kwh=hin.export_pln_per_kwh,
-            import_pln_per_kwh=hin.import_pln_per_kwh,
-        )
-        wear = battery_wear_pln_for_hour(ch, dis, cycle_cost_pln=cycle_cost)
-        plans.append(
-            HourPlan(
-                date=hin.date,
-                hour=hin.hour,
-                target_net_kwh=net,
-                expected_cashflow_pln=grid_cf - wear,
-                battery_wear_cost_pln=wear,
-                soc_start_pct=soc_start,
-                soc_end_pct=soc_end,
-                battery_delta_kwh=bd,
+    if det_solved is not None:
+        # Użyj deterministycznego MILP p50 jako planu egzekucji
+        from planner.optimizer import _var_layout as _det_var_layout
+        det_x, _ = det_solved
+        _, det_layout = _det_var_layout(n_h)
+        det_hour_idx = det_layout["hour_idx"]
+
+        cycle_cost = float(PLANNER_BATTERY_CYCLE_COST_PLN)
+        plans: list[HourPlan] = []
+        traj: list[float] = [soc_start_pct]
+
+        for h, hin in enumerate(hours_in):
+            soc_start = _soc_pct(float(det_x[h]), params)
+            soc_end = _soc_pct(float(det_x[h + 1]), params)
+            det_imp = float(det_x[det_hour_idx(h, det_layout["imp"])])
+            det_exp = float(det_x[det_hour_idx(h, det_layout["exp"])])
+            det_ch = float(det_x[det_hour_idx(h, det_layout["ch"])])
+            det_dis = float(det_x[det_hour_idx(h, det_layout["dis"])])
+            net = det_exp - det_imp
+            bd = remaining_battery_delta_kwh(hin, net)
+            grid_cf = cashflow_pln_for_hour(
+                net,
+                rce_pln_per_kwh=hin.export_pln_per_kwh,
+                import_pln_per_kwh=hin.import_pln_per_kwh,
             )
-        )
-        traj.append(soc_end)
+            wear = battery_wear_pln_for_hour(det_ch, det_dis, cycle_cost_pln=cycle_cost)
+            plans.append(
+                HourPlan(
+                    date=hin.date,
+                    hour=hin.hour,
+                    target_net_kwh=net,
+                    expected_cashflow_pln=grid_cf - wear,
+                    battery_wear_cost_pln=wear,
+                    soc_start_pct=soc_start,
+                    soc_end_pct=soc_end,
+                    battery_delta_kwh=bd,
+                )
+            )
+            traj.append(soc_end)
+    else:
+        # fallback: użyj bazowego scenariusza SP jak poprzednio
+        cycle_cost = float(PLANNER_BATTERY_CYCLE_COST_PLN)
+        plans = []
+        traj = [_soc_pct(float(x[soc_star_idx(0)]), params)]
+
+        for h, hin in enumerate(hours_in):
+            soc_start = _soc_pct(float(x[soc_star_idx(h)]), params)
+            soc_end = _soc_pct(float(x[soc_star_idx(h + 1)]), params)
+            imp = float(x[imp_idx(s_base, h)])
+            exp = float(x[exp_idx(s_base, h)])
+            ch = float(x[ch_idx(s_base, h)])
+            dis = float(x[dis_idx(s_base, h)])
+            net = exp - imp
+            bd = remaining_battery_delta_kwh(hin, net)
+            grid_cf = cashflow_pln_for_hour(
+                net,
+                rce_pln_per_kwh=hin.export_pln_per_kwh,
+                import_pln_per_kwh=hin.import_pln_per_kwh,
+            )
+            wear = battery_wear_pln_for_hour(ch, dis, cycle_cost_pln=cycle_cost)
+            plans.append(
+                HourPlan(
+                    date=hin.date,
+                    hour=hin.hour,
+                    target_net_kwh=net,
+                    expected_cashflow_pln=grid_cf - wear,
+                    battery_wear_cost_pln=wear,
+                    soc_start_pct=soc_start,
+                    soc_end_pct=soc_end,
+                    battery_delta_kwh=bd,
+                )
+            )
+            traj.append(soc_end)
 
     scenario_series: dict[str, ScenarioSeriesDetail] = {}
     for s, sc in enumerate(scenarios):

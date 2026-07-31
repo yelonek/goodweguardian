@@ -60,6 +60,18 @@ def soc_kwh(soc_pct: float, params: BatteryParams) -> float:
     return (soc_pct / 100.0) * params.capacity_kwh
 
 
+def effective_soc_floor_kwh(soc_start_pct: float, params: BatteryParams) -> float:
+    """Dolny bound SOC w MILP: ``min(skonfigurowane_min, zmierzony_start)``.
+
+    Gdy bateria jest już poniżej ``planner_soc_min`` (np. falownik 10% vs
+    planer 11%), twarde ``lb ≥ soc_min`` + ``soc[0] = start`` jest sprzeczne
+    (infeasible). Floor schodzi do zmierzonego poziomu: nie rozładowujemy
+    dalej, ale też nie wymuszamy natychmiastowego dokładowania do min —
+    powrót ponad floor ma wyjść z ekonomii (PV / tania taryfa).
+    """
+    return min(soc_kwh(params.soc_min_pct, params), soc_kwh(soc_start_pct, params))
+
+
 def soc_pct_from_kwh(energy_kwh: float, params: BatteryParams) -> float:
     if params.capacity_kwh <= 0:
         return 0.0

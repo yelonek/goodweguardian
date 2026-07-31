@@ -331,3 +331,163 @@ def test_partial_hour_keeps_more_soc_than_full_hour(monkeypatch: pytest.MonkeyPa
         params=bp,
     )
     assert partial.hours[0].soc_end_pct > full.hours[0].soc_end_pct
+
+
+def test_milp_2026_07_29_pv_surplus_export_with_grid_charge_arbitrage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regresja 2026-07-29: scenariusz PV-surplus rano + zakup z sieci w południe.
+
+    Kontekst: h09 PV nadwyżka 1.87 kWh (eksport 0.556 PLN/kWh),
+    h13 deficyt 0.77 kWh (import G12 noc 0.59 PLN/kWh).
+
+    Pozorna "strata": sprzedajemy za 0.556 i kupujemy za 0.590.
+    W rzeczywistości: eksportujemy 1.87 kWh i importujemy tylko 0.77 kWh —
+    inne wolumeny, nie ta sama energia w kółko.
+    Cashflow A (eksport+import) = +0.585 PLN > 0 (brak transakcji).
+
+    Przy wysokim wieczornym RCE (h19-20 @ 1.31-1.38 PLN/kWh) MILP zatrzymuje
+    energię w baterii rano (nie eksportuje) i kupuje ekstra z sieci o 13–14
+    żeby mieć SOC na wieczorny eksport.
+    """
+    monkeypatch.setattr(opt_mod, "planner_scenario_optimizer_enabled", lambda: False)
+    bp = BatteryParams(
+        capacity_kwh=10.77,
+        soc_min_pct=11.0,
+        soc_max_pct=100.0,
+        max_power_kwh_per_h=5.0,
+    )
+
+    # Dane z realnego planu 2026-07-29 (load_plan_kwh z planner_output — zawiera EV + korekcję)
+    hours = [
+        HourInputs(date="2026-07-29", hour=9,  load_kwh=4.19, pv_kwh=6.06, import_pln_per_kwh=1.11, export_pln_per_kwh=0.556),
+        HourInputs(date="2026-07-29", hour=10, load_kwh=3.44, pv_kwh=7.37, import_pln_per_kwh=1.11, export_pln_per_kwh=0.14),
+        HourInputs(date="2026-07-29", hour=11, load_kwh=3.39, pv_kwh=2.35, import_pln_per_kwh=1.11, export_pln_per_kwh=0.05),
+        HourInputs(date="2026-07-29", hour=12, load_kwh=3.52, pv_kwh=2.33, import_pln_per_kwh=1.11, export_pln_per_kwh=0.05),
+        # h13: G12 noc — import 0.59, eksport 0.556 (RCE niskie w południe)
+        HourInputs(date="2026-07-29", hour=13, load_kwh=2.87, pv_kwh=2.10, import_pln_per_kwh=0.59, export_pln_per_kwh=0.556),
+        HourInputs(date="2026-07-29", hour=14, load_kwh=1.19, pv_kwh=1.98, import_pln_per_kwh=0.59, export_pln_per_kwh=0.556),
+        HourInputs(date="2026-07-29", hour=15, load_kwh=0.73, pv_kwh=1.74, import_pln_per_kwh=1.11, export_pln_per_kwh=0.556),
+        HourInputs(date="2026-07-29", hour=16, load_kwh=0.67, pv_kwh=2.79, import_pln_per_kwh=1.11, export_pln_per_kwh=0.556),
+        HourInputs(date="2026-07-29", hour=17, load_kwh=0.51, pv_kwh=1.87, import_pln_per_kwh=1.11, export_pln_per_kwh=0.690),
+        HourInputs(date="2026-07-29", hour=18, load_kwh=0.40, pv_kwh=0.83, import_pln_per_kwh=1.11, export_pln_per_kwh=0.911),
+        # h19-h20: wysoki RCE — arbitraż 0.59 → 1.31-1.38 PLN/kWh
+        HourInputs(date="2026-07-29", hour=19, load_kwh=0.49, pv_kwh=0.37, import_pln_per_kwh=1.11, export_pln_per_kwh=1.313),
+        HourInputs(date="2026-07-29", hour=20, load_kwh=0.62, pv_kwh=0.13, import_pln_per_kwh=1.11, export_pln_per_kwh=1.377),
+    ]
+
+    res = optimize_horizon(hours, soc_start_pct=14.0, params=bp)
+
+    h13 = res.hours[4]
+    h14 = res.hours[5]
+    h19 = res.hours[10]
+    h20 = res.hours[11]
+
+    # Wieczorny eksport musi wystąpić (arbitraż jest bardzo opłacalny)
+    assert h19.target_net_kwh > 1.0 or h20.target_net_kwh > 1.0, (
+        "Przy RCE h19=1.31 PLN/kWh i h20=1.38 PLN/kWh planer powinien eksportować wieczorem"
+    )
+
+    # Import z sieci o 13–14 jest opłacalny: kupuje za 0.59 → sprzedaje za 1.38 (+134%)
+    grid_import_13_14 = max(0.0, -h13.target_net_kwh) + max(0.0, -h14.target_net_kwh)
+    assert grid_import_13_14 > 0.5, (
+        f"Przy arbitrażu G12-noc (0.59) → wieczór (1.38 PLN/kWh) planer powinien "
+        f"kupować o 13–14, a kupił tylko {grid_import_13_14:.2f} kWh"
+    )
+
+    # Cashflow z baterią naładowaną rano z PV (h09-10) + zakup o 13–14 +
+    # eksploracja wieczorna musi być wyraźnie > 0
+    assert res.total_cashflow_pln > 5.0, (
+        f"Oczekiwany cashflow >5 PLN dla tego arbitrażu, otrzymano {res.total_cashflow_pln:.2f} PLN"
+    )
+
+    # Przy drogim wieczorze (1.38 PLN/kWh) planer nie eksportuje rano za grosze (0.556),
+    # tylko ładuje baterię z PV i kupuje ekstra z sieci o 13–14 (0.59 PLN/kWh).
+    # Net h09 musi być ≤ 0 (ładowanie, nie eksport do sieci)
+    assert res.hours[0].target_net_kwh <= 0.1, (
+        f"h09: przy RCE wieczornym 1.38 PLN/kWh MILP nie powinien eksportować rano za 0.556, "
+        f"a eksportuje {res.hours[0].target_net_kwh:.3f} kWh"
+    )
+
+
+def test_milp_feasible_when_soc_below_configured_min(monkeypatch) -> None:
+    """SOC 10% przy planner_soc_min=11% nie może robić MILP infeasible."""
+    monkeypatch.setattr(opt_mod, "planner_scenario_optimizer_enabled", lambda: False)
+    bp = BatteryParams(
+        capacity_kwh=10.77,
+        soc_min_pct=11.0,
+        soc_max_pct=100.0,
+        max_power_kwh_per_h=5.0,
+    )
+    hours = [
+        HourInputs(
+            date="2026-07-31",
+            hour=h,
+            load_kwh=0.5,
+            pv_kwh=0.0,
+            import_pln_per_kwh=1.11,
+            export_pln_per_kwh=0.2,
+        )
+        for h in range(6, 12)
+    ]
+    res = optimize_horizon(hours, soc_start_pct=10.0, params=bp)
+    assert res.hours, "oczekiwany plan, nie pusty fallback"
+    assert res.soc_trajectory_pct[0] == pytest.approx(10.0)
+    # Bez PV / taniej taryfy / drogiego eksportu: nie forsować dokładowania do 11%.
+    assert all(h.soc_end_pct <= 10.5 for h in res.hours)
+
+
+def test_no_forced_grid_charge_to_min_on_expensive_tariff(monkeypatch) -> None:
+    """Poniżej flooru: czekaj na tanią taryfę, nie ładuj z drogiego importu „do 11%”."""
+    monkeypatch.setattr(opt_mod, "planner_scenario_optimizer_enabled", lambda: False)
+    bp = BatteryParams(
+        capacity_kwh=10.77,
+        soc_min_pct=11.0,
+        soc_max_pct=100.0,
+        max_power_kwh_per_h=5.0,
+    )
+    hours = [
+        # Droga strefa dzienna — nie dokładowywać z sieci do min.
+        HourInputs(
+            date="2026-07-31",
+            hour=10,
+            load_kwh=0.4,
+            pv_kwh=0.0,
+            import_pln_per_kwh=1.11,
+            export_pln_per_kwh=0.1,
+        ),
+        HourInputs(
+            date="2026-07-31",
+            hour=11,
+            load_kwh=0.4,
+            pv_kwh=0.0,
+            import_pln_per_kwh=1.11,
+            export_pln_per_kwh=0.1,
+        ),
+        # Tania G12 noc — ewentualne ładowanie dopiero tu (jeśli w ogóle opłacalne).
+        HourInputs(
+            date="2026-07-31",
+            hour=13,
+            load_kwh=0.4,
+            pv_kwh=0.0,
+            import_pln_per_kwh=0.59,
+            export_pln_per_kwh=0.1,
+        ),
+        HourInputs(
+            date="2026-07-31",
+            hour=14,
+            load_kwh=0.4,
+            pv_kwh=0.0,
+            import_pln_per_kwh=0.59,
+            export_pln_per_kwh=0.1,
+        ),
+    ]
+    res = optimize_horizon(hours, soc_start_pct=10.0, params=bp)
+    assert res.hours
+    expensive = res.hours[:2]
+    for h in expensive:
+        assert h.battery_delta_kwh <= 0.05, (
+            f"h{h.hour}: nie ładuj z drogiego importu tylko żeby wrócić na 11% "
+            f"(battery_delta={h.battery_delta_kwh:.3f})"
+        )
+        assert h.soc_end_pct < 11.0

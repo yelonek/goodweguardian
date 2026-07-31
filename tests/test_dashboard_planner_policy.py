@@ -39,8 +39,9 @@ def test_combined_forecast_includes_policy(monkeypatch: pytest.MonkeyPatch, tmp_
                 hour=h,
                 target_net_kwh=1.0 if h == export_hour else 0.0,
                 expected_cashflow_pln=0.0,
-                soc_start_pct=50.0,
-                soc_end_pct=51.0,
+                # export_pv_surplus wymaga near_full (soc>=95%) i gap<=SOC_GAP_EPS_PCT
+                soc_start_pct=96.0 if h == export_hour else 50.0,
+                soc_end_pct=96.0 if h == export_hour else 51.0,
                 battery_delta_kwh=0.0,
             )
             for h in range(8, 20)
