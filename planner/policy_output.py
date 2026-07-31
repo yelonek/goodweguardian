@@ -32,7 +32,7 @@ SOC_GAP_EPS_PCT = 1.0
 # Minimalny spadek SOC [pp] dla ``export_profit`` (świadome rozładowanie zarobkowe).
 # Mniejsze dipy (szum trackingu / wear) przy nadwyżce PV → soak (neutral), nie eksport.
 SOC_GAP_DISCHARGE_PCT = 4.0
-# Powyżej tego SOC uznajemy baterię za „pełną” — dopiero wtedy spill nadwyżki PV.
+# Powyżej tego SOC uznajemy baterię za „pełną” — spill przy net≈0 (nie ma gdzie ładować).
 SOC_NEAR_FULL_PCT = 95.0
 # Tolerancja „taniego importu” względem minimum horyzontu [PLN/kWh].
 _CHEAP_IMPORT_TOL_PLN = 0.02
@@ -219,11 +219,14 @@ def map_hour_to_exec_mode(
             exec_mode = "neutral"
     else:
         # Płaski / drobny dip (|gap| < próg rozładowania) — nie mylić z export_profit.
+        # MILP z net*>0 i gap≈0 już zdecydował: nie soakuj, oddaj nadwyżkę PV.
+        # near_full zostaje fallbackiem gdy net≈0, a bateria i tak nie przyjmie więcej.
         near_full = max(soc0, soc_star) >= SOC_NEAR_FULL_PCT - 1e-9
+        plan_exports = net > NET_NEUTRAL_EPS_KWH
         if (
             surplus > NET_NEUTRAL_EPS_KWH
             and _export_pv_surplus_viable(export_pln)
-            and near_full
+            and (plan_exports or near_full)
         ):
             exec_mode = "export_pv_surplus"
         elif wants_import and bd_nonneg:

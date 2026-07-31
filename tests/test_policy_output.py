@@ -57,18 +57,27 @@ def _hin(
 
 
 def test_hold_soc_export_pv_surplus() -> None:
-    """Spill PV tylko gdy bateria praktycznie pełna — inaczej soak."""
+    """Spill PV przy pełnej baterii (także gdy net≈0 — nie ma gdzie ładować)."""
     row = map_hour_to_exec_mode(
-        _hp(soc0=98.0, soc_end=98.0, net=3.0, bd=0.0),
+        _hp(soc0=98.0, soc_end=98.0, net=0.0, bd=0.0),
         _hin(pv=5.0, load=2.0, export_pln=0.4),
     )
     assert row.exec_mode == "export_pv_surplus"
 
 
-def test_hold_soc_with_headroom_soaks_not_exports() -> None:
-    """Płaski SOC przy miejscu w baterii + nadwyżka PV → neutral (soak), nie eksport."""
+def test_hold_soc_planned_export_is_export_pv_surplus_even_with_headroom() -> None:
+    """Płaski SOC + net*>0 + nadwyżka PV → export_pv_surplus (MILP już nie soakuje)."""
     row = map_hour_to_exec_mode(
-        _hp(soc0=50.0, soc_end=50.0, net=3.0, bd=0.0),
+        _hp(soc0=18.0, soc_end=18.0, net=4.6, bd=0.0),
+        _hin(pv=5.0, load=0.8, export_pln=0.4),
+    )
+    assert row.exec_mode == "export_pv_surplus"
+
+
+def test_hold_soc_net_zero_with_headroom_stays_neutral() -> None:
+    """Płaski SOC, net≈0, jest miejsce w baterii → Flappy/neutral, nie forsuj eksportu."""
+    row = map_hour_to_exec_mode(
+        _hp(soc0=50.0, soc_end=50.0, net=0.0, bd=0.0),
         _hin(pv=5.0, load=2.0, export_pln=0.4),
     )
     assert row.exec_mode == "neutral"
