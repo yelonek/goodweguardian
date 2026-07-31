@@ -462,9 +462,19 @@ def decide_flappy_relative(
     if target < 0.0 and net > target:
         return _neutral_decision("neutral_import_shortfall_hold")
 
-    soak = _end_hour_soak_decision(inp, cfg)
-    if soak is not None and net > target:
-        return soak
+    # Powyżej targetu planu: w oknie końca h ściągaj tylko nadmiar do targetu
+    # (ew. end_hour_max gdy plan≈0). NIE do end_hour_max gdy plan chce +1.4 kWh —
+    # inaczej -74% CHARGE i import z sieci przy lekkim przekroczeniu.
+    if net > target and in_end_hour_window:
+        soak_floor = (
+            max(float(target), float(cfg.end_hour_max_remaining_kwh))
+            if target >= 0.0
+            else float(target)
+        )
+        if net > soak_floor:
+            return _soak_charge_decision(
+                inp, cfg, target_kwh=soak_floor, reason="end_hour_battery_soak"
+            )
 
     if (
         target >= 0.0

@@ -108,6 +108,35 @@ def test_neutral_end_hour_no_buffer_build_oscillation() -> None:
     assert above_cap.reason == "end_hour_battery_soak"
 
 
+def test_neutral_end_hour_trim_respects_plan_target_not_max_rem() -> None:
+    """Regresja 2026-07-31: target=+1.39, actual=+1.49 → trim do 1.39, nie soak do 0.05 (−74%)."""
+    cfg = WatchdogConfig(
+        end_hour_window_s=1200,
+        end_hour_max_remaining_kwh=0.05,
+    )
+    d = decide_plan_execution(
+        _inp(
+            remaining_kwh=1.49,
+            pv_w=5800.0,
+            consumption_w=4500.0,
+            time_to_end_s=1200.0,
+            p_battery_w=5600.0,
+        ),
+        _row("neutral", target_net_kwh=1.39),
+        cfg=cfg,
+    )
+    # Lekki nadmiar względem planu: charge, ale moc musi być mała (tylko ~0.1 kWh / 20 min),
+    # nie pełny soak do 0.05.
+    assert d.reason == "end_hour_battery_soak"
+    assert d.mode == "charge"
+    assert d.write_slot is True
+    # Stary bug: soak do end_hour_max=0.05 → ~74% CHARGE + import z sieci.
+    # Trim do targetu planu (Δ≈0.1 kWh) musi być wyraźnie łagodniejszy.
+    assert abs(d.power_pct) < 40, (
+        f"trim do targetu planu powinien być łagodny vs soak-do-0.05 (~74%), a jest {d.power_pct}%"
+    )
+
+
 def test_neutral_no_chase_large_target_at_hour_start() -> None:
     """Regresja 2026-07-09: actual≈0, target=+1.58 → 1% PV, nie deficit_recovery ~28%."""
     d = decide_plan_execution(
