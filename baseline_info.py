@@ -42,8 +42,9 @@ def baseline_spec() -> dict:
         "pv_forecast": {
             "id": "pv_solcast_proxy_hourly_v1",
             "summary_pl": (
-                "Prognoza PV z proxy Solcast (/forecasts); sloty 30m; agregacja do godzin "
-                "lokalnych (średnia moc kW); pasma p10/p50/p90 jako pv_kw_p10 / pv_kw / pv_kw_p90. "
+                "Prognoza PV z proxy Solcast (/forecasts); sloty 30m (period_end = koniec okna); "
+                "agregacja do godzin lokalnych wg początku slotu (średnia moc kW); "
+                "pasma p10/p50/p90 jako pv_kw_p10 / pv_kw / pv_kw_p90. "
                 "W dashboardzie prognoza prezentowana jako kWh w godzinie (mean kW × 1h)."
             ),
             "api": "GET /api/pv-forecast",

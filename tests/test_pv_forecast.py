@@ -8,8 +8,10 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from pv_forecast import (
+    _aggregate_items_to_hours,
     _aggregate_single_hour,
     _pre_hour_forecast_items,
+    _to_local_hour,
     fetch_hourly_pv_forecast_with_history,
 )
 
@@ -26,32 +28,70 @@ def _hist_item(*, fetched_at: str, period_end: str, pv: float) -> dict:
     }
 
 
+def test_to_local_hour_uses_period_start_not_period_end() -> None:
+    """PT30M: period_end 10:00 CEST = okno 09:30–10:00 → godzina 9."""
+    # 08:00Z = 10:00 CEST end → start 09:30 → h09
+    assert _to_local_hour("2026-07-09T08:00:00.0000000Z") == ("2026-07-09", 9)
+    # 08:30Z = 10:30 CEST end → start 10:00 → h10
+    assert _to_local_hour("2026-07-09T08:30:00.0000000Z") == ("2026-07-09", 10)
+    # 09:00Z = 11:00 CEST end → start 10:30 → h10
+    assert _to_local_hour("2026-07-09T09:00:00.0000000Z") == ("2026-07-09", 10)
+
+
+def test_aggregate_hour_uses_both_half_hours_of_local_clock_hour() -> None:
+    """Godzina lokalna 10 = sloty kończące się 10:30 i 11:00 (nie 10:00 i 10:30)."""
+    items = [
+        {
+            "period_end": "2026-07-09T08:00:00.0000000Z",  # → h09
+            "pv_estimate": 1.0,
+            "pv_estimate10": 0.8,
+            "pv_estimate90": 1.2,
+        },
+        {
+            "period_end": "2026-07-09T08:30:00.0000000Z",  # → h10
+            "pv_estimate": 4.0,
+            "pv_estimate10": 3.2,
+            "pv_estimate90": 4.8,
+        },
+        {
+            "period_end": "2026-07-09T09:00:00.0000000Z",  # → h10
+            "pv_estimate": 6.0,
+            "pv_estimate10": 4.8,
+            "pv_estimate90": 7.2,
+        },
+    ]
+    rows = { (r["date"], r["hour"]): r for r in _aggregate_items_to_hours(items) }
+    assert rows[("2026-07-09", 9)]["pv_kw"] == pytest.approx(1.0)
+    assert rows[("2026-07-09", 10)]["pv_kw"] == pytest.approx(5.0)
+
+
 def test_pre_hour_picks_latest_fetch_before_slot_start() -> None:
     """Dla h10 bierzemy fetch 09:55, nie starszy 06:55 ani 10:30 po :00."""
+    # h10 CEST = period_end 08:30Z + 09:00Z (okna 10:00–10:30 i 10:30–11:00)
     items = [
         _hist_item(
             fetched_at="2026-07-09T06:55:01",
-            period_end="2026-07-09T08:00:00.0000000Z",  # h10 local in summer
+            period_end="2026-07-09T08:30:00.0000000Z",
             pv=1.0,
         ),
         _hist_item(
             fetched_at="2026-07-09T06:55:01",
-            period_end="2026-07-09T08:30:00.0000000Z",
+            period_end="2026-07-09T09:00:00.0000000Z",
             pv=1.2,
         ),
         _hist_item(
             fetched_at="2026-07-09T09:55:01",
-            period_end="2026-07-09T08:00:00.0000000Z",
+            period_end="2026-07-09T08:30:00.0000000Z",
             pv=3.5,
         ),
         _hist_item(
             fetched_at="2026-07-09T09:55:01",
-            period_end="2026-07-09T08:30:00.0000000Z",
+            period_end="2026-07-09T09:00:00.0000000Z",
             pv=3.6,
         ),
         _hist_item(
             fetched_at="2026-07-09T10:30:01",
-            period_end="2026-07-09T08:00:00.0000000Z",
+            period_end="2026-07-09T08:30:00.0000000Z",
             pv=9.9,
         ),
     ]
@@ -67,7 +107,7 @@ def test_pre_hour_returns_empty_without_pre_slot_fetch() -> None:
     items = [
         _hist_item(
             fetched_at="2026-07-09T10:30:01",
-            period_end="2026-07-09T08:00:00.0000000Z",
+            period_end="2026-07-09T08:30:00.0000000Z",
             pv=2.0,
         ),
     ]
@@ -118,12 +158,12 @@ def test_fetch_with_history_uses_start_end_tz(monkeypatch: pytest.MonkeyPatch) -
     captured["history"] = [
         _hist_item(
             fetched_at="2026-07-09T09:55:01",
-            period_end="2026-07-09T08:00:00.0000000Z",
+            period_end="2026-07-09T08:30:00.0000000Z",  # h10
             pv=3.5,
         ),
         _hist_item(
             fetched_at="2026-07-09T09:55:01",
-            period_end="2026-07-09T08:30:00.0000000Z",
+            period_end="2026-07-09T09:00:00.0000000Z",  # h10
             pv=3.7,
         ),
     ]
@@ -169,18 +209,19 @@ def test_in_progress_hour_falls_back_to_history_when_forecasts_miss(
         def get(self, url: str, params: dict | None = None):
             if url.endswith("/forecasts"):
                 # Live ma tylko godzinę 12+; sloty h11 już wypadły.
+                # h12 CEST = period_end 10:30Z + 11:00Z
                 return FakeResp(
                     {
                         "data": {
                             "forecasts": [
                                 {
-                                    "period_end": "2026-07-24T10:00:00.0000000Z",  # h12
+                                    "period_end": "2026-07-24T10:30:00.0000000Z",
                                     "pv_estimate": 6.0,
                                     "pv_estimate10": 4.8,
                                     "pv_estimate90": 7.2,
                                 },
                                 {
-                                    "period_end": "2026-07-24T10:30:00.0000000Z",
+                                    "period_end": "2026-07-24T11:00:00.0000000Z",
                                     "pv_estimate": 6.2,
                                     "pv_estimate10": 5.0,
                                     "pv_estimate90": 7.4,
@@ -196,12 +237,12 @@ def test_in_progress_hour_falls_back_to_history_when_forecasts_miss(
                     "forecasts": [
                         _hist_item(
                             fetched_at="2026-07-24T10:55:01",
-                            period_end="2026-07-24T09:00:00.0000000Z",  # h11
+                            period_end="2026-07-24T09:30:00.0000000Z",  # h11
                             pv=5.0,
                         ),
                         _hist_item(
                             fetched_at="2026-07-24T10:55:01",
-                            period_end="2026-07-24T09:30:00.0000000Z",
+                            period_end="2026-07-24T10:00:00.0000000Z",  # h11
                             pv=5.4,
                         ),
                     ]

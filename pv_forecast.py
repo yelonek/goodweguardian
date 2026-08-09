@@ -4,6 +4,9 @@ Proxy udostępnia:
 - ``/forecasts``  — bieżący snapshot prognozy do przodu (sloty 30 min).
 - ``/history``    — historyczne prognozy (te same sloty 30 min, z ``fetched_at``).
 
+Sloty Solcast mają ``period_end`` = koniec okna PT30M; do godziny lokalnej mapujemy
+**początek** okna (``period_end − 30 min``), żeby H:00–H+1:00 zgadzało się z telemetrią.
+
 Dla zakończonych godzin lokalnych wybieramy snapshot z najnowszym ``fetched_at``
 **przed** początkiem godziny (prognoza znana przed :00), nie średnią wszystkich fetchy.
 """
@@ -35,9 +38,16 @@ def _parse_fetched_at(ts: str) -> datetime:
     return dt.astimezone(tz)
 
 
-def _to_local_hour(period_end: str) -> tuple[str, int]:
-    dt_utc = _parse_dt(period_end)
-    dt_loc = dt_utc.astimezone(ZoneInfo(TELEMETRY_TZ))
+def _to_local_hour(period_end: str, *, period_minutes: int = 30) -> tuple[str, int]:
+    """Mapuje slot Solcast na godzinę lokalną wg początku okna (nie ``period_end``).
+
+    Solcast oznacza interwał końcem: ``period_end=10:00`` + PT30M = energia 09:30–10:00,
+    więc należy do godziny 9. Użycie samego ``period_end.hour`` przesuwało krzywą o ~1 h
+    w prawo względem telemetrii (Δ licznika w [H:00, H+1:00)).
+    """
+    dt_end = _parse_dt(period_end)
+    dt_start = dt_end - timedelta(minutes=max(1, int(period_minutes)))
+    dt_loc = dt_start.astimezone(ZoneInfo(TELEMETRY_TZ))
     return dt_loc.date().isoformat(), dt_loc.hour
 
 
