@@ -11,6 +11,7 @@ PLANNER_PLANS_DIR = PLANNER_DIR / "plans"
 PLANNER_PLANS_HISTORY_DIR = PLANNER_PLANS_DIR / "history"
 PLANNER_REVIEWS_DIR = PLANNER_DIR / "reviews"
 PLANNER_AUDITS_DIR = PLANNER_DIR / "audits"
+PLANNER_PV_FEATURES_DIR = PLANNER_DIR / "pv_features"
 PLANNER_LATEST_PLAN_PATH = PLANNER_PLANS_DIR / "plan_latest.json"
 PLANNER_OUTPUT_PATH = STATE_DIR / "planner_output.json"
 
@@ -58,5 +59,6 @@ def ensure_planner_dirs() -> None:
         PLANNER_PLANS_HISTORY_DIR,
         PLANNER_REVIEWS_DIR,
         PLANNER_AUDITS_DIR,
+        PLANNER_PV_FEATURES_DIR,
     ):
         d.mkdir(parents=True, exist_ok=True)

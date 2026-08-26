@@ -17,6 +17,7 @@ from planner.models import HourInputs
 from planner.hour_remainder import scale_hour_inputs_for_remainder
 from planner.load_correction import build_load_intra_meta
 from planner.pv_correction import apply_pv_correction
+from planner.pv_feature_archive import archive_pv_features
 from planner.pv_weather_correction import apply_pv_weather_correction
 from pv_forecast import fetch_hourly_pv_forecast
 
@@ -171,6 +172,15 @@ def build_hour_inputs_for_slots(
         "pricing_dates": list(pricing_cache.keys()),
         "ev_charging_plans": ev_plans_by_date,
     }
+    try:
+        snapshot["pv_feature_archive"] = archive_pv_features(
+            now=now_local,
+            pv_by_key=pv_by_key,
+            slots=slots,
+        )
+    except Exception as e:
+        log.warning("pv_feature_archive failed: %s", e)
+        snapshot["pv_feature_archive"] = {"ok": False, "error": str(e)}
     return out, snapshot
 
 

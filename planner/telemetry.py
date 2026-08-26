@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 from guardian_config import TELEMETRY_DIR
@@ -75,4 +75,52 @@ def hourly_actuals(local_date: date) -> dict[int, dict]:
             "samples": n_min,
             "last_soc_pct": float(last.get("soc_pct", 0.0)),
         }
+    return out
+
+
+def _first_e_pv_kwh_per_hour(local_date: date) -> dict[int, float]:
+    """Najwcześniejsza próbka ``E_pv_kwh`` per godzina lokalna."""
+    rows = read_telemetry_day(local_date)
+    best: dict[int, tuple[int, float]] = {}
+    for row in rows:
+        try:
+            hour = int(row["local_hour"])
+            minute = int(row["local_minute"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not (0 <= hour <= 23):
+            continue
+        val = row.get("E_pv_kwh")
+        if val is None:
+            continue
+        try:
+            v = float(val)
+        except (TypeError, ValueError):
+            continue
+        prev = best.get(hour)
+        if prev is None or minute < prev[0]:
+            best[hour] = (minute, v)
+    return {h: v for h, (_m, v) in best.items()}
+
+
+def hourly_pv_meter_delta_kwh(local_date: date) -> dict[int, float]:
+    """
+    PV actual [kWh] z licznika ``E_pv_kwh``: Δ między pierwszą próbką H a pierwszą H+1.
+
+    Dla H=23 używa pierwszej próbki następnego dnia, gdy dostępna.
+    """
+    starts = _first_e_pv_kwh_per_hour(local_date)
+    next_starts = _first_e_pv_kwh_per_hour(local_date + timedelta(days=1))
+    out: dict[int, float] = {}
+    for h in range(24):
+        if h not in starts:
+            continue
+        end = starts.get(h + 1) if h < 23 else next_starts.get(0)
+        if end is None:
+            continue
+        delta = float(end) - float(starts[h])
+        if delta < -0.05:
+            # reset licznika / dziura — pomijamy
+            continue
+        out[h] = max(0.0, delta)
     return out

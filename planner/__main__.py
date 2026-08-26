@@ -1,4 +1,4 @@
-"""CLI planera: ``uv run python -m planner plan|audit [--date YYYY-MM-DD]``."""
+"""CLI planera: ``uv run python -m planner plan|audit|archive-enrich [--date YYYY-MM-DD]``."""
 
 from __future__ import annotations
 
@@ -14,14 +14,18 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Audytowalny planer energii (PLN)")
     parser.add_argument(
         "command",
-        choices=["plan", "audit"],
-        help="plan=rolling plan (co ~10 min); audit=dzienny audyt fakty vs perfect foresight",
+        choices=["plan", "audit", "archive-enrich"],
+        help=(
+            "plan=rolling plan (co ~10 min); "
+            "audit=dzienny audyt fakty vs perfect foresight; "
+            "archive-enrich=dopisz actual PV do archiwum cech"
+        ),
     )
     parser.add_argument(
         "--date",
         type=lambda s: date.fromisoformat(s),
         default=None,
-        help="YYYY-MM-DD dla audit (domyślnie dziś); plan ignoruje — zawsze od teraz",
+        help="YYYY-MM-DD dla audit/archive-enrich (domyślnie dziś); plan ignoruje — zawsze od teraz",
     )
     parser.add_argument(
         "--soc",
@@ -47,9 +51,23 @@ def main(argv: list[str] | None = None) -> int:
             f"oczekiwany cashflow {plan.expected_total_cashflow_pln:+.2f} PLN "
             f"({len(plan.hours)} h)"
         )
-    else:
-        text = audit_day(local_date=args.date)
-        print(text)
+        arch = (plan.inputs_snapshot or {}).get("pv_feature_archive") or {}
+        if arch:
+            print(
+                f"PV feature archive: wrote={arch.get('rows_written')} "
+                f"frozen={arch.get('rows_frozen')} actuals={arch.get('actuals_attached')}"
+            )
+        return 0
+
+    if args.command == "archive-enrich":
+        from planner.pv_feature_archive import enrich_actuals_for_date
+
+        result = enrich_actuals_for_date(args.date or date.today())
+        print(result)
+        return 0 if result.get("ok") else 1
+
+    text = audit_day(local_date=args.date)
+    print(text)
     return 0
 
 
