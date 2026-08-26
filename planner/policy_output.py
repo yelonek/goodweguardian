@@ -232,6 +232,15 @@ def map_hour_to_exec_mode(
         elif wants_import and bd_nonneg:
             # Dom z sieci; bateria z PV (DC) — tylko gdy bateria nie spada.
             exec_mode = "import_grid"
+        elif (
+            near_full
+            and bd_nonneg
+            and surplus < -NET_NEUTRAL_EPS_KWH
+            and not plan_exports
+        ):
+            # Hold ~100% przy PV < load: neutral/Off = GoodWe zjada baterię z domu.
+            # Przed dumpem wieczornym to odwrotność wizji SOC — dom z sieci.
+            exec_mode = "import_grid"
         else:
             # Bilans / soak / serve z baterii → Flappy.
             exec_mode = "neutral"

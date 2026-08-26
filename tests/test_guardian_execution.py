@@ -239,6 +239,68 @@ def test_neutral_waits_when_load_above_pv_and_above_target() -> None:
     assert d.reason == "neutral_wait_above_target"
 
 
+def test_neutral_end_hour_soaks_stranded_export_when_load_above_pv() -> None:
+    """Regresja 2026-08-14 16:xx: +0.29 kWh eksportu, load>PV, SOC 96% → CHARGE, nie wait.
+
+    Self-consumption z baterii nie zmniejsza remaining_kwh (sieć ≈ 0). Bez soak
+    nadwyżka zostaje na liczniku, a wieczorem idzie import z sieci.
+    """
+    cfg = WatchdogConfig(
+        end_hour_window_s=1200,
+        end_hour_max_remaining_kwh=0.05,
+    )
+    d = decide_plan_execution(
+        _inp(
+            remaining_kwh=0.29,
+            pv_w=630.0,
+            consumption_w=833.0,
+            soc_pct=96.0,
+            time_to_end_s=600.0,
+            p_battery_w=5200.0,
+        ),
+        _row("neutral", target_net_kwh=0.0, battery_delta_kwh=0.45),
+        cfg=cfg,
+    )
+    assert d.write_slot is True
+    assert d.mode == "charge"
+    assert d.reason == "end_hour_battery_soak"
+
+
+def test_neutral_end_hour_does_not_soak_into_planned_import() -> None:
+    """target ujemny, remaining już ujemny → nie CHARGE w import (regresja 2026-07-08)."""
+    cfg = WatchdogConfig(end_hour_window_s=1200, end_hour_max_remaining_kwh=0.05)
+    d = decide_plan_execution(
+        _inp(
+            remaining_kwh=-0.40,
+            pv_w=800.0,
+            consumption_w=2000.0,
+            soc_pct=72.0,
+            time_to_end_s=600.0,
+        ),
+        _row("neutral", target_net_kwh=-1.26),
+        cfg=cfg,
+    )
+    assert d.write_slot is False
+    assert d.reason == "neutral_wait_above_target"
+
+
+def test_neutral_does_not_dump_battery_when_plan_wants_charge() -> None:
+    """Regresja 2026-08-14 17:xx: PV padło, plan battery_delta>0, −0.02 kWh → hold, nie deficit."""
+    d = decide_plan_execution(
+        _inp(
+            remaining_kwh=-0.02,
+            pv_w=310.0,
+            consumption_w=431.0,
+            soc_pct=96.0,
+            time_to_end_s=3480.0,
+        ),
+        _row("neutral", target_net_kwh=0.43, battery_delta_kwh=0.45),
+        cfg=WatchdogConfig(),
+    )
+    assert d.write_slot is False
+    assert d.reason == "neutral_hold_below_target"
+
+
 def test_charge_grid_active_charge() -> None:
     d = decide_plan_execution(
         _inp(soc_pct=40.0),

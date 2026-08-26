@@ -148,6 +148,7 @@ def _exec_neutral(
         cfg=cfg,
         target_net_kwh=float(params.target_net_kwh),
         early_intervention_kw=EXEC_EARLY_INTERVENTION_KW,
+        plan_battery_delta_kwh=float(params.battery_delta_kwh),
     )
 
 

@@ -119,6 +119,20 @@ def test_hold_soc_deficit_is_import_grid() -> None:
     assert row.exec_mode == "import_grid"
 
 
+def test_near_full_hold_with_pv_deficit_is_import_grid() -> None:
+    """Regresja 2026-08-14 17:xx: SOC 95% hold, PV < load, net≈0 → import_grid.
+
+    Neutral/Off karmi dom z baterii i zjada SOC przed dumpem o 19. Słońce o 18.
+    nie wraca — bronić SOC teraz, dom z sieci.
+    """
+    row = map_hour_to_exec_mode(
+        _hp(soc0=95.0, soc_end=95.0, net=0.0, bd=0.0),
+        _hin(pv=0.36, load=0.44, import_pln=1.11, export_pln=0.4),
+    )
+    assert row.exec_mode == "import_grid"
+    assert row.params.allow_grid_charge is False
+
+
 def test_net_zero_or_export_never_import_grid() -> None:
     """net*≥0 ⇒ nigdy import_grid / charge_grid, nawet przy deficycie PV mid-hour."""
     for net in (0.0, 0.22, 1.5):

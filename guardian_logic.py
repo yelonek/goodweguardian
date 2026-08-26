@@ -317,6 +317,34 @@ def _end_hour_soak_decision(
     )
 
 
+def _flappy_end_hour_soak(
+    inp: BalanceInputs, cfg: WatchdogConfig, *, target: float
+) -> WatchdogDecision | None:
+    """Soak końca h względem targetu Flappy — też gdy load > PV.
+
+    Już wyeksportowane kWh nie spadają, gdy GoodWe karmi dom z baterii (sieć ≈ 0).
+    Jedyny sposób ściągnięcia bilansu to CHARGE (import na liczniku). Nie soakujemy
+    w import (``remaining ≤ 0``) ani przy pełnym SOC.
+    """
+    if inp.time_to_end_s > float(cfg.end_hour_window_s):
+        return None
+    if float(inp.soc_pct) >= float(cfg.soc_full_threshold_pct):
+        return None
+    net = float(inp.remaining_kwh)
+    if net <= 0.0 or net <= float(target):
+        return None
+    soak_floor = (
+        max(float(target), float(cfg.end_hour_max_remaining_kwh))
+        if float(target) >= 0.0
+        else 0.0
+    )
+    if net <= soak_floor:
+        return None
+    return _soak_charge_decision(
+        inp, cfg, target_kwh=soak_floor, reason="end_hour_battery_soak"
+    )
+
+
 def _continuous_soak_decision(
     inp: BalanceInputs, cfg: WatchdogConfig
 ) -> WatchdogDecision | None:
@@ -421,11 +449,16 @@ def decide_flappy_relative(
     cfg: WatchdogConfig,
     target_net_kwh: float,
     early_intervention_kw: float = 1.0,
+    plan_battery_delta_kwh: float = 0.0,
 ) -> WatchdogDecision:
     """Flappy Bird względem ``target_net_kwh`` (tryb ``neutral`` planera)."""
     net = float(inp.remaining_kwh)
     target = float(target_net_kwh)
     in_end_hour_window = inp.time_to_end_s <= float(cfg.end_hour_window_s)
+
+    stranded = _flappy_end_hour_soak(inp, cfg, target=target)
+    if stranded is not None:
+        return stranded
 
     if float(inp.consumption_w) > float(inp.pv_w) and net >= target:
         return _neutral_decision("neutral_wait_above_target")
@@ -456,25 +489,15 @@ def decide_flappy_relative(
                 reason="neutral_pv_first",
                 time_to_end_s=inp.time_to_end_s,
             )
+        # Plan chciał ładować w tej godzinie — nie zrzucaj baterii, by gonić
+        # stale PV / dodatni target_net (regresja 2026-08-14 17:xx).
+        if float(plan_battery_delta_kwh) > 0.0:
+            return _neutral_decision("neutral_hold_below_target")
         return _deficit_recovery_decision(inp, cfg)
 
     # target_net < 0 = planowany import; net > target → brakuje importu — nie soakuj PV do baterii.
     if target < 0.0 and net > target:
         return _neutral_decision("neutral_import_shortfall_hold")
-
-    # Powyżej targetu planu: w oknie końca h ściągaj tylko nadmiar do targetu
-    # (ew. end_hour_max gdy plan≈0). NIE do end_hour_max gdy plan chce +1.4 kWh —
-    # inaczej -74% CHARGE i import z sieci przy lekkim przekroczeniu.
-    if net > target and in_end_hour_window:
-        soak_floor = (
-            max(float(target), float(cfg.end_hour_max_remaining_kwh))
-            if target >= 0.0
-            else float(target)
-        )
-        if net > soak_floor:
-            return _soak_charge_decision(
-                inp, cfg, target_kwh=soak_floor, reason="end_hour_battery_soak"
-            )
 
     if (
         target >= 0.0

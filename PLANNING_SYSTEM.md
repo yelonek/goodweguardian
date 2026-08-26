@@ -80,7 +80,7 @@ Prawdziwy wachlarz zachowań GoodWe to **pięć biegów** sterowania (nie mylić
 | 4 | **CHARGE 1%** | `import_grid` |
 | 5 | **CHARGE 2–100%** | `charge_grid` |
 
-Planer wybiera **`exec_mode`** z **wizji SOC** (`soc_end_pct` vs `soc_start_pct`): rosnący SOC → soak / `charge_grid` (tani import); malejący → `export_profit`; płaski → `export_pv_surplus` / `import_grid` / `neutral`. Guardian utrzymia bieg; **nie** goni `target_net_kwh` agresywnym chase (§13.4).
+Planer wybiera **`exec_mode`** z **wizji SOC** (`soc_end_pct` vs `soc_start_pct`): rosnący SOC → soak / `charge_grid` (tani import); malejący → `export_profit`; płaski → `export_pv_surplus` / `import_grid` / `neutral`. **Hold przy SOC ≥ 95% i PV < load** → `import_grid` (nie `neutral` — Off zjada baterię). Guardian utrzymia bieg; **nie** goni `target_net_kwh` agresywnym chase (§13.4).
 
 | `exec_mode` | PL | Eco-slot | Parametry | Sens |
 |-------------|-----|----------|-----------|------|
@@ -134,11 +134,11 @@ Brak osobnego `anchor_net_kwh` — **Ockham:** jedno pole, różna interpretacja
 
 Utrzymuj **`target_net_kwh`** z planu (aktualizacja przy wejściu planu), nie domyślne zero. O `:40` przy `target = +2` → **nie** ładuj na siłę do zera.
 
-1. **Load &gt; PV, bilans ≥ target** → **nic** (pozwól bilansowi spaść).
+1. **Load &gt; PV, bilans ≥ target** → **nic** (pozwól bilansowi spaść), **chyba że** okno końca h, bilans **&gt; 0** (eksport już na liczniku) i SOC ma miejsce → CHARGE soak. Self-consumption z baterii **nie** zjada wyeksportowanych kWh — bez CHARGE zostają na stole.
 2. **Bilans &lt; target** → najpierw **PV** (1% discharge gdy PV ≥ load).
-3. **Bilans &lt; target, PV nie nadrobi** → bateria, limit **`min(P_bat, P_inverter − PV_w)`**; wczesna interwencja (~1 kW).
+3. **Bilans &lt; 0, PV nie nadrobi** → korekta deficytu baterią, limit **`min(P_bat, P_inverter − PV_w)`**; **nie** gdy plan `battery_delta &gt; 0` (godzina ładowania — nie zrzucaj magazynu za stale PV).
 4. **Bilans &gt; target, PV &gt; load** → ładuj z PV (soak).
-5. **Bilans &gt; target, PV ≤ load** → neutral.
+5. **Bilans &gt; target, PV ≤ load, poza oknem końca h** → neutral.
 
 #### `import_grid` — CHARGE 1% + SOC 10% (stałe)
 
