@@ -22,7 +22,14 @@ from planner.config import (
 )
 from planner.hour_remainder import remaining_battery_delta_kwh
 from planner.models import HourInputs, HourPlan, ScenarioSeriesDetail, ScenariosDetail
-from planner.night_grid_policy import add_night_latch_constraints, night_latch_layout
+from planner.night_grid_policy import (
+    add_green_stock_constraints,
+    add_night_latch_constraints,
+    green_stock_n_vars,
+    green_var_indexers,
+    night_latch_layout,
+    resolve_green0_kwh,
+)
 from planner.optimizer import OptimizeResult, _big_m, _soc_pct, _solve_milp
 from planner.scenarios import PlanningScenario, base_scenario_index, build_planning_scenarios
 
@@ -112,6 +119,7 @@ def _solve_tracking_milp(
     params: BatteryParams,
     tracking_lambda: float,
     night_charge_carry_in: bool = False,
+    green_stock_kwh: float | None = None,
 ) -> tuple[np.ndarray, ScenarioOptimizeMeta] | None:
     """
     max Σ_s π_s · CF_s − λ · Σ_s π_s · Σ_h |soc_s,h − soc*_h|
@@ -144,7 +152,9 @@ def _solve_tracking_milp(
     dneg_idx = layout["dneg_idx"]
     _windows, night_pos = night_latch_layout(hours_in)
     n_night = len(night_pos)
-    n_vars = n_vars_core + n_s * 2 * n_night
+    n_green = green_stock_n_vars(n_h)
+    n_vars = n_vars_core + n_s * 2 * n_night + n_s * n_green
+    latch_block = n_s * 2 * n_night
 
     def y_ch_idx(s: int, h: int) -> int:
         return n_vars_core + s * 2 * n_night + night_pos[h]
@@ -158,6 +168,9 @@ def _solve_tracking_milp(
     soc0 = soc_kwh(soc_start_pct, params)
     soc_floor = effective_soc_floor_kwh(soc_start_pct, params)
     soc_max = soc_kwh(params.soc_max_pct, params)
+    green0 = resolve_green0_kwh(green_stock_kwh, soc0)
+    lb = np.zeros(n_vars)
+    ub = np.full(n_vars, np.inf)
 
     for s, sc in enumerate(scenarios):
         pi = float(sc.weight)
@@ -220,29 +233,56 @@ def _solve_tracking_milp(
             eq_rows.append(row)
             eq_rhs.append(0.0)
 
+    ineq_rows: list[np.ndarray] = []
+    ineq_rhs: list[float] = []
+    for s in range(n_s):
+        green_index, ch_pv_index, dis_g_index = green_var_indexers(
+            n_vars_core + latch_block + s * n_green, n_h
+        )
+        add_green_stock_constraints(
+            eq_rows,
+            eq_rhs,
+            ineq_rows,
+            ineq_rhs,
+            n_vars=n_vars,
+            n_hours=n_h,
+            eta1=eta1,
+            green0_kwh=green0,
+            soc_max_kwh=soc_max,
+            soc_index=lambda h, s=s: soc_s_idx(s, h),
+            ch_index=lambda h, s=s: ch_idx(s, h),
+            dis_index=lambda h, s=s: dis_idx(s, h),
+            exp_index=lambda h, s=s: exp_idx(s, h),
+            green_index=green_index,
+            ch_pv_index=ch_pv_index,
+            dis_g_index=dis_g_index,
+            pv_kwh_of=lambda h, s=s: max(0.0, float(scenarios[s].pv_kwh[h])),
+            pmax_of=lambda h: max_power_for_hour(hours_in[h], params),
+            lb=lb,
+            ub=ub,
+        )
+
     eq_constraint = LinearConstraint(np.vstack(eq_rows), eq_rhs, eq_rhs)
 
-    exclusivity_rows: list[np.ndarray] = []
-    exclusivity_ub: list[float] = []
     for s in range(n_s):
         for h in range(n_h):
             row = np.zeros(n_vars)
             row[imp_idx(s, h)] = 1.0
             row[z_idx(s, h)] = big_m
-            exclusivity_rows.append(row)
-            exclusivity_ub.append(big_m)
+            ineq_rows.append(row)
+            ineq_rhs.append(big_m)
 
             row = np.zeros(n_vars)
             row[exp_idx(s, h)] = 1.0
             row[z_idx(s, h)] = -big_m
-            exclusivity_rows.append(row)
-            exclusivity_ub.append(0.0)
+            ineq_rows.append(row)
+            ineq_rhs.append(0.0)
 
     if n_night > 0:
         for s in range(n_s):
             add_night_latch_constraints(
-                exclusivity_rows,
-                exclusivity_ub,
+                ineq_rows,
+                ineq_rhs,
                 n_vars=n_vars,
                 hours_in=hours_in,
                 ch_index=lambda h, s=s: ch_idx(s, h),
@@ -255,13 +295,11 @@ def _solve_tracking_milp(
             )
 
     exclusivity_constraint = LinearConstraint(
-        np.vstack(exclusivity_rows),
-        -np.full(len(exclusivity_ub), np.inf),
-        np.array(exclusivity_ub),
+        np.vstack(ineq_rows),
+        -np.full(len(ineq_rhs), np.inf),
+        np.array(ineq_rhs),
     )
 
-    lb = np.zeros(n_vars)
-    ub = np.full(n_vars, np.inf)
     for h in range(n_h + 1):
         lb[soc_star_idx(h)] = soc_floor
         ub[soc_star_idx(h)] = soc_max
@@ -386,6 +424,7 @@ def _solve_shared_milp(
     soc_start_pct: float,
     params: BatteryParams,
     night_charge_carry_in: bool = False,
+    green_stock_kwh: float | None = None,
 ) -> tuple[np.ndarray, ScenarioOptimizeMeta] | None:
     """Legacy: wspólne ch/dis/soc, sieć per scenariusz."""
     cycle_cost = float(PLANNER_BATTERY_CYCLE_COST_PLN)
@@ -404,13 +443,18 @@ def _solve_shared_milp(
     exp_idx = layout["exp_idx"]
     _windows, night_pos = night_latch_layout(hours_in)
     n_night = len(night_pos)
-    n_vars = n_vars_core + 2 * n_night
+    n_green = green_stock_n_vars(n_h)
+    n_vars = n_vars_core + 2 * n_night + n_green
 
     def y_ch_idx(h: int) -> int:
         return n_vars_core + night_pos[h]
 
     def latch_idx(h: int) -> int:
         return n_vars_core + n_night + night_pos[h]
+
+    green_index, ch_pv_index, dis_g_index = green_var_indexers(
+        n_vars_core + 2 * n_night, n_h
+    )
 
     big_m = _big_m(hours_in, params)
     c = np.zeros(n_vars)
@@ -427,6 +471,11 @@ def _solve_shared_milp(
     eq_rhs: list[float] = []
     soc0 = soc_kwh(soc_start_pct, params)
     eta1 = params.eta_one_way
+    soc_floor = effective_soc_floor_kwh(soc_start_pct, params)
+    soc_max = soc_kwh(params.soc_max_pct, params)
+    green0 = resolve_green0_kwh(green_stock_kwh, soc0)
+    lb = np.zeros(n_vars)
+    ub = np.full(n_vars, np.inf)
 
     row = np.zeros(n_vars)
     row[soc_idx(0)] = 1.0
@@ -459,29 +508,59 @@ def _solve_shared_milp(
             pv_rem = float(sc.pv_kwh[h]) - pv_so
             eq_rhs.append(load_rem - pv_rem - n0)
 
+    ineq_rows: list[np.ndarray] = []
+    ineq_rhs: list[float] = []
+    add_green_stock_constraints(
+        eq_rows,
+        eq_rhs,
+        ineq_rows,
+        ineq_rhs,
+        n_vars=n_vars,
+        n_hours=n_h,
+        eta1=eta1,
+        green0_kwh=green0,
+        soc_max_kwh=soc_max,
+        soc_index=soc_idx,
+        ch_index=ch_idx,
+        dis_index=dis_idx,
+        exp_index=None,
+        green_index=green_index,
+        ch_pv_index=ch_pv_index,
+        dis_g_index=dis_g_index,
+        pv_kwh_of=lambda h: max(0.0, float(hours_in[h].pv_kwh)),
+        pmax_of=lambda h: max_power_for_hour(hours_in[h], params),
+        lb=lb,
+        ub=ub,
+    )
+    for s, sc in enumerate(scenarios):
+        for h in range(n_h):
+            row = np.zeros(n_vars)
+            row[exp_idx(s, h)] = 1.0
+            row[dis_g_index(h)] = -1.0
+            ineq_rows.append(row)
+            ineq_rhs.append(max(0.0, float(sc.pv_kwh[h])))
+
     eq_constraint = LinearConstraint(np.vstack(eq_rows), eq_rhs, eq_rhs)
 
-    exclusivity_rows: list[np.ndarray] = []
-    exclusivity_ub: list[float] = []
     for s in range(n_s):
         for h in range(n_h):
             row = np.zeros(n_vars)
             row[imp_idx(s, h)] = 1.0
             row[z_idx(s, h)] = big_m
-            exclusivity_rows.append(row)
-            exclusivity_ub.append(big_m)
+            ineq_rows.append(row)
+            ineq_rhs.append(big_m)
 
             row = np.zeros(n_vars)
             row[exp_idx(s, h)] = 1.0
             row[z_idx(s, h)] = -big_m
-            exclusivity_rows.append(row)
-            exclusivity_ub.append(0.0)
+            ineq_rows.append(row)
+            ineq_rhs.append(0.0)
 
     if n_night > 0:
         for s in range(n_s):
             add_night_latch_constraints(
-                exclusivity_rows,
-                exclusivity_ub,
+                ineq_rows,
+                ineq_rhs,
                 n_vars=n_vars,
                 hours_in=hours_in,
                 ch_index=ch_idx,
@@ -494,16 +573,11 @@ def _solve_shared_milp(
             )
 
     exclusivity_constraint = LinearConstraint(
-        np.vstack(exclusivity_rows),
-        -np.full(len(exclusivity_ub), np.inf),
-        np.array(exclusivity_ub),
+        np.vstack(ineq_rows),
+        -np.full(len(ineq_rhs), np.inf),
+        np.array(ineq_rhs),
     )
 
-    soc_floor = effective_soc_floor_kwh(soc_start_pct, params)
-    soc_max = soc_kwh(params.soc_max_pct, params)
-
-    lb = np.zeros(n_vars)
-    ub = np.full(n_vars, np.inf)
     for h in range(n_h + 1):
         lb[soc_idx(h)] = soc_floor
         ub[soc_idx(h)] = soc_max
@@ -578,6 +652,7 @@ def _optimize_from_deterministic_milp(
     params: BatteryParams,
     reason: str,
     night_charge_carry_in: bool = False,
+    green_stock_kwh: float | None = None,
 ) -> OptimizeResult:
     """Fallback: deterministyczny MILP (p50)."""
     from planner.optimizer import _var_layout
@@ -588,6 +663,7 @@ def _optimize_from_deterministic_milp(
         soc_start_pct=soc_start_pct,
         params=params,
         night_charge_carry_in=night_charge_carry_in,
+        green_stock_kwh=green_stock_kwh,
     )
     if solved is None:
         log.error("scenario optimizer: deterministic MILP też failed po %s — brak planu", reason)
@@ -669,6 +745,7 @@ def _result_from_tracking(
     params: BatteryParams,
     *,
     night_charge_carry_in: bool = False,
+    green_stock_kwh: float | None = None,
 ) -> OptimizeResult:
     # Plan egzekucji pochodzi z deterministycznego MILP na p50 (bazowy scenariusz).
     # Dzięki temu plan ładuje baterię z nadwyżki PV zamiast eksportować za grosze
@@ -691,6 +768,7 @@ def _result_from_tracking(
         soc_start_pct=soc_start_pct,
         params=params,
         night_charge_carry_in=night_charge_carry_in,
+        green_stock_kwh=green_stock_kwh,
     )
 
     if det_solved is not None:
@@ -918,6 +996,7 @@ def optimize_horizon_scenarios(
     soc_start_pct: float,
     params: BatteryParams | None = None,
     night_charge_carry_in: bool = False,
+    green_stock_kwh: float | None = None,
 ) -> OptimizeResult:
     """
     Wieloscenariuszowy MILP: max ważonego E[cashflow].
@@ -942,6 +1021,7 @@ def optimize_horizon_scenarios(
             params=bp,
             tracking_lambda=float(PLANNER_SOC_TRACKING_LAMBDA),
             night_charge_carry_in=night_charge_carry_in,
+            green_stock_kwh=green_stock_kwh,
         )
         if solved is None:
             return _optimize_from_deterministic_milp(
@@ -950,6 +1030,7 @@ def optimize_horizon_scenarios(
                 params=bp,
                 reason="tracking MILP infeasible/unbounded",
                 night_charge_carry_in=night_charge_carry_in,
+                green_stock_kwh=green_stock_kwh,
             )
         x, meta = solved
         log.info(
@@ -968,6 +1049,7 @@ def optimize_horizon_scenarios(
             scenarios,
             bp,
             night_charge_carry_in=night_charge_carry_in,
+            green_stock_kwh=green_stock_kwh,
         )
 
     solved = _solve_shared_milp(
@@ -976,6 +1058,7 @@ def optimize_horizon_scenarios(
         soc_start_pct=soc_start_pct,
         params=bp,
         night_charge_carry_in=night_charge_carry_in,
+        green_stock_kwh=green_stock_kwh,
     )
     if solved is None:
         return _optimize_from_deterministic_milp(
@@ -984,6 +1067,7 @@ def optimize_horizon_scenarios(
             params=bp,
             reason="shared-battery MILP infeasible/unbounded",
             night_charge_carry_in=night_charge_carry_in,
+            green_stock_kwh=green_stock_kwh,
         )
     x, meta = solved
     log.info(

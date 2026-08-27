@@ -1,7 +1,9 @@
-"""Nocny anty-flipflop: po ładunku z sieci w oknie 22–5 zakaz eksportu do rana.
+"""Nocny anty-flipflop + zielony zapas: sieć nocą na dom, do sieci tylko PV.
 
-Okno to godziny zegarowe (jak rezerwa nocna), nie strefa G12 — bez 13–14.
-Zapadka resetuje się po luce dziennej (6–21). Rozładowanie na dom (exp=0) jest wolne.
+Okno zapadki to godziny zegarowe (jak rezerwa nocna), nie strefa G12 — bez 13–14.
+Po ładunku z sieci w 22–5 zakaz eksportu do rana (zapadka). Rozładowanie na dom
+(exp=0) jest wolne. Energia kupiona z sieci nie powiększa zielonego zapasu —
+poranny/wieczorny zrzut do sieci tylko z SOC pochodzenia PV.
 """
 
 from __future__ import annotations
@@ -134,6 +136,73 @@ def hour_was_night_grid_charge(rows: list[dict], hour: int) -> bool:
     return _pv_kwh_for_hour(rows, hour) <= PV_NEGLIGIBLE_KWH
 
 
+def _telemetry_cache(
+    slots: list[tuple[str, int]],
+    telemetry_rows_by_date: dict[str, list[dict]] | None,
+) -> dict[str, list[dict]]:
+    cache: dict[str, list[dict]] = {}
+    if telemetry_rows_by_date is not None:
+        cache.update(telemetry_rows_by_date)
+        return cache
+    from planner.telemetry import read_telemetry_day
+
+    for d_iso, _h in slots:
+        if d_iso not in cache:
+            cache[d_iso] = read_telemetry_day(date.fromisoformat(d_iso))
+    return cache
+
+
+def night_grid_stored_kwh(
+    now: datetime | None = None,
+    *,
+    capacity_kwh: float,
+    telemetry_rows_by_date: dict[str, list[dict]] | None = None,
+) -> float:
+    """Ile kWh w magazynie przybyło z sieci w już skończonych godzinach tej nocy."""
+    if now is None:
+        from planner.inputs import _local_now
+
+        now = _local_now()
+    if now.tzinfo is not None:
+        now = now.replace(tzinfo=None)
+    cap = max(0.0, float(capacity_kwh))
+    if cap <= 0.0:
+        return 0.0
+    slots = completed_night_slots_before(now)
+    if not slots:
+        return 0.0
+    cache = _telemetry_cache(slots, telemetry_rows_by_date)
+    stored = 0.0
+    for d_iso, hour in slots:
+        rows = cache.get(d_iso, [])
+        if not hour_was_night_grid_charge(rows, hour):
+            continue
+        delta = _soc_delta_pct_for_hour(rows, hour) or 0.0
+        stored += max(0.0, delta) / 100.0 * cap
+    return stored
+
+
+def green_stock_kwh_at_start(
+    soc_pct: float,
+    capacity_kwh: float,
+    *,
+    now: datetime | None = None,
+    telemetry_rows_by_date: dict[str, list[dict]] | None = None,
+    night_grid_stored: float | None = None,
+) -> float:
+    """Zielony zapas [kWh w magazynie]: SOC minus nocny ładunek z sieci.
+
+    Domyślnie cały SOC jest zielony (nadwyżka PV). Po nocnym zakupie odejmujemy
+    to, co weszło z sieci — tego nie wolno już oddać do sieci.
+    """
+    soc = max(0.0, float(soc_pct) / 100.0 * float(capacity_kwh))
+    if night_grid_stored is None:
+        night_grid_stored = night_grid_stored_kwh(
+            now, capacity_kwh=capacity_kwh, telemetry_rows_by_date=telemetry_rows_by_date
+        )
+    return max(0.0, soc - max(0.0, float(night_grid_stored)))
+
+
 def night_grid_charge_carry_in(
     now: datetime | None = None,
     *,
@@ -151,15 +220,7 @@ def night_grid_charge_carry_in(
     if not slots:
         return False
 
-    cache: dict[str, list[dict]] = {}
-    if telemetry_rows_by_date is not None:
-        cache.update(telemetry_rows_by_date)
-    else:
-        from planner.telemetry import read_telemetry_day
-
-        for d_iso, _h in slots:
-            if d_iso not in cache:
-                cache[d_iso] = read_telemetry_day(date.fromisoformat(d_iso))
+    cache: dict[str, list[dict]] = _telemetry_cache(slots, telemetry_rows_by_date)
 
     for d_iso, hour in slots:
         if hour_was_night_grid_charge(cache.get(d_iso, []), hour):
@@ -248,3 +309,122 @@ def add_night_latch_constraints(
             ineq_rhs.append(big_m)
 
             prev_h = h
+
+
+def resolve_green0_kwh(green_stock_kwh: float | None, soc0_kwh: float) -> float:
+    """None = cały bieżący SOC jest zielony (testy / brak korekty z telemetrii)."""
+    cap = max(0.0, float(soc0_kwh))
+    if green_stock_kwh is None:
+        return cap
+    return min(max(0.0, float(green_stock_kwh)), cap)
+
+
+def green_stock_n_vars(n_hours: int) -> int:
+    """green[0..H] + ch_pv[H] + dis_g[H]."""
+    return (n_hours + 1) + 2 * n_hours
+
+
+def green_var_indexers(
+    base: int, n_hours: int
+) -> tuple[Callable[[int], int], Callable[[int], int], Callable[[int], int]]:
+    """Indeksy ``green[h]``, ``ch_pv[h]``, ``dis_g[h]`` od ``base``."""
+    n_g = n_hours + 1
+
+    def green_index(h: int) -> int:
+        return base + h
+
+    def ch_pv_index(h: int) -> int:
+        return base + n_g + h
+
+    def dis_g_index(h: int) -> int:
+        return base + n_g + n_hours + h
+
+    return green_index, ch_pv_index, dis_g_index
+
+
+def add_green_stock_constraints(
+    eq_rows: list[np.ndarray],
+    eq_rhs: list[float],
+    ineq_rows: list[np.ndarray],
+    ineq_rhs: list[float],
+    *,
+    n_vars: int,
+    n_hours: int,
+    eta1: float,
+    green0_kwh: float,
+    soc_max_kwh: float,
+    soc_index: Callable[[int], int],
+    ch_index: Callable[[int], int],
+    dis_index: Callable[[int], int],
+    exp_index: Callable[[int], int] | None,
+    green_index: Callable[[int], int],
+    ch_pv_index: Callable[[int], int],
+    dis_g_index: Callable[[int], int],
+    pv_kwh_of: Callable[[int], float],
+    pmax_of: Callable[[int], float],
+    lb: np.ndarray,
+    ub: np.ndarray,
+) -> None:
+    """Eksport z baterii tylko z zielonego zapasu (PV). Nocny zakup z sieci nie powiększa green.
+
+    ``green[h+1] = green[h] + η₁·ch_pv − dis_g/η₁``;
+    ``ch_pv ≤ min(ch, pv)``; ``dis_g ≤ dis``; ``exp ≤ pv + dis_g``; ``green ≤ soc``.
+    """
+    n_h = n_hours
+    g0 = min(max(0.0, float(green0_kwh)), float(soc_max_kwh))
+    row = np.zeros(n_vars)
+    row[green_index(0)] = 1.0
+    eq_rows.append(row)
+    eq_rhs.append(g0)
+
+    for h in range(n_h + 1):
+        lb[green_index(h)] = 0.0
+        ub[green_index(h)] = soc_max_kwh
+
+    inv_eta = 1.0 / eta1 if eta1 > 0.0 else 1.0
+    for h in range(n_h):
+        pmax = max(float(pmax_of(h)), 1e-6)
+        pv = max(0.0, float(pv_kwh_of(h)))
+        lb[ch_pv_index(h)] = 0.0
+        ub[ch_pv_index(h)] = min(pmax, pv) if pv > 0.0 else 0.0
+        lb[dis_g_index(h)] = 0.0
+        ub[dis_g_index(h)] = pmax
+
+        row = np.zeros(n_vars)
+        row[green_index(h + 1)] = 1.0
+        row[green_index(h)] = -1.0
+        row[ch_pv_index(h)] = -eta1
+        row[dis_g_index(h)] = inv_eta
+        eq_rows.append(row)
+        eq_rhs.append(0.0)
+
+        row = np.zeros(n_vars)
+        row[ch_pv_index(h)] = 1.0
+        row[ch_index(h)] = -1.0
+        ineq_rows.append(row)
+        ineq_rhs.append(0.0)
+
+        row = np.zeros(n_vars)
+        row[dis_g_index(h)] = 1.0
+        row[dis_index(h)] = -1.0
+        ineq_rows.append(row)
+        ineq_rhs.append(0.0)
+
+        if exp_index is not None:
+            row = np.zeros(n_vars)
+            row[exp_index(h)] = 1.0
+            row[dis_g_index(h)] = -1.0
+            ineq_rows.append(row)
+            ineq_rhs.append(pv)
+
+        row = np.zeros(n_vars)
+        row[green_index(h)] = 1.0
+        row[soc_index(h)] = -1.0
+        ineq_rows.append(row)
+        ineq_rhs.append(0.0)
+
+    row = np.zeros(n_vars)
+    row[green_index(n_h)] = 1.0
+    row[soc_index(n_h)] = -1.0
+    ineq_rows.append(row)
+    ineq_rhs.append(0.0)

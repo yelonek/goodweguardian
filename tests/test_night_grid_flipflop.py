@@ -11,10 +11,13 @@ from planner.models import DailyPlan, HourInputs, HourPlan
 from planner.night_grid_policy import (
     NIGHT_GRID_HOURS,
     completed_night_slots_before,
+    green_stock_kwh_at_start,
     hour_was_night_grid_charge,
     night_export_blocked_from_plans,
     night_grid_charge_carry_in,
+    night_grid_stored_kwh,
     night_windows,
+    resolve_green0_kwh,
 )
 from planner.optimizer import optimize_horizon
 from planner.policy_output import build_policy_artifact, map_hour_to_exec_mode
@@ -161,19 +164,25 @@ def test_milp_evening_export_then_night_charge_allowed(
     assert charged_after
 
 
-def test_milp_charge_at_5_export_at_7_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Charge o 5 (noc), export_profit o 7 (poza oknem) zostaje."""
-    import planner.optimizer as opt_mod
-
-    monkeypatch.setattr(opt_mod, "planner_scenario_optimizer_enabled", lambda: False)
-    hours = [
-        _hin(5, imp=0.59, exp=0.10),
-        _hin(6, imp=1.11, exp=0.30),
-        _hin(7, imp=1.11, exp=1.80),
-    ]
-    res = optimize_horizon(hours, soc_start_pct=20.0, params=BP)
-    assert res.hours[0].battery_delta_kwh > 0.5
-    assert res.hours[2].target_net_kwh > 1.0
+def test_green_stock_subtracts_completed_night_grid_charge() -> None:
+    now = datetime(2026, 8, 27, 3, 0, 0)
+    by_date = {
+        "2026-08-26": [],
+        "2026-08-27": [
+            {"local_hour": 1, "local_minute": 0, "soc_pct": 22.0, "pv_w": 0.0},
+            {"local_hour": 1, "local_minute": 50, "soc_pct": 51.0, "pv_w": 0.0},
+        ],
+    }
+    stored = night_grid_stored_kwh(
+        now, capacity_kwh=10.0, telemetry_rows_by_date=by_date
+    )
+    assert stored == pytest.approx(2.9)
+    green = green_stock_kwh_at_start(
+        51.0, 10.0, night_grid_stored=stored
+    )
+    assert green == pytest.approx(2.2)
+    assert resolve_green0_kwh(None, 5.1) == pytest.approx(5.1)
+    assert resolve_green0_kwh(9.0, 5.1) == pytest.approx(5.1)
 
 
 def test_milp_carry_in_blocks_remaining_night_export(
@@ -213,6 +222,47 @@ def test_milp_midday_g12_charge_evening_export_unchanged(
     assert res.hours[2].target_net_kwh > 1.0
 
 
+def test_milp_leftover_green_may_export_after_night_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SOC 80% z dnia (zielony) — wolno zrzucić po 6:00; to nie jest sprzedaż nocnego zakupu."""
+    import planner.optimizer as opt_mod
+
+    monkeypatch.setattr(opt_mod, "planner_scenario_optimizer_enabled", lambda: False)
+    hours = [
+        _hin(5, imp=0.59, exp=0.10),
+        _hin(6, imp=1.11, exp=0.30),
+        _hin(7, imp=1.11, exp=1.80),
+    ]
+    res = optimize_horizon(hours, soc_start_pct=80.0, params=BP)
+    assert res.hours[2].target_net_kwh > 1.0
+
+
+def test_milp_night_grid_fill_does_not_feed_morning_dump(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SOC ~11%, tani 4–5, drogi RCE 6–7 — nie napełniaj magazynu z sieci pod poranny zrzut."""
+    import planner.optimizer as opt_mod
+
+    monkeypatch.setattr(opt_mod, "planner_scenario_optimizer_enabled", lambda: False)
+    hours = [
+        _hin(4, imp=0.59, exp=0.10),
+        _hin(5, imp=0.59, exp=0.10),
+        _hin(6, imp=1.11, exp=1.70),
+        _hin(7, imp=1.11, exp=1.80),
+    ]
+    res = optimize_horizon(hours, soc_start_pct=11.0, params=BP)
+    morning_export = max(0.0, res.hours[2].target_net_kwh) + max(
+        0.0, res.hours[3].target_net_kwh
+    )
+    assert morning_export < 2.0
+    night_charge = max(0.0, res.hours[0].battery_delta_kwh) + max(
+        0.0, res.hours[1].battery_delta_kwh
+    )
+    assert night_charge < 4.0
+    assert max(h.soc_end_pct for h in res.hours[:2]) < 80.0
+
+
 def test_tracking_milp_also_blocks_night_flipflop(monkeypatch: pytest.MonkeyPatch) -> None:
     """Tracking-SP (scenariusze włączone) też nie kupuje w nocy pod wieczorny zrzut w tym samym oknie."""
     import planner.config as cfg
@@ -228,6 +278,9 @@ def test_tracking_milp_also_blocks_night_flipflop(monkeypatch: pytest.MonkeyPatc
     res = optimize_horizon(hours, soc_start_pct=30.0, params=BP)
     assert res.hours[0].battery_delta_kwh < 0.2
     assert res.hours[1].target_net_kwh > 0.5
+
+
+def test_mapper_blocks_export_profit_when_latch_set() -> None:
     row = map_hour_to_exec_mode(
         HourPlan(
             date="2026-08-27",

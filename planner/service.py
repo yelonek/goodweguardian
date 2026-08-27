@@ -8,12 +8,17 @@ from datetime import UTC, date, datetime
 
 from guardian_config import TELEMETRY_TZ
 from planner.audit import append_audit, new_event
+from planner.battery import BatteryParams
 from planner.config import ensure_planner_dirs, planner_scenario_optimizer_enabled
 from planner.day_audit import build_day_audit, save_day_audit
 from planner.hour_plan_export import normalize_hour_plans_for_policy
 from planner.inputs import build_hour_inputs_for_slots, latest_soc_from_telemetry
 from planner.models import DailyPlan
-from planner.night_grid_policy import night_grid_charge_carry_in
+from planner.night_grid_policy import (
+    green_stock_kwh_at_start,
+    night_grid_charge_carry_in,
+    night_grid_stored_kwh,
+)
 from planner.optimizer import optimize_horizon
 from planner.plan_store import save_plan
 from planner.policy_output import build_policy_artifact, save_policy_artifact
@@ -46,9 +51,19 @@ def build_rolling_plan(
         soc = latest_soc_from_telemetry(now_local.date()) or 50.0
 
     carry_in = night_grid_charge_carry_in(now_local)
+    bp = BatteryParams()
+    night_grid_stored = night_grid_stored_kwh(now_local, capacity_kwh=bp.capacity_kwh)
+    green0 = green_stock_kwh_at_start(
+        soc, bp.capacity_kwh, night_grid_stored=night_grid_stored
+    )
     snapshot["night_charge_carry_in"] = carry_in
+    snapshot["night_grid_stored_kwh"] = round(night_grid_stored, 3)
+    snapshot["green_stock_kwh"] = round(green0, 3)
     opt = optimize_horizon(
-        hour_inputs, soc_start_pct=soc, night_charge_carry_in=carry_in
+        hour_inputs,
+        soc_start_pct=soc,
+        night_charge_carry_in=carry_in,
+        green_stock_kwh=green0,
     )
     export_hours = normalize_hour_plans_for_policy(
         hour_inputs, opt.hours, now=now_local
