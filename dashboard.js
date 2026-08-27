@@ -4,6 +4,13 @@ function card(key, val) {
   return `<div class="card"><div class="k">${key}</div><div class="v">${fmt(val)}</div></div>`;
 }
 
+function cardWithHint(key, val, hint) {
+  const h = hint
+    ? `<div class="hint">${escapeHtml(hint)}</div>`
+    : "";
+  return `<div class="card"><div class="k">${key}</div><div class="v">${fmt(val)}</div>${h}</div>`;
+}
+
 function escapeHtml(s) {
   return String(s)
     .replace(/&/g, "&amp;")
@@ -1911,6 +1918,46 @@ function initKpiDayPicker() {
   if (!el.value) el.value = today;
 }
 
+function fmtKpiDayPl(iso) {
+  if (!iso) return "";
+  const p = String(iso).split("-");
+  if (p.length !== 3) return String(iso);
+  return `${p[2]}.${p[1]}`;
+}
+
+function fmtKpiRangePl(from, to) {
+  if (!from || !to) return "";
+  if (from === to) return fmtKpiDayPl(from);
+  const fy = from.slice(0, 4);
+  const ty = to.slice(0, 4);
+  if (fy === ty) return `${fmtKpiDayPl(from)}–${fmtKpiDayPl(to)}`;
+  return `${fmtKpiDayPl(from)}.${fy.slice(2)}–${fmtKpiDayPl(to)}.${ty.slice(2)}`;
+}
+
+function renderKpiExportAvg(payload) {
+  const el = document.getElementById("kpiExportAvgCards");
+  if (!el) return;
+  if (!payload) {
+    el.innerHTML = "";
+    return;
+  }
+  const labels = [
+    ["day", "Śr. sprzedaż dzień"],
+    ["week", "Śr. sprzedaż tydzień"],
+    ["month", "Śr. sprzedaż miesiąc"],
+    ["year", "Śr. sprzedaż rok"],
+  ];
+  el.innerHTML = labels.map(([key, label]) => {
+    const block = payload[key] || {};
+    const avg = block.avg_export_pln_per_kwh;
+    const val = avg == null ? "—" : `${Number(avg).toFixed(3)} PLN/kWh`;
+    const kwh = Number(block.net_export_surplus_kwh || 0);
+    const range = fmtKpiRangePl(block.from, block.to);
+    const hint = `${kwh.toFixed(1)} kWh · ${range}`;
+    return cardWithHint(label, val, hint);
+  }).join("");
+}
+
 function renderKpiBlock(payload) {
   const kpi = payload.kpi || payload;
   const totals = kpi.totals || {};
@@ -1981,15 +2028,28 @@ async function loadKpi(force) {
   if (!pageLoaded.kpi) st.textContent = "ładowanie…";
   try {
     const day = kpiSelectedDay();
-    const payload = await fetchJson(`/api/kpi/day?day=${encodeURIComponent(day)}`, 60000);
-    renderKpiBlock(payload);
-    renderKpiMergedTable(payload);
+    const [dayRes, avgRes] = await Promise.allSettled([
+      fetchJson(`/api/kpi/day?day=${encodeURIComponent(day)}`, 60000),
+      fetchJson(`/api/kpi/export-avg?day=${encodeURIComponent(day)}`, 120000),
+    ]);
+    if (dayRes.status !== "fulfilled") throw dayRes.reason;
+    renderKpiBlock(dayRes.value);
+    renderKpiMergedTable(dayRes.value);
+    if (avgRes.status === "fulfilled") {
+      renderKpiExportAvg(avgRes.value);
+    } else {
+      renderKpiExportAvg(null);
+      const warn = document.getElementById("kpiWarnings");
+      const extra = "średnia sprzedaży: " + avgRes.reason;
+      warn.textContent = warn.textContent ? `${warn.textContent} · ${extra}` : extra;
+    }
     pageLoaded.kpi = true;
     st.textContent = "OK";
     setUpdated(true);
   } catch (e) {
     st.textContent = String(e);
     document.getElementById("kpiWarnings").textContent = "KPI: " + e;
+    renderKpiExportAvg(null);
     setUpdated(false);
   }
 }

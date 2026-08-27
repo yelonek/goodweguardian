@@ -73,6 +73,13 @@ def baseline_spec() -> dict:
             ),
             "api": "GET /api/kpi/today",
             "api_day": "GET /api/kpi/day?day=YYYY-MM-DD",
+            "api_export_avg": "GET /api/kpi/export-avg?day=YYYY-MM-DD",
+            "avg_export_pln_per_kwh": (
+                "Zrealizowana średnia cena sprzedaży 1 kWh: "
+                "Σ deposit_add_pln / Σ net_export_surplus_kwh "
+                "(waga = energia netto, godziny kompletne). "
+                "Okresy: dzień, tydzień ISO, miesiąc, rok — względem daty, obcięte do dziś."
+            ),
             "audit": (
                 "Połączenie z audytem planera (DayAudit): saved-first z "
                 "data/planner/audits/audit_{date}.json; brak pliku → recompute. "

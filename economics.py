@@ -11,6 +11,16 @@ def export_pln_per_kwh_effective(rce_pln_per_kwh: float) -> float:
     return max(EXPORT_PLN_PER_KWH_FLOOR, float(rce_pln_per_kwh))
 
 
+def avg_export_pln_per_kwh(deposit_pln: float, export_kwh: float) -> float | None:
+    """Zrealizowana średnia cena sprzedaży 1 kWh: depozyt / nadwyżka netto.
+
+    ``None`` gdy nie było eksportu (``export_kwh <= 0``) — nie dzielimy przez zero.
+    """
+    if float(export_kwh) <= 0.0:
+        return None
+    return float(deposit_pln) / float(export_kwh)
+
+
 def cashflow_pln_for_hour(
     net_kwh: float,
     *,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from economics import (
+    avg_export_pln_per_kwh,
     battery_wear_pln_for_hour,
     cashflow_pln_for_hour,
     total_cashflow_pln_for_horizon,
@@ -41,6 +42,13 @@ def test_export_pln_per_kwh_effective() -> None:
 
     assert export_pln_per_kwh_effective(0.42) == pytest.approx(0.42)
     assert export_pln_per_kwh_effective(-0.1) == pytest.approx(0.0)
+
+
+def test_avg_export_pln_per_kwh() -> None:
+    assert avg_export_pln_per_kwh(10.0, 25.0) == pytest.approx(0.4)
+    assert avg_export_pln_per_kwh(0.0, 5.0) == pytest.approx(0.0)
+    assert avg_export_pln_per_kwh(1.0, 0.0) is None
+    assert avg_export_pln_per_kwh(1.0, -0.01) is None
 
 
 def test_matches_kpi_style_deposit_minus_bill() -> None:

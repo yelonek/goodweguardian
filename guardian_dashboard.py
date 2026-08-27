@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 import guardian_config as guardian_cfg
 
+from economics import avg_export_pln_per_kwh
 from energy_pricing import pricing_day_breakdown
 from ev_charging_plan import EvChargingDeclaration, build_ev_recommendation, ev_schedule_map
 from ev_charging_store import active_plan, clear_declaration, write_declaration
@@ -540,6 +541,9 @@ def _kpi_for_day(local_date: date) -> dict[str, Any]:
         "net_cashflow_pln_day": deposit_day_pln - bill_day_pln,
         "net_export_surplus_kwh": net_export_kwh_pos,
         "net_import_surplus_kwh": net_import_kwh_pos,
+        "avg_export_pln_per_kwh": avg_export_pln_per_kwh(
+            deposit_day_pln, net_export_kwh_pos
+        ),
     }
 
     return {
@@ -554,6 +558,130 @@ def _kpi_for_day(local_date: date) -> dict[str, Any]:
         "warnings": boundary_warnings,
         "totals": totals,
         "hours": hours,
+    }
+
+
+def _telemetry_today() -> date:
+    return datetime.now(ZoneInfo(TELEMETRY_TZ)).date()
+
+
+def _iso_week_bounds(d: date) -> tuple[date, date]:
+    start = d - timedelta(days=d.weekday())
+    return start, start + timedelta(days=6)
+
+
+def _month_bounds(d: date) -> tuple[date, date]:
+    start = date(d.year, d.month, 1)
+    if d.month == 12:
+        return start, date(d.year, 12, 31)
+    return start, date(d.year, d.month + 1, 1) - timedelta(days=1)
+
+
+def _year_bounds(d: date) -> tuple[date, date]:
+    return date(d.year, 1, 1), date(d.year, 12, 31)
+
+
+def _telemetry_day_exists(local_date: date) -> bool:
+    return (TELEMETRY_DIR / f"telemetry_{local_date.isoformat()}.jsonl").exists()
+
+
+def _export_avg_period_block(
+    start: date,
+    end: date,
+    *,
+    today: date,
+    deposit_pln: float,
+    export_kwh: float,
+    days_used: int,
+) -> dict[str, Any]:
+    if start > today:
+        from_s, to_s = start.isoformat(), end.isoformat()
+    else:
+        from_s, to_s = start.isoformat(), min(end, today).isoformat()
+    return {
+        "from": from_s,
+        "to": to_s,
+        "avg_export_pln_per_kwh": avg_export_pln_per_kwh(deposit_pln, export_kwh),
+        "deposit_add_pln": deposit_pln,
+        "net_export_surplus_kwh": export_kwh,
+        "days_used": days_used,
+    }
+
+
+_kpi_totals_cache: dict[date, tuple[float, dict[str, Any] | None]] = {}
+
+
+def _kpi_totals_for_day(
+    local_date: date, *, today: date | None = None
+) -> dict[str, Any] | None:
+    """Totale z ``_kpi_for_day`` (bez audytu). Przeszłość: cache do restartu; dziś: TTL 60 s.
+
+    ``None`` gdy dzień nie da się policzyć (np. dziura RCE / DST) — agregacja pomija.
+    """
+    today = today if today is not None else _telemetry_today()
+    mono = time.monotonic()
+    cached = _kpi_totals_cache.get(local_date)
+    if cached is not None:
+        at, totals = cached
+        if local_date < today:
+            return totals
+        if (mono - at) < _KPI_CACHE_TTL_S:
+            return totals
+    try:
+        totals = dict(_kpi_for_day(local_date).get("totals") or {})
+    except Exception:
+        logger.warning(
+            "kpi totals failed for %s — pomijam w średniej sprzedaży",
+            local_date.isoformat(),
+            exc_info=True,
+        )
+        totals = None
+    _kpi_totals_cache[local_date] = (mono, totals)
+    return totals
+
+
+def _aggregate_export_avg(
+    start: date, end: date, *, today: date
+) -> dict[str, Any]:
+    if start > today:
+        return _export_avg_period_block(
+            start, end, today=today, deposit_pln=0.0, export_kwh=0.0, days_used=0
+        )
+    end_eff = min(end, today)
+    deposit = 0.0
+    export_kwh = 0.0
+    days_used = 0
+    d = start
+    while d <= end_eff:
+        if _telemetry_day_exists(d):
+            totals = _kpi_totals_for_day(d, today=today)
+            if totals is None:
+                d += timedelta(days=1)
+                continue
+            deposit += float(totals.get("deposit_add_pln_day") or 0.0)
+            export_kwh += float(totals.get("net_export_surplus_kwh") or 0.0)
+            days_used += 1
+        d += timedelta(days=1)
+    return _export_avg_period_block(
+        start,
+        end,
+        today=today,
+        deposit_pln=deposit,
+        export_kwh=export_kwh,
+        days_used=days_used,
+    )
+
+
+def _export_avg_payload(local_date: date) -> dict[str, Any]:
+    today = _telemetry_today()
+    week_start, week_end = _iso_week_bounds(local_date)
+    month_start, month_end = _month_bounds(local_date)
+    year_start, year_end = _year_bounds(local_date)
+    return {
+        "day": _aggregate_export_avg(local_date, local_date, today=today),
+        "week": _aggregate_export_avg(week_start, week_end, today=today),
+        "month": _aggregate_export_avg(month_start, month_end, today=today),
+        "year": _aggregate_export_avg(year_start, year_end, today=today),
     }
 
 
@@ -817,6 +945,15 @@ async def api_kpi_day(
 @app.get("/api/kpi/today")
 async def api_kpi_today() -> JSONResponse:
     payload = await _run_heavy(_get_kpi_today_cached)
+    return JSONResponse(payload)
+
+
+@app.get("/api/kpi/export-avg")
+async def api_kpi_export_avg(
+    day: str | None = Query(default=None, description="YYYY-MM-DD (domyślnie dziś)"),
+) -> JSONResponse:
+    local_date = date.fromisoformat(day) if day else _telemetry_today()
+    payload = await _run_heavy(lambda: _export_avg_payload(local_date))
     return JSONResponse(payload)
 
 
