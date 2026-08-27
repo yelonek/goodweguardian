@@ -41,6 +41,8 @@ Planer **co 10 min** → `state/planner_output.json` (**policy** + parametry). G
 
 9. **Wdrożenie (kolejność):** kontrakt danych (ceny, telemetria, KPI) → symulator offline (`pv_plan`, `load_plan`, `e_bat` → Σ PLN + testy) → cykl planera co 10 min + zapis JSON → Guardian: router policy → strategia (§13) → UI (sloty, sugestie).
 
+10. **Nocny anty-flipflop (twarda polityka, bez pokrętła):** w oknie zegarowym **22–5** (nie strefa G12 — bez 13–14), po pierwszym ładunku magazynu z sieci (`ch > 0,05 kWh`) **zakaz eksportu do sieci** aż do końca tego okna. Wieczorny zrzut PV, potem nocny zakup, potem poranny zrzut (od 6:00) — dozwolone. Rozładowanie na dom (`exp = 0`) — dozwolone. Carry-in z telemetrii: jeśli w skończonych godzinach bieżącego okna SOC już wzrósł przy znikomym PV, reszta nocy też bez eksportu. Mapper nie emituje `export_profit` / `export_pv_surplus` przy zapiętej zapadce.
+
 ---
 
 ## 13. Egzekucja policy w Guardianie (normatywne)

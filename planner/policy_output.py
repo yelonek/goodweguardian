@@ -24,6 +24,7 @@ from planner.models import (
     PlannerPolicyArtifact,
     PlannerPolicyName,
 )
+from planner.night_grid_policy import night_export_blocked_from_plans
 
 log = logging.getLogger("planner")
 
@@ -153,11 +154,13 @@ def map_hour_to_exec_mode(
     hin: HourInputs | None = None,
     *,
     cheap_import_threshold_pln: float | None = None,
+    night_export_blocked: bool = False,
 ) -> HourPolicyRow:
     """Mapowanie wizji SOC (``soc_end_pct``) na jeden ``exec_mode`` + parametry.
 
     Intencja wynika z ``gap = soc* − soc0``. ``import_grid`` / ``charge_grid`` tylko
     gdy plan chce import (``net* < 0`` i pozostały net < 0) — nigdy przy net≈0 / eksporcie.
+    ``night_export_blocked``: zapadka nocna — nie emituj ``export_profit`` / ``export_pv_surplus``.
     """
     soc0 = float(hp.soc_start_pct)
     soc_star = float(hp.soc_end_pct)
@@ -245,6 +248,14 @@ def map_hour_to_exec_mode(
             # Bilans / soak / serve z baterii → Flappy.
             exec_mode = "neutral"
 
+    if night_export_blocked and exec_mode in ("export_profit", "export_pv_surplus"):
+        discharge_pct = None
+        soc_floor_pct = None
+        if wants_import and bd_nonneg:
+            exec_mode = "import_grid"
+        else:
+            exec_mode = "neutral"
+
     return HourPolicyRow(
         date=hp.date,
         hour=hp.hour,
@@ -270,9 +281,13 @@ def map_hour_to_policy(
     hin: HourInputs | None = None,
     *,
     cheap_import_threshold_pln: float | None = None,
+    night_export_blocked: bool = False,
 ) -> HourPolicyRow:
     return map_hour_to_exec_mode(
-        hp, hin, cheap_import_threshold_pln=cheap_import_threshold_pln
+        hp,
+        hin,
+        cheap_import_threshold_pln=cheap_import_threshold_pln,
+        night_export_blocked=night_export_blocked,
     )
 
 
@@ -294,15 +309,20 @@ def build_policy_artifact(
     *,
     degraded: bool = False,
     valid_minutes: int | None = None,
+    night_charge_carry_in: bool = False,
 ) -> PlannerPolicyArtifact:
     """Buduje artefakt policy dla całego horyzontu planu."""
     by_slot = _inputs_by_slot(hour_inputs)
     cheap_thr = cheap_import_threshold_from_inputs(hour_inputs)
+    blocked = night_export_blocked_from_plans(
+        plan.hours, carry_in=night_charge_carry_in
+    )
     rows = [
         map_hour_to_exec_mode(
             hp,
             by_slot.get((hp.date, hp.hour)),
             cheap_import_threshold_pln=cheap_thr,
+            night_export_blocked=(hp.date, hp.hour) in blocked,
         )
         for hp in plan.hours
     ]
@@ -397,6 +417,7 @@ def policy_for_hour(
     cheap_thr = (
         cheap_import_threshold_from_inputs(hour_inputs) if hour_inputs else None
     )
+    blocked = night_export_blocked_from_plans(plan.hours)
     for hp in plan.hours:
         if hp.date == local_date and hp.hour == hour:
             hin = None
@@ -406,6 +427,9 @@ def policy_for_hour(
                         hin = hi
                         break
             return map_hour_to_exec_mode(
-                hp, hin, cheap_import_threshold_pln=cheap_thr
+                hp,
+                hin,
+                cheap_import_threshold_pln=cheap_thr,
+                night_export_blocked=(local_date, hour) in blocked,
             )
     return None

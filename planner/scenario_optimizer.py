@@ -22,6 +22,7 @@ from planner.config import (
 )
 from planner.hour_remainder import remaining_battery_delta_kwh
 from planner.models import HourInputs, HourPlan, ScenarioSeriesDetail, ScenariosDetail
+from planner.night_grid_policy import add_night_latch_constraints, night_latch_layout
 from planner.optimizer import OptimizeResult, _big_m, _soc_pct, _solve_milp
 from planner.scenarios import PlanningScenario, base_scenario_index, build_planning_scenarios
 
@@ -110,6 +111,7 @@ def _solve_tracking_milp(
     soc_start_pct: float,
     params: BatteryParams,
     tracking_lambda: float,
+    night_charge_carry_in: bool = False,
 ) -> tuple[np.ndarray, ScenarioOptimizeMeta] | None:
     """
     max Σ_s π_s · CF_s − λ · Σ_s π_s · Σ_h |soc_s,h − soc*_h|
@@ -130,7 +132,7 @@ def _solve_tracking_milp(
     if n_h == 0 or n_s == 0:
         return None
 
-    n_vars, layout = _tracking_var_layout(n_s, n_h)
+    n_vars_core, layout = _tracking_var_layout(n_s, n_h)
     soc_star_idx = layout["soc_star_idx"]
     soc_s_idx = layout["soc_s_idx"]
     ch_idx = layout["ch_idx"]
@@ -140,6 +142,15 @@ def _solve_tracking_milp(
     z_idx = layout["z_idx"]
     dpos_idx = layout["dpos_idx"]
     dneg_idx = layout["dneg_idx"]
+    _windows, night_pos = night_latch_layout(hours_in)
+    n_night = len(night_pos)
+    n_vars = n_vars_core + n_s * 2 * n_night
+
+    def y_ch_idx(s: int, h: int) -> int:
+        return n_vars_core + s * 2 * n_night + night_pos[h]
+
+    def latch_idx(s: int, h: int) -> int:
+        return n_vars_core + s * 2 * n_night + n_night + night_pos[h]
 
     big_m = _big_m(hours_in, params)
     c = np.zeros(n_vars)
@@ -227,6 +238,22 @@ def _solve_tracking_milp(
             exclusivity_rows.append(row)
             exclusivity_ub.append(0.0)
 
+    if n_night > 0:
+        for s in range(n_s):
+            add_night_latch_constraints(
+                exclusivity_rows,
+                exclusivity_ub,
+                n_vars=n_vars,
+                hours_in=hours_in,
+                ch_index=lambda h, s=s: ch_idx(s, h),
+                exp_index=lambda h, s=s: exp_idx(s, h),
+                y_ch_index=lambda h, s=s: y_ch_idx(s, h),
+                latch_index=lambda h, s=s: latch_idx(s, h),
+                pmax_of=lambda h: max_power_for_hour(hours_in[h], params),
+                big_m=big_m,
+                carry_in=night_charge_carry_in,
+            )
+
     exclusivity_constraint = LinearConstraint(
         np.vstack(exclusivity_rows),
         -np.full(len(exclusivity_ub), np.inf),
@@ -248,11 +275,19 @@ def _solve_tracking_milp(
             ub[dis_idx(s, h)] = p_h
             lb[z_idx(s, h)] = 0.0
             ub[z_idx(s, h)] = 1.0
+        for h in night_pos:
+            lb[y_ch_idx(s, h)] = 0.0
+            ub[y_ch_idx(s, h)] = 1.0
+            lb[latch_idx(s, h)] = 0.0
+            ub[latch_idx(s, h)] = 1.0
 
     integrality = np.zeros(n_vars, dtype=np.int8)
     for s in range(n_s):
         for h in range(n_h):
             integrality[z_idx(s, h)] = 1
+        for h in night_pos:
+            integrality[y_ch_idx(s, h)] = 1
+            integrality[latch_idx(s, h)] = 1
 
     res = milp(
         c=c,
@@ -350,6 +385,7 @@ def _solve_shared_milp(
     *,
     soc_start_pct: float,
     params: BatteryParams,
+    night_charge_carry_in: bool = False,
 ) -> tuple[np.ndarray, ScenarioOptimizeMeta] | None:
     """Legacy: wspólne ch/dis/soc, sieć per scenariusz."""
     cycle_cost = float(PLANNER_BATTERY_CYCLE_COST_PLN)
@@ -359,13 +395,22 @@ def _solve_shared_milp(
     if n_h == 0 or n_s == 0:
         return None
 
-    n_vars, layout = _shared_var_layout(n_s, n_h)
+    n_vars_core, layout = _shared_var_layout(n_s, n_h)
     soc_idx = layout["soc_idx"]
     ch_idx = layout["ch_idx"]
     dis_idx = layout["dis_idx"]
     z_idx = layout["z_idx"]
     imp_idx = layout["imp_idx"]
     exp_idx = layout["exp_idx"]
+    _windows, night_pos = night_latch_layout(hours_in)
+    n_night = len(night_pos)
+    n_vars = n_vars_core + 2 * n_night
+
+    def y_ch_idx(h: int) -> int:
+        return n_vars_core + night_pos[h]
+
+    def latch_idx(h: int) -> int:
+        return n_vars_core + n_night + night_pos[h]
 
     big_m = _big_m(hours_in, params)
     c = np.zeros(n_vars)
@@ -432,6 +477,22 @@ def _solve_shared_milp(
             exclusivity_rows.append(row)
             exclusivity_ub.append(0.0)
 
+    if n_night > 0:
+        for s in range(n_s):
+            add_night_latch_constraints(
+                exclusivity_rows,
+                exclusivity_ub,
+                n_vars=n_vars,
+                hours_in=hours_in,
+                ch_index=ch_idx,
+                exp_index=lambda h, s=s: exp_idx(s, h),
+                y_ch_index=y_ch_idx,
+                latch_index=latch_idx,
+                pmax_of=lambda h: max_power_for_hour(hours_in[h], params),
+                big_m=big_m,
+                carry_in=night_charge_carry_in,
+            )
+
     exclusivity_constraint = LinearConstraint(
         np.vstack(exclusivity_rows),
         -np.full(len(exclusivity_ub), np.inf),
@@ -450,6 +511,11 @@ def _solve_shared_milp(
         p_h = max_power_for_hour(hours_in[h], params)
         ub[ch_idx(h)] = p_h
         ub[dis_idx(h)] = p_h
+    for h in night_pos:
+        lb[y_ch_idx(h)] = 0.0
+        ub[y_ch_idx(h)] = 1.0
+        lb[latch_idx(h)] = 0.0
+        ub[latch_idx(h)] = 1.0
     for s in range(n_s):
         for h in range(n_h):
             lb[z_idx(s, h)] = 0.0
@@ -459,6 +525,9 @@ def _solve_shared_milp(
     for s in range(n_s):
         for h in range(n_h):
             integrality[z_idx(s, h)] = 1
+    for h in night_pos:
+        integrality[y_ch_idx(h)] = 1
+        integrality[latch_idx(h)] = 1
 
     res = milp(
         c=c,
@@ -508,12 +577,18 @@ def _optimize_from_deterministic_milp(
     soc_start_pct: float,
     params: BatteryParams,
     reason: str,
+    night_charge_carry_in: bool = False,
 ) -> OptimizeResult:
     """Fallback: deterministyczny MILP (p50)."""
     from planner.optimizer import _var_layout
 
     cycle_cost = float(PLANNER_BATTERY_CYCLE_COST_PLN)
-    solved = _solve_milp(hours_in, soc_start_pct=soc_start_pct, params=params)
+    solved = _solve_milp(
+        hours_in,
+        soc_start_pct=soc_start_pct,
+        params=params,
+        night_charge_carry_in=night_charge_carry_in,
+    )
     if solved is None:
         log.error("scenario optimizer: deterministic MILP też failed po %s — brak planu", reason)
         from planner.optimizer import _fallback_neutral
@@ -592,6 +667,8 @@ def _result_from_tracking(
     hours_in: list[HourInputs],
     scenarios: list[PlanningScenario],
     params: BatteryParams,
+    *,
+    night_charge_carry_in: bool = False,
 ) -> OptimizeResult:
     # Plan egzekucji pochodzi z deterministycznego MILP na p50 (bazowy scenariusz).
     # Dzięki temu plan ładuje baterię z nadwyżki PV zamiast eksportować za grosze
@@ -609,7 +686,12 @@ def _result_from_tracking(
     s_base = base_scenario_index(scenarios)
 
     soc_start_pct = _soc_pct(float(x[soc_star_idx(0)]), params)
-    det_solved = _solve_milp(hours_in, soc_start_pct=soc_start_pct, params=params)
+    det_solved = _solve_milp(
+        hours_in,
+        soc_start_pct=soc_start_pct,
+        params=params,
+        night_charge_carry_in=night_charge_carry_in,
+    )
 
     if det_solved is not None:
         # Użyj deterministycznego MILP p50 jako planu egzekucji
@@ -835,6 +917,7 @@ def optimize_horizon_scenarios(
     *,
     soc_start_pct: float,
     params: BatteryParams | None = None,
+    night_charge_carry_in: bool = False,
 ) -> OptimizeResult:
     """
     Wieloscenariuszowy MILP: max ważonego E[cashflow].
@@ -858,6 +941,7 @@ def optimize_horizon_scenarios(
             soc_start_pct=soc_start_pct,
             params=bp,
             tracking_lambda=float(PLANNER_SOC_TRACKING_LAMBDA),
+            night_charge_carry_in=night_charge_carry_in,
         )
         if solved is None:
             return _optimize_from_deterministic_milp(
@@ -865,6 +949,7 @@ def optimize_horizon_scenarios(
                 soc_start_pct=soc_start_pct,
                 params=bp,
                 reason="tracking MILP infeasible/unbounded",
+                night_charge_carry_in=night_charge_carry_in,
             )
         x, meta = solved
         log.info(
@@ -876,13 +961,21 @@ def optimize_horizon_scenarios(
                 for sc, cf in zip(meta.scenarios, meta.scenario_cashflow_pln, strict=True)
             },
         )
-        return _result_from_tracking(x, meta, hours_in, scenarios, bp)
+        return _result_from_tracking(
+            x,
+            meta,
+            hours_in,
+            scenarios,
+            bp,
+            night_charge_carry_in=night_charge_carry_in,
+        )
 
     solved = _solve_shared_milp(
         hours_in,
         scenarios,
         soc_start_pct=soc_start_pct,
         params=bp,
+        night_charge_carry_in=night_charge_carry_in,
     )
     if solved is None:
         return _optimize_from_deterministic_milp(
@@ -890,6 +983,7 @@ def optimize_horizon_scenarios(
             soc_start_pct=soc_start_pct,
             params=bp,
             reason="shared-battery MILP infeasible/unbounded",
+            night_charge_carry_in=night_charge_carry_in,
         )
     x, meta = solved
     log.info(

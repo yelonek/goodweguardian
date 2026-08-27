@@ -13,6 +13,7 @@ from planner.day_audit import build_day_audit, save_day_audit
 from planner.hour_plan_export import normalize_hour_plans_for_policy
 from planner.inputs import build_hour_inputs_for_slots, latest_soc_from_telemetry
 from planner.models import DailyPlan
+from planner.night_grid_policy import night_grid_charge_carry_in
 from planner.optimizer import optimize_horizon
 from planner.plan_store import save_plan
 from planner.policy_output import build_policy_artifact, save_policy_artifact
@@ -44,7 +45,11 @@ def build_rolling_plan(
     if soc is None:
         soc = latest_soc_from_telemetry(now_local.date()) or 50.0
 
-    opt = optimize_horizon(hour_inputs, soc_start_pct=soc)
+    carry_in = night_grid_charge_carry_in(now_local)
+    snapshot["night_charge_carry_in"] = carry_in
+    opt = optimize_horizon(
+        hour_inputs, soc_start_pct=soc, night_charge_carry_in=carry_in
+    )
     export_hours = normalize_hour_plans_for_policy(
         hour_inputs, opt.hours, now=now_local
     )
@@ -80,7 +85,9 @@ def build_rolling_plan(
     save_plan(plan)
     pv_meta = snapshot.get("pv_forecast_meta") or {}
     degraded = bool(pv_meta.get("error"))
-    policy_art = build_policy_artifact(plan, hour_inputs, degraded=degraded)
+    policy_art = build_policy_artifact(
+        plan, hour_inputs, degraded=degraded, night_charge_carry_in=carry_in
+    )
     save_policy_artifact(policy_art)
     append_audit(
         new_event(
