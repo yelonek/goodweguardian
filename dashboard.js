@@ -1,3 +1,4 @@
+const EV_DEFAULT_POWER_KW = 3;
 function dv(v, d) { return v !== null && v !== undefined ? v : d; }
 const fmt = (v) => (v === null || v === undefined) ? "—" : v;
 function card(key, val) {
@@ -813,19 +814,36 @@ function renderEvChargingPanel(ev) {
       `<div class="card"><div class="card-key">Eksport tanio (&lt;${RCE_CHEAP_THRESHOLD_GR} gr)</div><div class="card-val">${cheapExport.toFixed(1)} kWh</div></div>`;
   }
   const decl = ev.declaration;
-  const targetEl = document.getElementById("evTargetKwh");
+  const delivered = Number(ev.delivered_kwh || 0);
+  const remaining = decl ? Number(ev.remaining_kwh ?? 0) : null;
+  const deliveredEl = document.getElementById("evDeliveredKwh");
+  if (deliveredEl) deliveredEl.value = delivered.toFixed(1);
+  const remainingEl = document.getElementById("evRemainingKwh");
   const prefEl = document.getElementById("evPreferredHour");
   const powerEl = document.getElementById("evMaxPowerKw");
-  if (decl && targetEl && !targetEl.matches(":focus")) {
-    targetEl.value = decl.target_kwh != null ? String(decl.target_kwh) : "";
-    if (prefEl) prefEl.value = decl.preferred_start_hour != null ? String(decl.preferred_start_hour) : "";
-    if (powerEl && decl.max_power_kw != null) powerEl.value = String(decl.max_power_kw);
+  if (remainingEl && !remainingEl.matches(":focus") && decl) {
+    remainingEl.value = remaining != null ? String(remaining) : "";
+  }
+  if (decl && prefEl && !prefEl.matches(":focus")) {
+    prefEl.value = decl.preferred_start_hour != null ? String(decl.preferred_start_hour) : "";
+  }
+  if (decl && powerEl && decl.max_power_kw != null && !powerEl.matches(":focus")) {
+    powerEl.value = String(decl.max_power_kw);
+  }
+  const totalHint = document.getElementById("evChargingTotalHint");
+  if (totalHint) {
+    if (decl) {
+      const total = Number(decl.target_kwh);
+      const remShow = remaining != null ? remaining : 0;
+      totalHint.textContent =
+        `łącznie dziś = ${delivered.toFixed(1)} + ${remShow.toFixed(1)} = ${total.toFixed(1)} kWh`;
+    } else {
+      totalHint.textContent = "";
+    }
   }
   const slotsEl = document.getElementById("evChargingSlots");
   const futureSlots = decl ? (ev.slots || []) : (ev.recommended_slots || []);
-  const pastSlots = decl ? (ev.past_slots || []) : [];
-  const delivered = decl ? Number(ev.delivered_kwh || 0) : 0;
-  const remaining = decl ? Number(ev.remaining_kwh ?? ev.declaration?.target_kwh ?? 0) : 0;
+  const pastSlots = ev.past_slots || [];
   if (slotsEl) {
     const parts = [];
     if (pastSlots.length) {
@@ -839,15 +857,12 @@ function renderEvChargingPanel(ev) {
         prefix + ": " + futureSlots.map((s) => `${String(s.hour).padStart(2, "0")}:00 → ${Number(s.kwh).toFixed(1)} kWh`).join(", ")
       );
     }
-    if (decl && delivered > 0.001) {
-      parts.push(`Pozostało do zaplanowania: ${remaining.toFixed(1)} kWh (cel ${Number(decl.target_kwh).toFixed(1)} kWh)`);
-    }
     if (!parts.length) {
       slotsEl.textContent = decl
-        ? (delivered > 0.001 && remaining < 0.001
+        ? (delivered > 0.001 && remaining != null && remaining < 0.001
           ? `Cel ${Number(decl.target_kwh).toFixed(1)} kWh już zrealizowany dziś.`
           : "Brak przypisanych godzin — zapisz plan ponownie.")
-        : "Brak deklaracji — podaj cel kWh i zapisz (propozycja slotów pojawi się po zapisie lub w rekomendacji).";
+        : "Brak deklaracji — podaj ile jeszcze chcesz załadować i zapisz.";
     } else {
       slotsEl.textContent = parts.join(" · ");
     }
@@ -886,21 +901,21 @@ async function loadEvChargingPlan() {
 async function saveEvChargingPlan() {
   const key = getKey();
   if (!key) { alert("Ustaw klucz API w ustawieniach"); return; }
-  const target = parseFloat(document.getElementById("evTargetKwh").value);
-  if (Number.isNaN(target) || target < 0) { alert("Podaj cel kWh ≥ 0"); return; }
+  const remaining = parseFloat(document.getElementById("evRemainingKwh").value);
+  if (Number.isNaN(remaining) || remaining < 0) { alert("Podaj jeszcze do załadowania kWh ≥ 0"); return; }
   const prefRaw = document.getElementById("evPreferredHour").value.trim();
   const preferred_start_hour = prefRaw === "" ? null : parseInt(prefRaw, 10);
   if (preferred_start_hour != null && (Number.isNaN(preferred_start_hour) || preferred_start_hour < 0 || preferred_start_hour > 23)) {
     alert("Godzina startu: 0–23 lub puste");
     return;
   }
-  const max_power_kw = parseFloat(document.getElementById("evMaxPowerKw").value) || 11;
+  const max_power_kw = parseFloat(document.getElementById("evMaxPowerKw").value) || EV_DEFAULT_POWER_KW;
   const st = document.getElementById("evChargingStatus");
   if (st) st.textContent = "Zapisuję i przeliczam plan…";
   const r = await fetch("/api/ev-charging/plan", {
     method: "PUT",
     headers: { "Content-Type": "application/json", "X-Guardian-Api-Key": key },
-    body: JSON.stringify({ target_kwh: target, preferred_start_hour, max_power_kw }),
+    body: JSON.stringify({ remaining_kwh: remaining, preferred_start_hour, max_power_kw }),
   });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) {
@@ -936,8 +951,13 @@ async function clearEvChargingPlan() {
     if (st) st.textContent = j.detail || "error";
     return;
   }
-  document.getElementById("evTargetKwh").value = "";
+  const remainingEl = document.getElementById("evRemainingKwh");
+  if (remainingEl) remainingEl.value = "";
   document.getElementById("evPreferredHour").value = "";
+  const powerEl = document.getElementById("evMaxPowerKw");
+  if (powerEl) powerEl.value = String(EV_DEFAULT_POWER_KW);
+  const totalHint = document.getElementById("evChargingTotalHint");
+  if (totalHint) totalHint.textContent = "";
   if (st) {
     if (j.planner && j.planner.replanned) {
       st.textContent = "Wyczyszczono — planer przeliczony.";
@@ -2197,6 +2217,7 @@ async function putPlanner(enabled) {
     on: "Plan stosowany",
     off: "Plan tylko podgląd",
   });
+  if (pageLoaded.slots) refreshEcoslots(false).catch(console.error);
 }
 
 async function saveWatchdog() {
@@ -2315,21 +2336,62 @@ function bindEcoSlotForm(slotId) {
   }
 }
 
-function renderEcoslots(data) {
-  if (!data) return;
-  document.getElementById("ecoBalancingSlot").textContent = data.balancing_slot_id || "—";
-  document.getElementById("ecoSlotsPanels").innerHTML = (data.editable_slot_ids || []).map((sid) => {
-    const s = (data.slots || {})[sid] || {};
-    const pwr = dv(s.power_pct, 0);
-    const days = s.days || "Mon-Sun";
-    const isPreset = ECO_DAY_PRESETS.some(([v]) => v === days);
-    const dayOpts = ECO_DAY_PRESETS.map(([v, label]) =>
-      `<option value="${v}" ${days === v ? "selected" : ""}>${label}</option>`
-    ).join("") + `<option value="__custom__" ${!isPreset ? "selected" : ""}>Własne…</option>`;
-    const active = s.active_now ? '<span class="tag">ACTIVE</span>' : "";
-    return `<article class="card eco-slot-card" data-eco-card="${sid}">
-      <div class="eco-slot-title">${sid.replace("eco_mode_", "Slot ")} ${active}</div>
-      <div class="muted eco-slot-read">Odczyt: ${ecoTime(s.start_h, s.start_m)} – ${ecoTime(s.end_h, s.end_m)} · ${fmt(s.power_pct)}%</div>
+function ecoSlotIdsInOrder(data) {
+  const all = ["eco_mode_1", "eco_mode_2", "eco_mode_3", "eco_mode_4"];
+  const slots = data.slots || {};
+  const ids = all.filter((sid) => Object.prototype.hasOwnProperty.call(slots, sid));
+  const ordered = ids.length ? ids : all;
+  const bal = data.balancing_slot_id;
+  if (!bal || !ordered.includes(bal)) return ordered;
+  return [bal, ...ordered.filter((sid) => sid !== bal)];
+}
+
+function ecoPowerDirection(pct) {
+  const n = Number(pct);
+  if (pct == null || Number.isNaN(n)) return "—";
+  if (n < 0) return `${n}% · ładowanie`;
+  if (n > 0) return `${n}% · rozładowanie`;
+  return "0% · hold";
+}
+
+function renderEcoSlotCard(sid, s, { readOnly, balancing }) {
+  const pwr = dv(s.power_pct, 0);
+  const days = s.days || "Mon-Sun";
+  const isPreset = ECO_DAY_PRESETS.some(([v]) => v === days);
+  const dayOpts = ECO_DAY_PRESETS.map(([v, label]) =>
+    `<option value="${v}" ${days === v ? "selected" : ""}>${label}</option>`
+  ).join("") + `<option value="__custom__" ${!isPreset ? "selected" : ""}>Własne…</option>`;
+  const tags = [
+    balancing ? '<span class="tag tag-guardian">balansujący</span>' : "",
+    readOnly ? '<span class="tag">tylko odczyt</span>' : "",
+    s.active_now ? '<span class="tag">ACTIVE</span>' : "",
+    s.enabled && !s.active_now ? '<span class="tag">włączony</span>' : "",
+  ].filter(Boolean).join(" ");
+  const title = `<div class="eco-slot-title">${sid.replace("eco_mode_", "Slot ")} ${tags}</div>`;
+  const readLine =
+    `<div class="muted eco-slot-read">Odczyt: ${ecoTime(s.start_h, s.start_m)} – ${ecoTime(s.end_h, s.end_m)} · ${ecoPowerDirection(s.power_pct)}</div>`;
+  if (readOnly) {
+    const onOff = s.enabled ? "włączony" : "wyłączony";
+    return `<article class="card eco-slot-card eco-slot-readonly" data-eco-card="${sid}">
+      ${title}
+      ${readLine}
+      <div class="eco-slot-power-hero">${ecoPowerDirection(s.power_pct)}</div>
+      <div class="eco-slot-kvs">
+        <div class="k">Okno</div><div class="v">${ecoTime(s.start_h, s.start_m)} – ${ecoTime(s.end_h, s.end_m)}</div>
+        <div class="k">Dni</div><div class="v">${escapeHtml(days)}</div>
+        <div class="k">SoC</div><div class="v">${s.soc_pct != null ? `${fmt(s.soc_pct)} %` : "—"}</div>
+        <div class="k">Harmonogram</div><div class="v">${onOff}</div>
+      </div>
+      <div class="muted eco-slot-read">Plan włączony — slot balansujący tylko do odczytu. Runner pisze go co minutę.</div>
+    </article>`;
+  }
+  const planOffHint = balancing
+    ? `<div class="muted eco-slot-read">Plan wyłączony — możesz zapisać ten slot. Watchdog nadal może go nadpisać, jeśli sterowanie jest włączone.</div>`
+    : "";
+  return `<article class="card eco-slot-card" data-eco-card="${sid}">
+      ${title}
+      ${readLine}
+      ${planOffHint}
       <div class="eco-form">
         <div class="eco-time-grid">
           <label class="eco-field"><span>Od</span>
@@ -2357,8 +2419,22 @@ function renderEcoslots(data) {
         <button type="button" class="btn-eco-save" data-eco-save="${sid}">Zapisz ${sid.replace("eco_mode_", "slot ")}</button>
       </div>
     </article>`;
+}
+
+function renderEcoslots(data) {
+  if (!data) return;
+  document.getElementById("ecoBalancingSlot").textContent = data.balancing_slot_id || "—";
+  const editable = new Set(data.editable_slot_ids || []);
+  const ids = ecoSlotIdsInOrder(data);
+  const balancingId = data.balancing_slot_id;
+  document.getElementById("ecoSlotsPanels").innerHTML = ids.map((sid) => {
+    const s = (data.slots || {})[sid] || {};
+    return renderEcoSlotCard(sid, s, {
+      readOnly: !editable.has(sid),
+      balancing: sid === balancingId,
+    });
   }).join("") || '<div class="muted">Brak slotów.</div>';
-  (data.editable_slot_ids || []).forEach((sid) => bindEcoSlotForm(sid));
+  ids.filter((sid) => editable.has(sid)).forEach((sid) => bindEcoSlotForm(sid));
 }
 
 let _ecoSaveInFlight = false;

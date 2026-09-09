@@ -34,3 +34,22 @@ def test_build_and_snapshot_roundtrip(tmp_path, monkeypatch) -> None:
     assert loaded["source"] == "runner"
     assert loaded["slots"]["eco_mode_1"]["power_pct"] == -50
     assert loaded["slots"]["eco_mode_2"]["supported"] is False
+    assert "eco_mode_4" not in loaded["editable_slot_ids"]
+
+
+def test_editable_slot_ids_depend_on_planner() -> None:
+    assert "eco_mode_4" not in svc.editable_slot_ids(planner_execution_enabled=True)
+    assert "eco_mode_4" in svc.editable_slot_ids(planner_execution_enabled=False)
+
+
+def test_attach_planner_editability(monkeypatch) -> None:
+    monkeypatch.setattr(svc, "effective_planner_execution_enabled", lambda: (True, "test"))
+    out = svc.attach_planner_editability(
+        {"editable_slot_ids": ["eco_mode_1", "eco_mode_4"], "slots": {}}
+    )
+    assert out["planner_execution_enabled"] is True
+    assert "eco_mode_4" not in out["editable_slot_ids"]
+    monkeypatch.setattr(svc, "effective_planner_execution_enabled", lambda: (False, "test"))
+    out_off = svc.attach_planner_editability({"editable_slot_ids": ["eco_mode_1"], "slots": {}})
+    assert out_off["planner_execution_enabled"] is False
+    assert "eco_mode_4" in out_off["editable_slot_ids"]

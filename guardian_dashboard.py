@@ -17,16 +17,23 @@ from zoneinfo import ZoneInfo
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 import guardian_config as guardian_cfg
 
 from economics import avg_export_pln_per_kwh
 from energy_pricing import pricing_day_breakdown
-from ev_charging_plan import EvChargingDeclaration, build_ev_recommendation, ev_schedule_map
+from ev_charging_plan import (
+    EvChargingDeclaration,
+    build_ev_recommendation,
+    current_delivered_ev_kwh,
+    ev_schedule_map,
+    resolve_ev_put_target_kwh,
+)
 from ev_charging_store import active_plan, clear_declaration, write_declaration
-from guardian_config import LOG_DIR, TELEMETRY_DIR, TELEMETRY_TZ, TESLA_WC_MAX_KW
+from guardian_config import EV_CHARGING_DEFAULT_POWER_KW, LOG_DIR, TELEMETRY_DIR, TELEMETRY_TZ
 from ecoslot_service import (
+    attach_planner_editability,
     balancing_slot_id,
     editable_slot_ids,
     ecoslot_override_alert_payload,
@@ -167,7 +174,8 @@ class EcoslotWriteBody(BaseModel):
 class EvChargingPlanBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    target_kwh: float = Field(ge=0)
+    target_kwh: float | None = Field(default=None, ge=0)
+    remaining_kwh: float | None = Field(default=None, ge=0)
     preferred_start_hour: int | None = Field(default=None, ge=0, le=23)
     max_power_kw: float | None = Field(default=None, gt=0)
     manual_slots: dict[int, float] | None = None
@@ -180,6 +188,12 @@ class EvChargingPlanBody(BaseModel):
         if not isinstance(v, dict):
             raise TypeError("manual_slots must be a dict")
         return {int(k): max(0.0, float(val)) for k, val in v.items()}
+
+    @model_validator(mode="after")
+    def _require_energy(self) -> EvChargingPlanBody:
+        if self.target_kwh is None and self.remaining_kwh is None:
+            raise ValueError("Podaj remaining_kwh albo target_kwh")
+        return self
 
 
 def _require_guardian_api_key(
@@ -1982,11 +1996,11 @@ async def api_ecoslots_get(refresh: bool = Query(default=False)) -> JSONResponse
     if not refresh:
         cached = _ecoslots_cache
         if cached is not None and (mono - cached[0]) < _ECOSLOTS_CACHE_TTL_S:
-            return JSONResponse(cached[1])
+            return JSONResponse(attach_planner_editability(cached[1]))
         snap = load_ecoslots_payload_from_snapshot()
         if snap is not None:
             _ecoslots_cache = (mono, snap)
-            return JSONResponse(snap)
+            return JSONResponse(attach_planner_editability(snap))
     try:
         payload = await fetch_ecoslots_payload(live=True)
     except RuntimeError as e:
@@ -1997,7 +2011,7 @@ async def api_ecoslots_get(refresh: bool = Query(default=False)) -> JSONResponse
         logger.warning("ecoslots read failed: %s", e)
         raise HTTPException(status_code=502, detail=str(e)) from e
     _ecoslots_cache = (mono, payload)
-    return JSONResponse(payload)
+    return JSONResponse(attach_planner_editability(payload))
 
 
 @app.put("/api/ecoslots/{slot_id}")
@@ -2007,10 +2021,16 @@ async def api_ecoslots_put(
     _: None = Depends(_require_guardian_api_key),
 ) -> JSONResponse:
     global _ecoslots_cache
-    if slot_id not in editable_slot_ids():
+    plan_on, _ = effective_planner_execution_enabled()
+    if slot_id not in editable_slot_ids(planner_execution_enabled=plan_on):
         raise HTTPException(
             status_code=400,
-            detail=f"Slot {slot_id} jest zarezerwowany dla Guardiana ({balancing_slot_id()})",
+            detail=(
+                f"Slot {slot_id} jest zarezerwowany dla planu Guardiana "
+                f"({balancing_slot_id()})"
+                if plan_on and slot_id == balancing_slot_id()
+                else f"Nieobsługiwany slot: {slot_id}"
+            ),
         )
     try:
         result = await write_ecoslot(
@@ -2111,12 +2131,21 @@ async def api_ev_charging_plan_put(
     body: EvChargingPlanBody,
     _: None = Depends(_require_guardian_api_key),
 ) -> JSONResponse:
-    today = datetime.now(ZoneInfo(TELEMETRY_TZ)).date().isoformat()
+    today = datetime.now(ZoneInfo(TELEMETRY_TZ)).date()
+    delivered = current_delivered_ev_kwh(today)
+    try:
+        target = resolve_ev_put_target_kwh(
+            remaining_kwh=body.remaining_kwh,
+            target_kwh=body.target_kwh,
+            delivered_kwh=delivered,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     decl = EvChargingDeclaration(
-        date=today,
-        target_kwh=body.target_kwh,
+        date=today.isoformat(),
+        target_kwh=target,
         preferred_start_hour=body.preferred_start_hour,
-        max_power_kw=body.max_power_kw or TESLA_WC_MAX_KW,
+        max_power_kw=body.max_power_kw or EV_CHARGING_DEFAULT_POWER_KW,
         manual_slots=body.manual_slots,
     )
     write_declaration(decl)

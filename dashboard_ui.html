@@ -405,6 +405,12 @@
     .ev-charging-panel .grid-ev { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; align-items: end; margin-top: 8px; }
     .ev-charging-panel label { display: block; font-size: 11px; opacity: 0.85; margin-bottom: 2px; }
     .ev-charging-panel input { width: 100%; box-sizing: border-box; }
+    .ev-charging-panel input[readonly] {
+      opacity: 0.75;
+      cursor: default;
+      background: rgba(127,127,127,0.08);
+    }
+    .ev-charging-panel .field-hint { font-size: 10px; opacity: 0.75; margin-top: 2px; line-height: 1.3; }
     .ev-charging-warnings { margin-top: 8px; font-size: 11px; color: #b32d2d; }
     table.kpi-merged td, table.kpi-merged th { text-align: right; font-variant-numeric: tabular-nums; }
     table.kpi-merged td:first-child, table.kpi-merged th:first-child { text-align: left; }
@@ -555,8 +561,20 @@
       align-items: start;
     }
     .eco-slot-card { margin-bottom: 0; padding: 14px 14px 16px; }
+    .eco-slot-readonly { border: 1px solid rgba(127,127,127,0.55); background: rgba(127,127,127,0.06); }
     .eco-slot-title { font-size: 1.05rem; font-weight: 700; margin: 0 0 4px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .tag-guardian { font-weight: 700; }
     .eco-slot-read { font-size: 12px; margin-bottom: 12px; }
+    .eco-slot-power-hero {
+      font-size: 1.55rem; font-weight: 700; font-variant-numeric: tabular-nums;
+      margin: 4px 0 10px; line-height: 1.2;
+    }
+    .eco-slot-kvs {
+      display: grid; grid-template-columns: auto 1fr; gap: 6px 14px;
+      font-size: 13px; margin-bottom: 10px;
+    }
+    .eco-slot-kvs .k { opacity: 0.72; }
+    .eco-slot-kvs .v { font-weight: 700; font-variant-numeric: tabular-nums; }
     .eco-form { display: flex; flex-direction: column; gap: 16px; }
     .eco-field { display: flex; flex-direction: column; gap: 6px; }
     .eco-field > span { font-size: 13px; line-height: 1.3; }
@@ -607,9 +625,10 @@
     @media (min-width: 640px) {
       .eco-slots-toolbar { flex-direction: row; align-items: center; flex-wrap: wrap; }
       .btn-eco-save { width: auto; min-width: 180px; }
+      #ecoSlotsPanels { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
-    @media (min-width: 900px) {
-      #ecoSlotsPanels { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    @media (min-width: 1100px) {
+      #ecoSlotsPanels { grid-template-columns: repeat(4, minmax(0, 1fr)); }
     }
     @media (max-width: 1200px) { .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } .grid4 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
     @media (max-width: 760px) {
@@ -785,8 +804,12 @@
         <div id="evChargingHero" class="grid4" style="margin-top:8px;"></div>
         <div class="grid-ev">
           <div>
-            <label for="evTargetKwh">Cel [kWh]</label>
-            <input type="number" id="evTargetKwh" min="0" step="0.5" placeholder="np. 15" />
+            <label for="evDeliveredKwh">Już załadowane [kWh]</label>
+            <input type="number" id="evDeliveredKwh" min="0" step="0.1" value="0" readonly tabindex="-1" />
+          </div>
+          <div>
+            <label for="evRemainingKwh">Jeszcze do załadowania [kWh]</label>
+            <input type="number" id="evRemainingKwh" min="0" step="0.5" placeholder="np. 10" />
           </div>
           <div>
             <label for="evPreferredHour">Start (godz., opcj.)</label>
@@ -794,13 +817,15 @@
           </div>
           <div>
             <label for="evMaxPowerKw">Moc ładowarki [kW]</label>
-            <input type="number" id="evMaxPowerKw" min="1" max="22" step="0.5" value="11" />
+            <input type="number" id="evMaxPowerKw" min="1" max="22" step="0.5" value="3" />
+            <div class="field-hint">3 kW na co dzień; 11 kW tylko w taniej taryfie</div>
           </div>
           <div style="display:flex; gap:6px; flex-wrap:wrap;">
             <button type="button" id="evChargingSave">Zapisz plan</button>
             <button type="button" id="evChargingClear">Wyczyść</button>
           </div>
         </div>
+        <div class="muted" id="evChargingTotalHint" style="font-size:11px; margin-top:6px;"></div>
         <div class="muted" id="evChargingSlots" style="font-size:11px; margin-top:8px;"></div>
         <div class="ev-charging-warnings" id="evChargingWarnings"></div>
         <div class="muted" id="evChargingStatus" style="font-size:11px; margin-top:4px;"></div>
@@ -1201,11 +1226,11 @@
     <section id="page-slots" class="page">
       <div class="page-hdr"><h2>Eco sloty</h2></div>
       <div class="settings-block">
-        <h3>Eco slots (eco_mode_1–3)</h3>
+        <h3>Eco slots (eco_mode_1–4)</h3>
         <div class="muted" style="margin-bottom:8px;">
           Ładowanie: ujemne %, rozładowanie: dodatnie %. Dane z pliku
           <code>state/ecoslots_snapshot.json</code> (runner co minutę).
-          <code id="ecoBalancingSlot">—</code> — zarezerwowany dla Guardiana.
+          Slot balansujący (<code id="ecoBalancingSlot">—</code>): przy włączonym planie tylko odczyt.
         </div>
         <div class="eco-slots-toolbar">
           <span class="muted" id="ecoSlotsStatus">—</span>

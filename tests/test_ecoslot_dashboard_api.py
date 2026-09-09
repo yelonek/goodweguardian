@@ -1,4 +1,4 @@
-"""API /api/ecoslots (odczyt + zapis slotów 1–3)."""
+"""API /api/ecoslots (odczyt slotów 1–4; zapis slotu 4 zablokowany przy włączonym planie)."""
 
 from __future__ import annotations
 
@@ -14,10 +14,13 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setattr("guardian_config.GUARDIAN_API_KEY", "secret-key")
     monkeypatch.setattr("guardian_config.INVERTER_IP", "192.168.1.10")
     monkeypatch.setattr("guardian_config.ECO_SLOT_BALANCING", 4)
+    monkeypatch.setattr(
+        "planner_control.effective_planner_execution_enabled",
+        lambda: (True, "test"),
+    )
     snap_path = tmp_path / "ecoslots_snapshot.json"
     monkeypatch.setattr("ecoslot_service.ECOSLOTS_SNAPSHOT_PATH", snap_path)
     from ecoslot_service import build_ecoslots_payload, save_ecoslots_snapshot
-    from types import SimpleNamespace
     from datetime import datetime
 
     save_ecoslots_snapshot(
@@ -79,6 +82,9 @@ def test_ecoslots_get_from_snapshot(client: TestClient) -> None:
     assert body["balancing_slot_id"] == "eco_mode_4"
     assert body["source"] == "runner"
     assert body["slots"]["eco_mode_1"]["power_pct"] == -10
+    assert "eco_mode_4" in body["slots"]
+    assert "eco_mode_4" not in body["editable_slot_ids"]
+    assert body["planner_execution_enabled"] is True
 
 
 def test_ecoslots_get_live(client: TestClient, mock_inverter) -> None:
@@ -103,7 +109,7 @@ def test_ecoslots_put_requires_key(client: TestClient, mock_inverter) -> None:
     assert r.status_code == 401
 
 
-def test_ecoslots_put_balancing_slot_forbidden(
+def test_ecoslots_put_balancing_slot_forbidden_when_plan_on(
     client: TestClient, mock_inverter
 ) -> None:
     r = client.put(
@@ -119,6 +125,49 @@ def test_ecoslots_put_balancing_slot_forbidden(
         },
     )
     assert r.status_code == 400
+    assert "planu" in r.json()["detail"]
+
+
+def test_ecoslots_put_balancing_slot_allowed_when_plan_off(
+    client: TestClient, mock_inverter, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        "guardian_dashboard.effective_planner_execution_enabled",
+        lambda: (False, "test"),
+    )
+    monkeypatch.setattr(
+        "ecoslot_service.effective_planner_execution_enabled",
+        lambda: (False, "test"),
+    )
+    r = client.put(
+        "/api/ecoslots/eco_mode_4",
+        headers={"X-Guardian-Api-Key": "secret-key"},
+        json={
+            "start_h": 9,
+            "start_m": 0,
+            "end_h": 10,
+            "end_m": 0,
+            "power": 1,
+            "enabled": True,
+        },
+    )
+    assert r.status_code == 200
+    assert r.json()["slot_id"] == "eco_mode_4"
+    mock_inverter.write_setting.assert_called()
+
+
+def test_ecoslots_get_balancing_editable_when_plan_off(
+    client: TestClient, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        "ecoslot_service.effective_planner_execution_enabled",
+        lambda: (False, "test"),
+    )
+    r = client.get("/api/ecoslots")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["planner_execution_enabled"] is False
+    assert "eco_mode_4" in body["editable_slot_ids"]
 
 
 def test_ecoslots_put_soc_out_of_range(client: TestClient, mock_inverter) -> None:

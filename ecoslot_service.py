@@ -14,6 +14,7 @@ import goodwe
 
 from ecoslot_config import ECO_SETTING_IDS, set_ecoslot
 from guardian_config import ECO_SLOT_BALANCING, INVERTER_IP, STATE_DIR, TELEMETRY_TZ
+from planner_control import effective_planner_execution_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -58,16 +59,37 @@ def balancing_slot_id() -> str:
     return f"eco_mode_{ECO_SLOT_BALANCING}"
 
 
-def editable_slot_ids() -> tuple[str, ...]:
-    skip = balancing_slot_id()
-    return tuple(sid for sid in ECO_SETTING_IDS if sid != skip)
+def editable_slot_ids(*, planner_execution_enabled: bool | None = None) -> tuple[str, ...]:
+    """Slot balansujący jest edytowalny tylko gdy plan jest wyłączony."""
+    if planner_execution_enabled is None:
+        planner_execution_enabled, _ = effective_planner_execution_enabled()
+    if planner_execution_enabled:
+        skip = balancing_slot_id()
+        return tuple(sid for sid in ECO_SETTING_IDS if sid != skip)
+    return ECO_SETTING_IDS
 
 
 def assert_editable_slot(slot_id: str) -> None:
-    if slot_id not in editable_slot_ids():
-        raise ValueError(
-            f"Slot {slot_id} jest zarezerwowany dla Guardiana ({balancing_slot_id()})"
-        )
+    enabled, _ = effective_planner_execution_enabled()
+    if slot_id not in editable_slot_ids(planner_execution_enabled=enabled):
+        if slot_id == balancing_slot_id() and enabled:
+            raise ValueError(
+                f"Slot {slot_id} jest zarezerwowany dla planu Guardiana "
+                f"({balancing_slot_id()})"
+            )
+        raise ValueError(f"Nieobsługiwany slot: {slot_id}")
+
+
+def attach_planner_editability(payload: dict[str, Any]) -> dict[str, Any]:
+    """Nadpisz editable_slot_ids wg bieżącego przełącznika planu (nie ze snapshotu)."""
+    enabled, source = effective_planner_execution_enabled()
+    out = dict(payload)
+    out["planner_execution_enabled"] = enabled
+    out["planner_execution_source"] = source
+    out["editable_slot_ids"] = list(
+        editable_slot_ids(planner_execution_enabled=enabled)
+    )
+    return out
 
 
 def slot_to_payload(slot: object | None, *, now: datetime) -> dict[str, Any]:
@@ -157,7 +179,9 @@ def build_ecoslots_payload(
     return {
         "inverter_ip": INVERTER_IP,
         "balancing_slot_id": balancing_slot_id(),
-        "editable_slot_ids": list(editable_slot_ids()),
+        "editable_slot_ids": list(
+            editable_slot_ids(planner_execution_enabled=True)
+        ),
         "now": now.isoformat(),
         "read_at": now.isoformat(),
         "source": source,
