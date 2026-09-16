@@ -51,6 +51,9 @@ def test_dashboard_ui_has_load_correction_page(load_corr_client: TestClient) -> 
     assert "loadLoadCorrection" in js.text
     assert '"load-correction": loadLoadCorrection' in js.text
     assert "renderLoadCorrectionBands" in js.text
+    assert "function renderCorrectionChart(" in js.text
+    assert "function renderCorrectionDayRows(" in js.text
+    assert "correctionHourLabel" in js.text
     assert 'id="loadCorrectionBands"' in r.text
 
 
@@ -81,3 +84,22 @@ def test_planner_load_milp_snapshot_mid_hour() -> None:
     assert snap["load_planner_active"] is True
     assert snap["load_planner_remainder_p50_kwh"] > 1.0
     assert snap["load_planner_full_p50_kwh"] > 3.14
+
+
+def test_load_correction_projection_curve_spans_two_hours() -> None:
+    from guardian_dashboard import _load_correction_projection_curve
+
+    pts = _load_correction_projection_curve(
+        f50_kwh=4.0,
+        f50_next_kwh=2.0,
+        alpha=0.5,
+        a_so_far_kwh=2.5,
+        load_plan_kwh=4.2,
+        load_plan_next_kwh=1.5,
+        minute_series=[],
+    )
+    assert len(pts) == 121
+    assert pts[60]["forecast_kwh"] == pytest.approx(4.0)
+    assert pts[120]["forecast_kwh"] == pytest.approx(6.0)
+    assert pts[60]["plan_kwh"] == pytest.approx(4.2)
+    assert pts[120]["plan_kwh"] == pytest.approx(5.7)

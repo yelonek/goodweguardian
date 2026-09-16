@@ -293,6 +293,8 @@ function formatWatchdogSource(source) {
 const pageLoaded = {};
 let currentPage = null;
 let pollTimer = null;
+let _lastChargingPyramid = null;
+let _lastChargingEv = null;
 
 async function fetchJson(url, timeoutMs = 25000) {
   const ac = new AbortController();
@@ -324,16 +326,14 @@ function localNowParts() {
 async function loadOverview(force) {
   if (!force && pageLoaded.overview) return;
   try {
-    const [status, pyramid, planViz] = await Promise.all([
+    const [status, planViz] = await Promise.all([
       fetchJson("/api/status", 10000),
-      fetchJson("/api/pv-pyramid", 60000).catch((e) => ({ _error: String(e) })),
       fetchJson("/api/plan/visualization", 60000).catch((e) => ({ _error: String(e) })),
     ]);
     document.getElementById("logPath").textContent = status.log_path || "—";
     renderEcoOverrideBanner(status);
     renderStatus(status.fields || {});
     renderPlanTimeline(planViz);
-    renderPvPyramid(pyramid);
     pageLoaded.overview = true;
     setUpdated(true);
   } catch (e) {
@@ -871,15 +871,91 @@ async function loadHistory(force) {
   }
 }
 
+function _pyramidSurplus(segment) {
+  const p50 = Number(segment?.cheap_surplus_kwh_p50 ?? segment?.cheap_surplus_kwh ?? 0);
+  const p10 = Number(segment?.cheap_surplus_kwh_p10 ?? p50);
+  const p90 = Number(segment?.cheap_surplus_kwh_p90 ?? p50);
+  return { p10, p50, p90 };
+}
+
+function renderChargingBudgetCompare() {
+  const el = document.getElementById("chargingBudgetCompare");
+  const note = document.getElementById("chargingBudgetNote");
+  if (!el) return;
+  const p = _lastChargingPyramid;
+  const ev = _lastChargingEv || {};
+  if (!p || p._error) {
+    el.innerHTML = "";
+    if (note) {
+      note.textContent = p && p._error ? "Brak piramidy taniej energii: " + p._error : "";
+    }
+    return;
+  }
+  const cheapGr = (p.segments && p.segments.cheap_threshold_gr) || RCE_CHEAP_THRESHOLD_GR;
+  const todayS = _pyramidSurplus(p.segments && p.segments.today && p.segments.today.remaining);
+  const tomS = _pyramidSurplus(p.segments && p.segments.tomorrow && p.segments.tomorrow.total);
+  const want = ev.declaration != null ? Number(ev.remaining_kwh ?? 0) : null;
+  const cheapExport = Number((ev.cheap_budget || {}).cheap_export_kwh || 0);
+  const wantCard = want == null
+    ? card("Jeszcze do załadowania", "—")
+    : card("Jeszcze do załadowania", `${want.toFixed(1)} kWh`);
+  el.innerHTML =
+    cardWithHint(
+      `Dziś nadwyżka (<${cheapGr} gr)`,
+      `${todayS.p50.toFixed(1)} kWh`,
+      `p10 ${todayS.p10.toFixed(1)} · p90 ${todayS.p90.toFixed(1)}`
+    ) +
+    cardWithHint(
+      "Jutro nadwyżka",
+      `${tomS.p50.toFixed(1)} kWh`,
+      p.pricing_tomorrow_available
+        ? `p10 ${tomS.p10.toFixed(1)} · p90 ${tomS.p90.toFixed(1)}`
+        : "RCE jutro jeszcze nieopublikowane"
+    ) +
+    wantCard +
+    card(`Eksport tanio (<${cheapGr} gr)`, `${cheapExport.toFixed(1)} kWh`);
+  if (!note) return;
+  if (want != null && want > todayS.p50 + 0.05) {
+    const short = want - todayS.p50;
+    note.textContent =
+      `Chcesz ${want.toFixed(1)} kWh, a dzisiejsza nadwyżka p50 to ${todayS.p50.toFixed(1)} kWh ` +
+      `(brakuje ${short.toFixed(1)}). Reszta: noc G12 albo jutro.`;
+  } else if (want != null && todayS.p50 > 0) {
+    note.textContent =
+      `Nadwyżka p50 dziś pokrywa deklarację (p10 = ${todayS.p10.toFixed(1)} kWh — bezpieczny budżet).`;
+  } else {
+    note.textContent =
+      "Po load = PV w tanich godzinach minus load domu. p10 to bezpieczny budżet na auto.";
+  }
+}
+
+async function loadCharging(force) {
+  if (!force && pageLoaded.charging) return;
+  const st = document.getElementById("chargingStatus");
+  if (!pageLoaded.charging) st.textContent = "ładowanie…";
+  else if (force) st.textContent = "odświeżanie…";
+  try {
+    updateEvChargingAuthHint();
+    const [pyramid, ev] = await Promise.all([
+      fetchJson("/api/pv-pyramid", 60000).catch((e) => ({ _error: String(e) })),
+      loadEvChargingPlan(),
+    ]);
+    _lastChargingPyramid = pyramid;
+    _lastChargingEv = ev;
+    renderPvPyramid(pyramid);
+    renderChargingBudgetCompare();
+    pageLoaded.charging = true;
+    st.textContent = pyramid && pyramid._error ? "piramida: " + pyramid._error : "OK";
+    setUpdated(true);
+  } catch (e) {
+    if (st) st.textContent = String(e);
+    setUpdated(false);
+  }
+}
+
 function renderEvChargingPanel(ev) {
   if (!ev) return;
-  const budget = ev.cheap_budget || {};
-  const cheapExport = Number(budget.cheap_export_kwh || 0);
-  const hero = document.getElementById("evChargingHero");
-  if (hero) {
-    hero.innerHTML =
-      `<div class="card"><div class="card-key">Eksport tanio (&lt;${RCE_CHEAP_THRESHOLD_GR} gr)</div><div class="card-val">${cheapExport.toFixed(1)} kWh</div></div>`;
-  }
+  _lastChargingEv = ev;
   const decl = ev.declaration;
   const delivered = Number(ev.delivered_kwh || 0);
   const remaining = decl ? Number(ev.remaining_kwh ?? 0) : null;
@@ -936,6 +1012,7 @@ function renderEvChargingPanel(ev) {
   }
   const warnEl = document.getElementById("evChargingWarnings");
   if (warnEl) warnEl.textContent = (ev.warnings || []).join(" ");
+  renderChargingBudgetCompare();
 }
 
 function updateEvChargingAuthHint() {
@@ -1002,7 +1079,8 @@ async function saveEvChargingPlan() {
     }
   }
   pageLoaded.forecast = false;
-  await loadForecast(true);
+  pageLoaded.charging = false;
+  await loadCharging(true);
 }
 
 async function clearEvChargingPlan() {
@@ -1034,9 +1112,9 @@ async function clearEvChargingPlan() {
       st.textContent = "Wyczyszczono deklarację EV.";
     }
   }
-  await loadEvChargingPlan();
   pageLoaded.forecast = false;
-  await loadForecast(true);
+  pageLoaded.charging = false;
+  await loadCharging(true);
 }
 
 function _numOrNull(v) {
@@ -1217,7 +1295,7 @@ function renderForecastPvDayChart(rows, nowFrac) {
     return;
   }
   const w = 720;
-  const h = 200;
+  const h = 260;
   const pad = { l: 40, r: 14, t: 16, b: 26 };
   const hours = rows.map((r) => Number(r.hour));
   const p10 = rows.map((r) => _numOr0(r.pv_kwh_p10));
@@ -1262,7 +1340,7 @@ function renderForecastLoadResidualChart(rows, nowFrac) {
     return;
   }
   const w = 720;
-  const h = 240;
+  const h = 280;
   const pad = { l: 40, r: 14, t: 16, b: 26 };
   const n = 24;
   let minY = 0;
@@ -1319,8 +1397,8 @@ function renderForecastBalanceSocChart(rows, nowFrac) {
     svg.innerHTML = "";
     return;
   }
-  const w = 720;
-  const h = 240;
+  const w = 960;
+  const h = 320;
   const pad = { l: 40, r: 40, t: 16, b: 26 };
   const n = 24;
   const series = rows.map((r) => {
@@ -1517,10 +1595,6 @@ function renderForecastBlock(forecast) {
   document.getElementById("loadNowcast").textContent = nc.applied
     ? `load nowcast: ×${Number(nc.factor || 1).toFixed(2)} (bias ${Number(nc.bias_w || 0).toFixed(0)} W); decay ${dv(nc.decay_hours, "—")} h`
     : (nc.reason ? "nowcast off — " + nc.reason : "");
-  if (evPlan && evPlan.declaration) {
-    renderEvChargingPanel(evPlan);
-  }
-  updateEvChargingAuthHint();
   renderForecastDayCharts(forecast);
 }
 
@@ -1529,11 +1603,7 @@ async function loadForecast(force) {
   const st = document.getElementById("forecastStatus");
   if (!pageLoaded.forecast) st.textContent = "ładowanie…";
   try {
-    updateEvChargingAuthHint();
-    const [forecast] = await Promise.all([
-      fetchJson("/api/forecast/combined", 60000),
-      loadEvChargingPlan(),
-    ]);
+    const forecast = await fetchJson("/api/forecast/combined", 60000);
     renderForecastBlock(forecast);
     pageLoaded.forecast = true;
     st.textContent = "OK";
@@ -1555,8 +1625,13 @@ function fmtKwh(v, d = 3) {
   return `${Number(v).toFixed(d)} kWh`;
 }
 
-function renderPvCorrectionChart(curve, alpha) {
-  const svg = document.getElementById("pvCorrectionChart");
+function correctionHourLabel(hour) {
+  const h = ((Number(hour) % 24) + 24) % 24;
+  return String(h).padStart(2, "0") + ":00";
+}
+
+function renderCorrectionChart(svgId, curve, alpha, currentHour, series) {
+  const svg = document.getElementById(svgId);
   if (!svg || !curve || !curve.length) {
     if (svg) svg.innerHTML = "";
     return;
@@ -1566,17 +1641,17 @@ function renderPvCorrectionChart(curve, alpha) {
   const pad = { l: 36, r: 12, t: 12, b: 28 };
   const innerW = w - pad.l - pad.r;
   const innerH = h - pad.t - pad.b;
+  const span = Math.max(60, ...curve.map((p) => Number(p.minute) || 0));
+  const seriesKeys = (series || []).map((s) => s.key);
   const ymax = Math.max(
     0.05,
     ...curve.map((p) => Math.max(
-      p.solcast_p10_kwh || 0,
-      p.solcast_kwh || 0,
-      p.solcast_p90_kwh || 0,
+      ...seriesKeys.map((k) => p[k] || 0),
       p.actual_kwh || 0,
       p.plan_kwh || 0
     ))
   );
-  const x = (m) => pad.l + (m / 60) * innerW;
+  const x = (m) => pad.l + (m / span) * innerW;
   const y = (v) => pad.t + innerH - (v / ymax) * innerH;
   const linePath = (key) => {
     const pts = curve.filter((p) => p[key] != null);
@@ -1589,62 +1664,134 @@ function renderPvCorrectionChart(curve, alpha) {
     return `<text x="${(x(last.minute) - 2).toFixed(1)}" y="${(y(last[key]) - 3).toFixed(1)}" ` +
       `text-anchor="end" font-size="9" fill="rgba(120, 180, 255, 0.95)">${text}</text>`;
   };
-  const nowX = x(Math.min(60, Math.max(0, alpha * 60)));
+  const nowX = x(Math.min(span, Math.max(0, alpha * 60)));
+  const h0 = Number(currentHour) || 0;
+  const hourTick = (minute, label) =>
+    `<text x="${x(minute).toFixed(1)}" y="${h - 6}" font-size="10" fill="currentColor" opacity="0.6">${label}</text>`;
+  const split = span > 60
+    ? `<line class="hour-v" x1="${x(60).toFixed(1)}" y1="${pad.t}" x2="${x(60).toFixed(1)}" y2="${h - pad.b}"/>`
+    : "";
+  const forecastPaths = seriesKeys.map((k) => `<path class="line-solcast" d="${linePath(k)}"/>`).join("");
+  const forecastLabels = (series || [])
+    .filter((s) => s.label)
+    .map((s) => endLabel(s.key, s.label))
+    .join("");
   svg.innerHTML =
     `<rect x="0" y="0" width="${w}" height="${h}" fill="transparent"/>` +
-    `<text x="${pad.l}" y="${h - 6}" font-size="10" fill="currentColor" opacity="0.6">:00</text>` +
-    `<text x="${w - pad.r - 16}" y="${h - 6}" font-size="10" fill="currentColor" opacity="0.6">:60</text>` +
-    `<path class="line-solcast" d="${linePath("solcast_p10_kwh")}"/>` +
-    `<path class="line-solcast" d="${linePath("solcast_kwh")}"/>` +
-    `<path class="line-solcast" d="${linePath("solcast_p90_kwh")}"/>` +
-    endLabel("solcast_p10_kwh", "p10") +
-    endLabel("solcast_kwh", "p50") +
-    endLabel("solcast_p90_kwh", "p90") +
+    hourTick(0, correctionHourLabel(h0)) +
+    (span > 60 ? hourTick(60, correctionHourLabel(h0 + 1)) : "") +
+    hourTick(span, correctionHourLabel(h0 + (span > 60 ? 2 : 1))) +
+    split +
+    forecastPaths +
+    forecastLabels +
     `<path class="line-actual" d="${linePath("actual_kwh")}"/>` +
     `<path class="line-plan" d="${linePath("plan_kwh")}"/>` +
     `<line class="now-v" x1="${nowX.toFixed(1)}" y1="${pad.t}" x2="${nowX.toFixed(1)}" y2="${h - pad.b}"/>` +
     `<text x="${Math.min(w - 40, nowX + 4)}" y="${pad.t + 10}" font-size="10" fill="currentColor">teraz</text>`;
 }
 
-function renderPvCorrectionBars(projections) {
-  const el = document.getElementById("pvCorrectionBars");
-  if (!el || !projections) return;
-  const items = [
-    ["Solcast p50", projections.solcast_full_hour_kwh, "base"],
-    ["k_intra only", projections.k_intra_only_kwh, "alt"],
-    ["rate only", projections.rate_only_kwh, "alt"],
-    ["Plan finalny", projections.final_plan_kwh, ""],
-  ].filter(([, v]) => v != null);
-  const max = Math.max(0.05, ...items.map(([, v]) => Number(v)));
-  el.innerHTML = items.map(([label, val, cls]) => {
+function renderCorrectionBars(elId, items) {
+  const el = document.getElementById(elId);
+  if (!el || !items) return;
+  const present = items.filter(([, v]) => v != null);
+  const max = Math.max(0.05, ...present.map(([, v]) => Number(v)));
+  el.innerHTML = present.map(([label, val, cls]) => {
     const pct = Math.max(2, (Number(val) / max) * 100);
     return `<div class="pv-correction-bar-item"><div class="bar-label">${escapeHtml(label)} · ${fmtKwh(val, 2)}</div>` +
       `<div class="pv-correction-bar"><span class="${cls || ""}" style="width:${pct.toFixed(0)}%"></span></div></div>`;
   }).join("");
 }
 
-function renderPvCorrectionBands(bands) {
-  const el = document.getElementById("pvCorrectionBands");
+function renderCorrectionBands(elId, bands, cfg) {
+  const el = document.getElementById(elId);
   if (!el) return;
-  if (!bands || !bands.pv_planner_active) {
+  const p = cfg.prefix;
+  if (!bands || !bands[`${p}_active`]) {
     el.innerHTML = "<p class=\"muted\" style=\"font-size:12px;margin:0;\">Aktywne tylko w trakcie bieżącej godziny (mid-hour rolling).</p>";
     return;
   }
-  const frac = bands.pv_planner_hour_fraction != null
-    ? `${(Number(bands.pv_planner_hour_fraction) * 100).toFixed(0)}%`
+  const frac = bands[`${p}_hour_fraction`] != null
+    ? `${(Number(bands[`${p}_hour_fraction`]) * 100).toFixed(0)}%`
     : "—";
-  const row = (label, p10, p50, p90) =>
+  const row = (label, lo, mid, hi) =>
     `<tr><td>${escapeHtml(label)}</td>` +
-    `<td>${fmtKwh(p10, 3)}</td><td>${fmtKwh(p50, 3)}</td><td>${fmtKwh(p90, 3)}</td></tr>`;
+    `<td>${fmtKwh(lo, 3)}</td><td>${fmtKwh(mid, 3)}</td><td>${fmtKwh(hi, 3)}</td></tr>`;
+  const extra = cfg.extraMeta ? cfg.extraMeta(bands) : "";
   el.innerHTML =
     `<p class="muted" style="font-size:11px;margin:0 0 8px;">` +
-    `Reszta slotu: ${frac} · A=${fmtKwh(bands.pv_planner_a_so_far_kwh, 3)} · ` +
-    `k_intra=${bands.pv_planner_k_intra != null ? Number(bands.pv_planner_k_intra).toFixed(3) : "—"} · ` +
-    `zwężanie=${bands.pv_planner_band_narrow_enabled ? "tak" : "nie"}</p>` +
-    `<table class="pv-correction-day"><thead><tr><th></th><th>p10</th><th>p50</th><th>p90</th></tr></thead><tbody>` +
-    row("Pełna h (planer)", bands.pv_planner_full_p10_kwh, bands.pv_planner_full_p50_kwh, bands.pv_planner_full_p90_kwh) +
-    row("Reszta → MILP", bands.pv_planner_remainder_p10_kwh, bands.pv_planner_remainder_p50_kwh, bands.pv_planner_remainder_p90_kwh) +
+    `Reszta slotu: ${frac} · A=${fmtKwh(bands[`${p}_a_so_far_kwh`], 3)} · ` +
+    `k_intra=${bands[`${p}_k_intra`] != null ? Number(bands[`${p}_k_intra`]).toFixed(3) : "—"}` +
+    extra +
+    `</p>` +
+    `<table class="pv-correction-day"><thead><tr><th></th><th>${cfg.loLabel}</th><th>${cfg.midLabel}</th><th>${cfg.hiLabel}</th></tr></thead><tbody>` +
+    row(
+      "Pełna h (planer)",
+      bands[`${p}_full_${cfg.lo}_kwh`],
+      bands[`${p}_full_${cfg.mid}_kwh`],
+      bands[`${p}_full_${cfg.hi}_kwh`]
+    ) +
+    row(
+      "Reszta → MILP",
+      bands[`${p}_remainder_${cfg.lo}_kwh`],
+      bands[`${p}_remainder_${cfg.mid}_kwh`],
+      bands[`${p}_remainder_${cfg.hi}_kwh`]
+    ) +
     `</tbody></table>`;
+}
+
+function renderCorrectionDayRows(tbodyId, hours, planKey) {
+  const dayRows = document.getElementById(tbodyId);
+  if (!dayRows) return;
+  dayRows.innerHTML = (hours || []).map((row) => {
+    const cls = row.in_progress ? "in-progress" : (row.complete ? "complete" : "");
+    const actual = row.complete
+      ? fmtKwh(row.actual_kwh, 2)
+      : (row.in_progress ? fmtKwh(row.actual_so_far_kwh, 3) + "*" : "—");
+    const plan = row[planKey] != null ? fmtKwh(row[planKey], 2) : "—";
+    let delta = "—";
+    if (row.delta_kwh != null) {
+      const d = Number(row.delta_kwh);
+      delta = (d >= 0 ? "+" : "") + d.toFixed(2);
+    } else if (row.delta_so_far_kwh != null) {
+      const d = Number(row.delta_so_far_kwh);
+      delta = (d >= 0 ? "+" : "") + d.toFixed(2) + "*";
+    }
+    return `<tr class="${cls}"><td>${String(row.hour).padStart(2, "0")}</td>` +
+      `<td>${fmtKwh(row.f50_kwh, 2)}</td><td>${actual}</td><td>${plan}</td><td>${delta}</td></tr>`;
+  }).join("");
+}
+
+function renderPvCorrectionChart(curve, alpha, currentHour) {
+  renderCorrectionChart("pvCorrectionChart", curve, alpha, currentHour, [
+    { key: "solcast_p10_kwh", label: "p10" },
+    { key: "solcast_kwh", label: "p50" },
+    { key: "solcast_p90_kwh", label: "p90" },
+  ]);
+}
+
+function renderPvCorrectionBars(projections) {
+  if (!projections) return;
+  renderCorrectionBars("pvCorrectionBars", [
+    ["Solcast p50", projections.solcast_full_hour_kwh, "base"],
+    ["Solcast h+1", projections.solcast_next_hour_kwh, "base"],
+    ["k_intra only", projections.k_intra_only_kwh, "alt"],
+    ["rate only", projections.rate_only_kwh, "alt"],
+    ["Plan h", projections.final_plan_kwh, ""],
+    ["Plan h+1", projections.next_plan_kwh, ""],
+  ]);
+}
+
+function renderPvCorrectionBands(bands) {
+  renderCorrectionBands("pvCorrectionBands", bands, {
+    prefix: "pv_planner",
+    lo: "p10",
+    mid: "p50",
+    hi: "p90",
+    loLabel: "p10",
+    midLabel: "p50",
+    hiLabel: "p90",
+    extraMeta: (b) => ` · zwężanie=${b.pv_planner_band_narrow_enabled ? "tak" : "nie"}`,
+  });
 }
 
 function renderPvWeatherBlock(weather) {
@@ -1769,9 +1916,10 @@ function renderPvCorrectionBlock(payload) {
     pvCorrMetric("recent kW", c.recent_kw != null ? `${Number(c.recent_kw).toFixed(2)} kW` : "—") +
     pvCorrMetric("Plan h", fmtKwh(p.final_plan_kwh, 2), "hero") +
     pvCorrMetric("Plan h+1", fmtKwh(c.pv_plan_next_kwh, 2)) +
+    pvCorrMetric("Spill h+1", c.spill_min != null ? `${Number(c.spill_min).toFixed(0)} min` : "—") +
     pvCorrMetric("Metoda", fmt(c.plan_method || c.reason));
 
-  renderPvCorrectionChart(payload.projection_curve || [], Number(c.alpha || 0));
+  renderPvCorrectionChart(payload.projection_curve || [], Number(c.alpha || 0), payload.current_hour);
   renderPvCorrectionBars(p);
   renderPvCorrectionBands(payload.remainder_bands);
   renderPvWeatherBlock(payload.weather);
@@ -1790,26 +1938,7 @@ function renderPvCorrectionBlock(payload) {
       : "Dynamiczny clip wyłączony — stały clip 0.65–1.35";
   }
 
-  const dayRows = document.getElementById("pvCorrectionDayRows");
-  if (dayRows) {
-    dayRows.innerHTML = (payload.today_hours || []).map((row) => {
-      const cls = row.in_progress ? "in-progress" : (row.complete ? "complete" : "");
-      const actual = row.complete
-        ? fmtKwh(row.actual_kwh, 2)
-        : (row.in_progress ? fmtKwh(row.actual_so_far_kwh, 3) + "*" : "—");
-      const plan = row.pv_plan_kwh != null ? fmtKwh(row.pv_plan_kwh, 2) : "—";
-      let delta = "—";
-      if (row.delta_kwh != null) {
-        const d = Number(row.delta_kwh);
-        delta = (d >= 0 ? "+" : "") + d.toFixed(2);
-      } else if (row.delta_so_far_kwh != null) {
-        const d = Number(row.delta_so_far_kwh);
-        delta = (d >= 0 ? "+" : "") + d.toFixed(2) + "*";
-      }
-      return `<tr class="${cls}"><td>${String(row.hour).padStart(2, "0")}</td>` +
-        `<td>${fmtKwh(row.f50_kwh, 2)}</td><td>${actual}</td><td>${plan}</td><td>${delta}</td></tr>`;
-    }).join("");
-  }
+  renderCorrectionDayRows("pvCorrectionDayRows", payload.today_hours, "pv_plan_kwh");
 
   const meta = document.getElementById("pvCorrectionMeta");
   if (meta) {
@@ -1819,6 +1948,8 @@ function renderPvCorrectionBlock(payload) {
       c.source_current ? `source: ${c.source_current}` : "",
       p.remaining_kwh != null ? `reszta h: ${Number(p.remaining_kwh).toFixed(3)} kWh` : "",
       c.rate_blend_weight ? `rate blend w=${(Number(c.rate_blend_weight) * 100).toFixed(0)}%` : "",
+      c.spill_min != null ? `spill h+1: ${Number(c.spill_min).toFixed(0)} min` : "",
+      c.mix_w != null ? `mix w=${(Number(c.mix_w) * 100).toFixed(0)}%` : "",
     ].filter(Boolean).join(" · ");
   }
 }
@@ -1839,80 +1970,36 @@ async function loadPvCorrection(force) {
   }
 }
 
-function renderLoadCorrectionChart(curve, alpha) {
-  const svg = document.getElementById("loadCorrectionChart");
-  if (!svg || !curve || !curve.length) {
-    if (svg) svg.innerHTML = "";
-    return;
-  }
-  const w = 600;
-  const h = 220;
-  const pad = { l: 36, r: 12, t: 12, b: 28 };
-  const innerW = w - pad.l - pad.r;
-  const innerH = h - pad.t - pad.b;
-  const ymax = Math.max(
-    0.05,
-    ...curve.map((p) => Math.max(p.forecast_kwh || 0, p.actual_kwh || 0, p.plan_kwh || 0))
-  );
-  const x = (m) => pad.l + (m / 60) * innerW;
-  const y = (v) => pad.t + innerH - (v / ymax) * innerH;
-  const linePath = (key) => {
-    const pts = curve.filter((p) => p[key] != null);
-    if (!pts.length) return "";
-    return pts.map((p, i) => `${i ? "L" : "M"}${x(p.minute).toFixed(1)},${y(p[key]).toFixed(1)}`).join(" ");
-  };
-  const nowX = x(Math.min(60, Math.max(0, alpha * 60)));
-  svg.innerHTML =
-    `<rect x="0" y="0" width="${w}" height="${h}" fill="transparent"/>` +
-    `<text x="${pad.l}" y="${h - 6}" font-size="10" fill="currentColor" opacity="0.6">:00</text>` +
-    `<text x="${w - pad.r - 16}" y="${h - 6}" font-size="10" fill="currentColor" opacity="0.6">:60</text>` +
-    `<path class="line-solcast" d="${linePath("forecast_kwh")}"/>` +
-    `<path class="line-actual" d="${linePath("actual_kwh")}"/>` +
-    `<path class="line-plan" d="${linePath("plan_kwh")}"/>` +
-    `<line class="now-v" x1="${nowX.toFixed(1)}" y1="${pad.t}" x2="${nowX.toFixed(1)}" y2="${h - pad.b}"/>` +
-    `<text x="${Math.min(w - 40, nowX + 4)}" y="${pad.t + 10}" font-size="10" fill="currentColor">teraz</text>`;
+function renderLoadCorrectionChart(curve, alpha, currentHour) {
+  renderCorrectionChart("loadCorrectionChart", curve, alpha, currentHour, [
+    { key: "forecast_kwh" },
+  ]);
 }
 
 function renderLoadCorrectionBars(projections) {
-  const el = document.getElementById("loadCorrectionBars");
-  if (!el || !projections) return;
-  const items = [
+  if (!projections) return;
+  renderCorrectionBars("loadCorrectionBars", [
     ["Forecast p50", projections.forecast_full_hour_kwh, "base"],
+    ["Forecast h+1", projections.forecast_next_hour_kwh, "base"],
     ["k_intra only", projections.k_intra_only_kwh, "alt"],
     ["rate only", projections.rate_only_kwh, "alt"],
-    ["Plan finalny", projections.final_plan_kwh, ""],
-  ].filter(([, v]) => v != null);
-  const max = Math.max(0.05, ...items.map(([, v]) => Number(v)));
-  el.innerHTML = items.map(([label, val, cls]) => {
-    const pct = Math.max(2, (Number(val) / max) * 100);
-    return `<div class="pv-correction-bar-item"><div class="bar-label">${escapeHtml(label)} · ${fmtKwh(val, 2)}</div>` +
-      `<div class="pv-correction-bar"><span class="${cls || ""}" style="width:${pct.toFixed(0)}%"></span></div></div>`;
-  }).join("");
+    ["Plan h", projections.final_plan_kwh, ""],
+    ["Plan h+1", projections.next_plan_kwh, ""],
+  ]);
 }
 
 function renderLoadCorrectionBands(bands) {
-  const el = document.getElementById("loadCorrectionBands");
-  if (!el) return;
-  if (!bands || !bands.load_planner_active) {
-    el.innerHTML = "<p class=\"muted\" style=\"font-size:12px;margin:0;\">Aktywne tylko w trakcie bieżącej godziny (mid-hour rolling).</p>";
-    return;
-  }
-  const frac = bands.load_planner_hour_fraction != null
-    ? `${(Number(bands.load_planner_hour_fraction) * 100).toFixed(0)}%`
-    : "—";
-  const row = (label, p25, p50, p75) =>
-    `<tr><td>${escapeHtml(label)}</td>` +
-    `<td>${fmtKwh(p25, 3)}</td><td>${fmtKwh(p50, 3)}</td><td>${fmtKwh(p75, 3)}</td></tr>`;
-  el.innerHTML =
-    `<p class="muted" style="font-size:11px;margin:0 0 8px;">` +
-    `Reszta slotu: ${frac} · A=${fmtKwh(bands.load_planner_a_so_far_kwh, 3)} · ` +
-    `k_intra=${bands.load_planner_k_intra != null ? Number(bands.load_planner_k_intra).toFixed(3) : "—"} · ` +
-    `method=${bands.load_planner_plan_method || "—"} · ` +
-    `zwężanie=${bands.load_planner_band_narrow_enabled ? "tak" : "nie"}</p>` +
-    `<table class="pv-correction-day"><thead><tr><th></th><th>p25</th><th>p50</th><th>p75</th></tr></thead><tbody>` +
-    row("Pełna h (planer)", bands.load_planner_full_p25_kwh, bands.load_planner_full_p50_kwh, bands.load_planner_full_p75_kwh) +
-    row("Reszta → MILP", bands.load_planner_remainder_p25_kwh, bands.load_planner_remainder_p50_kwh, bands.load_planner_remainder_p75_kwh) +
-    `</tbody></table>`;
+  renderCorrectionBands("loadCorrectionBands", bands, {
+    prefix: "load_planner",
+    lo: "p25",
+    mid: "p50",
+    hi: "p75",
+    loLabel: "p25",
+    midLabel: "p50",
+    hiLabel: "p75",
+    extraMeta: (b) =>
+      ` · method=${b.load_planner_plan_method || "—"} · zwężanie=${b.load_planner_band_narrow_enabled ? "tak" : "nie"}`,
+  });
 }
 
 function renderLoadCorrectionBlock(payload) {
@@ -1935,9 +2022,11 @@ function renderLoadCorrectionBlock(payload) {
     pvCorrMetric("Clip", clip) +
     pvCorrMetric("recent kW", c.recent_kw != null ? `${Number(c.recent_kw).toFixed(2)} kW` : "—") +
     pvCorrMetric("Plan h", fmtKwh(p.final_plan_kwh, 2), "hero") +
+    pvCorrMetric("Plan h+1", fmtKwh(c.load_plan_next_kwh ?? p.next_plan_kwh, 2)) +
+    pvCorrMetric("Spill h+1", c.spill_min != null ? `${Number(c.spill_min).toFixed(0)} min` : "—") +
     pvCorrMetric("Metoda", fmt(c.plan_method || c.reason));
 
-  renderLoadCorrectionChart(payload.projection_curve || [], Number(c.alpha || 0));
+  renderLoadCorrectionChart(payload.projection_curve || [], Number(c.alpha || 0), payload.current_hour);
   renderLoadCorrectionBars(p);
   renderLoadCorrectionBands(payload.remainder_bands);
 
@@ -1957,26 +2046,7 @@ function renderLoadCorrectionBlock(payload) {
       : `Korekta nieaktywna: ${c.reason || "—"}`;
   }
 
-  const dayRows = document.getElementById("loadCorrectionDayRows");
-  if (dayRows) {
-    dayRows.innerHTML = (payload.today_hours || []).map((row) => {
-      const cls = row.in_progress ? "in-progress" : (row.complete ? "complete" : "");
-      const actual = row.complete
-        ? fmtKwh(row.actual_kwh, 2)
-        : (row.in_progress ? fmtKwh(row.actual_so_far_kwh, 3) + "*" : "—");
-      const plan = row.load_plan_kwh != null ? fmtKwh(row.load_plan_kwh, 2) : "—";
-      let delta = "—";
-      if (row.delta_kwh != null) {
-        const d = Number(row.delta_kwh);
-        delta = (d >= 0 ? "+" : "") + d.toFixed(2);
-      } else if (row.delta_so_far_kwh != null) {
-        const d = Number(row.delta_so_far_kwh);
-        delta = (d >= 0 ? "+" : "") + d.toFixed(2) + "*";
-      }
-      return `<tr class="${cls}"><td>${String(row.hour).padStart(2, "0")}</td>` +
-        `<td>${fmtKwh(row.f50_kwh, 2)}</td><td>${actual}</td><td>${plan}</td><td>${delta}</td></tr>`;
-    }).join("");
-  }
+  renderCorrectionDayRows("loadCorrectionDayRows", payload.today_hours, "load_plan_kwh");
 
   const meta = document.getElementById("loadCorrectionMeta");
   if (meta) {
@@ -1986,6 +2056,8 @@ function renderLoadCorrectionBlock(payload) {
       c.applied ? "applied" : (c.reason || ""),
       p.remaining_kwh != null ? `reszta h: ${Number(p.remaining_kwh).toFixed(3)} kWh` : "",
       c.rate_blend_weight ? `rate blend w=${(Number(c.rate_blend_weight) * 100).toFixed(0)}%` : "",
+      c.spill_min != null ? `spill h+1: ${Number(c.spill_min).toFixed(0)} min` : "",
+      c.mix_w != null ? `mix w=${(Number(c.mix_w) * 100).toFixed(0)}%` : "",
     ].filter(Boolean).join(" · ");
   }
 }
@@ -2799,6 +2871,7 @@ const PAGE_LOADERS = {
   overview: loadOverview,
   history: loadHistory,
   forecast: loadForecast,
+  charging: loadCharging,
   "pv-correction": loadPvCorrection,
   "load-correction": loadLoadCorrection,
   kpi: loadKpi,
@@ -2811,6 +2884,7 @@ const PAGE_POLL_MS = {
   overview: 15000,
   history: 15000,
   forecast: 60000,
+  charging: 60000,
   "pv-correction": 15000,
   "load-correction": 15000,
   kpi: 60000,

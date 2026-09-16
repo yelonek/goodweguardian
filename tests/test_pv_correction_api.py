@@ -47,6 +47,9 @@ def test_dashboard_ui_has_pv_correction_page(pv_corr_client: TestClient) -> None
     assert "loadPvCorrection" in js.text
     assert '"pv-correction": loadPvCorrection' in js.text
     assert "renderPvCorrectionBands" in js.text
+    assert "function renderCorrectionChart(" in js.text
+    assert "function renderCorrectionBands(" in js.text
+    assert "correctionHourLabel" in js.text
     assert "renderPvWeatherBlock" in js.text
     assert "solcast_p10_kwh" in js.text
     assert "solcast_p90_kwh" in js.text
@@ -69,8 +72,33 @@ def test_pv_correction_projection_curve_includes_bands() -> None:
         pv_plan_kwh=2.5,
         minute_series=[],
     )
-    assert len(pts) == 61
+    assert len(pts) == 121
     assert pts[60]["solcast_kwh"] == pytest.approx(3.0)
     assert pts[60]["solcast_p10_kwh"] == pytest.approx(2.0)
     assert pts[60]["solcast_p90_kwh"] == pytest.approx(4.5)
     assert pts[30]["solcast_p10_kwh"] == pytest.approx(1.0)
+    assert pts[120]["solcast_kwh"] == pytest.approx(3.0)
+
+
+def test_pv_correction_projection_curve_includes_next_hour() -> None:
+    from guardian_dashboard import _pv_correction_projection_curve
+
+    pts = _pv_correction_projection_curve(
+        f50_kwh=3.0,
+        f10_kwh=2.0,
+        f90_kwh=4.5,
+        f50_next_kwh=2.0,
+        f10_next_kwh=1.0,
+        f90_next_kwh=3.0,
+        alpha=0.5,
+        a_so_far_kwh=1.0,
+        pv_plan_kwh=2.5,
+        pv_plan_next_kwh=1.6,
+        minute_series=[],
+    )
+    assert len(pts) == 121
+    assert pts[60]["solcast_kwh"] == pytest.approx(3.0)
+    assert pts[120]["solcast_kwh"] == pytest.approx(5.0)
+    assert pts[120]["solcast_p10_kwh"] == pytest.approx(3.0)
+    assert pts[60]["plan_kwh"] == pytest.approx(2.5)
+    assert pts[120]["plan_kwh"] == pytest.approx(4.1)

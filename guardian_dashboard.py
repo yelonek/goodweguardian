@@ -41,6 +41,7 @@ from ecoslot_service import (
     load_ecoslots_payload_from_snapshot,
     write_ecoslot,
 )
+from alert_store import alerts_api_payload
 from guardian_control import effective_control_enabled, write_control_override
 from planner_control import (
     effective_planner_execution_enabled,
@@ -96,6 +97,7 @@ from planner.load_correction import (
     build_load_intra_meta,
     load_minute_series_in_hour,
     load_plan_current_hour_kwh,
+    mix_load_base_keep_ev,
 )
 from planner.load_planner_display import planner_load_milp_snapshot
 from tesla_wall_charger import hourly_ev_kwh_from_telemetry, twc_enabled
@@ -818,6 +820,7 @@ def api_status() -> JSONResponse:
         "ecoslot_override": ecoslot_override_alert_payload(
             runner_other_eco=runner_other_eco if runner_other_eco is not None else None
         ),
+        "anomaly_alerts": alerts_api_payload(),
     }
     return JSONResponse(payload)
 
@@ -1397,47 +1400,105 @@ _PV_CORRECTION_TTL_S = 10.0
 _pv_correction_cache: tuple[float, dict[str, Any]] | None = None
 
 
+def _correction_projection_curve(
+    *,
+    f50_kwh: float,
+    f50_next_kwh: float = 0.0,
+    alpha: float,
+    a_so_far_kwh: float,
+    plan_kwh: float | None,
+    plan_next_kwh: float | None = None,
+    minute_series: list[dict[str, float | int]],
+    span_min: int = 120,
+    f_lo_kwh: float | None = None,
+    f_hi_kwh: float | None = None,
+    f_lo_next_kwh: float | None = None,
+    f_hi_next_kwh: float | None = None,
+    forecast_key: str = "forecast_kwh",
+    lo_key: str | None = None,
+    hi_key: str | None = None,
+) -> list[dict[str, Any]]:
+    """Krzywe kumulatywne [kWh]: ta godzina + następna (prognoza vs actual vs plan)."""
+    actual_by_min: dict[int, float] = {
+        int(p["minute"]): float(p["cum_kwh"]) for p in minute_series
+    }
+    now_minute = max(0, min(59, int(round(alpha * 60))))
+    f_lo = float(f_lo_kwh) if f_lo_kwh is not None else float(f50_kwh)
+    f_hi = float(f_hi_kwh) if f_hi_kwh is not None else float(f50_kwh)
+    f_lo_n = float(f_lo_next_kwh) if f_lo_next_kwh is not None else float(f50_next_kwh)
+    f_hi_n = float(f_hi_next_kwh) if f_hi_next_kwh is not None else float(f50_next_kwh)
+    include_bands = lo_key is not None and hi_key is not None
+    points: list[dict[str, Any]] = []
+    for minute in range(0, span_min + 1):
+        if minute <= 60:
+            frac = minute / 60.0
+            forecast = float(f50_kwh) * frac
+            lo_v = f_lo * frac
+            hi_v = f_hi * frac
+            actual = actual_by_min.get(minute)
+            plan: float | None = None
+            if plan_kwh is not None and minute >= now_minute and now_minute < 60:
+                rem_frac = (minute - now_minute) / max(1, 60 - now_minute)
+                plan = a_so_far_kwh + (float(plan_kwh) - a_so_far_kwh) * rem_frac
+            elif minute == 60 and plan_kwh is not None:
+                plan = float(plan_kwh)
+            elif actual is not None:
+                plan = actual
+        else:
+            t = (minute - 60) / 60.0
+            forecast = float(f50_kwh) + float(f50_next_kwh) * t
+            lo_v = f_lo + f_lo_n * t
+            hi_v = f_hi + f_hi_n * t
+            actual = None
+            plan = None
+            if plan_kwh is not None and plan_next_kwh is not None:
+                plan = float(plan_kwh) + float(plan_next_kwh) * t
+        pt: dict[str, Any] = {
+            "minute": float(minute),
+            forecast_key: forecast,
+            "actual_kwh": actual if actual is not None else None,
+            "plan_kwh": plan,
+        }
+        if include_bands:
+            pt[str(lo_key)] = lo_v
+            pt[str(hi_key)] = hi_v
+        points.append(pt)
+    return points
+
+
 def _pv_correction_projection_curve(
     *,
     f50_kwh: float,
     f10_kwh: float | None = None,
     f90_kwh: float | None = None,
+    f50_next_kwh: float = 0.0,
+    f10_next_kwh: float | None = None,
+    f90_next_kwh: float | None = None,
     alpha: float,
     a_so_far_kwh: float,
     pv_plan_kwh: float | None,
+    pv_plan_next_kwh: float | None = None,
     minute_series: list[dict[str, float | int]],
-) -> list[dict[str, float]]:
-    """Krzywe kumulatywne [kWh] do wykresu: Solcast p10/p50/p90 vs actual vs plan."""
-    actual_by_min: dict[int, float] = {
-        int(p["minute"]): float(p["cum_kwh"]) for p in minute_series
-    }
-    now_minute = max(0, min(59, int(round(alpha * 60))))
-    f10 = float(f10_kwh) if f10_kwh is not None else float(f50_kwh)
-    f90 = float(f90_kwh) if f90_kwh is not None else float(f50_kwh)
-    points: list[dict[str, float]] = []
-    for minute in range(0, 61):
-        frac = minute / 60.0
-        solcast = f50_kwh * frac
-        solcast_p10 = f10 * frac
-        solcast_p90 = f90 * frac
-        actual = actual_by_min.get(minute)
-        plan: float | None = None
-        if pv_plan_kwh is not None and minute >= now_minute and now_minute < 60:
-            rem_frac = (minute - now_minute) / max(1, 60 - now_minute)
-            plan = a_so_far_kwh + (pv_plan_kwh - a_so_far_kwh) * rem_frac
-        elif actual is not None:
-            plan = actual
-        points.append(
-            {
-                "minute": float(minute),
-                "solcast_kwh": solcast,
-                "solcast_p10_kwh": solcast_p10,
-                "solcast_p90_kwh": solcast_p90,
-                "actual_kwh": actual if actual is not None else None,
-                "plan_kwh": plan,
-            }
-        )
-    return points
+    span_min: int = 120,
+) -> list[dict[str, Any]]:
+    """Krzywe kumulatywne PV: Solcast p10/p50/p90 vs actual vs plan."""
+    return _correction_projection_curve(
+        f50_kwh=f50_kwh,
+        f50_next_kwh=f50_next_kwh,
+        f_lo_kwh=f10_kwh,
+        f_hi_kwh=f90_kwh,
+        f_lo_next_kwh=f10_next_kwh,
+        f_hi_next_kwh=f90_next_kwh,
+        alpha=alpha,
+        a_so_far_kwh=a_so_far_kwh,
+        plan_kwh=pv_plan_kwh,
+        plan_next_kwh=pv_plan_next_kwh,
+        minute_series=minute_series,
+        span_min=span_min,
+        forecast_key="solcast_kwh",
+        lo_key="solcast_p10_kwh",
+        hi_key="solcast_p90_kwh",
+    )
 
 
 def _pv_correction_payload() -> dict[str, Any]:
@@ -1470,6 +1531,12 @@ def _pv_correction_payload() -> dict[str, Any]:
     f90_raw = f50_row.get("pv_kw_p90")
     f10_current = float(f10_raw) if f10_raw is not None else f50_current
     f90_current = float(f90_raw) if f90_raw is not None else f50_current
+    next_row = pv_by_key.get(next_slot, {})
+    f50_next = float(next_row.get("pv_kw") or 0.0)
+    f10_next_raw = next_row.get("pv_kw_p10")
+    f90_next_raw = next_row.get("pv_kw_p90")
+    f10_next = float(f10_next_raw) if f10_next_raw is not None else f50_next
+    f90_next = float(f90_next_raw) if f90_next_raw is not None else f50_next
 
     state = build_pv_intra_state(now, f50_current_kwh=f50_current)
     alpha = float(state.get("alpha") or 0.0)
@@ -1552,6 +1619,9 @@ def _pv_correction_payload() -> dict[str, Any]:
             entry["source"] = sources.get(current_key)
             if f50_h is not None and a_so_far is not None:
                 entry["delta_so_far_kwh"] = float(a_so_far) - f50_h * alpha
+        elif (d_iso, h) == next_slot:
+            entry["pv_plan_kwh"] = pv_plan_next
+            entry["source"] = sources.get(next_slot)
         today_hours.append(entry)
 
     milp_pv = None
@@ -1570,7 +1640,15 @@ def _pv_correction_payload() -> dict[str, Any]:
         "current_hour": current_hour,
         "correction": {
             **state,
-            **{k: apply_meta.get(k) for k in ("pv_plan_kwh", "rate_plan_kwh", "rate_blend_weight", "plan_method")},
+            **{k: apply_meta.get(k) for k in (
+                "pv_plan_kwh",
+                "rate_plan_kwh",
+                "rate_blend_weight",
+                "plan_method",
+                "spill_min",
+                "mix_w",
+                "horizon_min",
+            )},
             "pv_plan_next_kwh": pv_plan_next,
             "source_current": sources.get(current_key),
             "source_next": sources.get(slots[1]),
@@ -1579,9 +1657,11 @@ def _pv_correction_payload() -> dict[str, Any]:
             "solcast_full_hour_kwh": f50_current,
             "solcast_p10_full_hour_kwh": f10_current,
             "solcast_p90_full_hour_kwh": f90_current,
+            "solcast_next_hour_kwh": f50_next,
             "k_intra_only_kwh": k_plan_only,
             "rate_only_kwh": rate_plan_only,
             "final_plan_kwh": pv_plan_kwh,
+            "next_plan_kwh": pv_plan_next,
             "remaining_kwh": remaining_kwh,
         },
         "minute_series": minute_series,
@@ -1589,9 +1669,13 @@ def _pv_correction_payload() -> dict[str, Any]:
             f50_kwh=f50_current,
             f10_kwh=f10_current,
             f90_kwh=f90_current,
+            f50_next_kwh=f50_next,
+            f10_next_kwh=f10_next,
+            f90_next_kwh=f90_next,
             alpha=alpha,
             a_so_far_kwh=float(a_so_far or 0.0),
             pv_plan_kwh=float(pv_plan_kwh) if pv_plan_kwh is not None else None,
+            pv_plan_next_kwh=float(pv_plan_next) if pv_plan_next is not None else None,
             minute_series=minute_series,
         ),
         "clip_timeline": clip_samples,
@@ -1619,35 +1703,26 @@ _load_correction_cache: tuple[float, dict[str, Any]] | None = None
 def _load_correction_projection_curve(
     *,
     f50_kwh: float,
+    f50_next_kwh: float = 0.0,
     alpha: float,
     a_so_far_kwh: float,
     load_plan_kwh: float | None,
+    load_plan_next_kwh: float | None = None,
     minute_series: list[dict[str, float | int]],
-) -> list[dict[str, float]]:
-    """Krzywe kumulatywne load [kWh]: forecast vs actual vs plan."""
-    actual_by_min: dict[int, float] = {
-        int(p["minute"]): float(p["cum_kwh"]) for p in minute_series
-    }
-    now_minute = max(0, min(59, int(round(alpha * 60))))
-    points: list[dict[str, float]] = []
-    for minute in range(0, 61):
-        forecast = f50_kwh * minute / 60.0
-        actual = actual_by_min.get(minute)
-        plan: float | None = None
-        if load_plan_kwh is not None and minute >= now_minute and now_minute < 60:
-            frac = (minute - now_minute) / max(1, 60 - now_minute)
-            plan = a_so_far_kwh + (load_plan_kwh - a_so_far_kwh) * frac
-        elif actual is not None:
-            plan = actual
-        points.append(
-            {
-                "minute": float(minute),
-                "forecast_kwh": forecast,
-                "actual_kwh": actual if actual is not None else None,
-                "plan_kwh": plan,
-            }
-        )
-    return points
+    span_min: int = 120,
+) -> list[dict[str, Any]]:
+    """Krzywe kumulatywne load [kWh]: ta godzina + następna."""
+    return _correction_projection_curve(
+        f50_kwh=f50_kwh,
+        f50_next_kwh=f50_next_kwh,
+        alpha=alpha,
+        a_so_far_kwh=a_so_far_kwh,
+        plan_kwh=load_plan_kwh,
+        plan_next_kwh=load_plan_next_kwh,
+        minute_series=minute_series,
+        span_min=span_min,
+        forecast_key="forecast_kwh",
+    )
 
 
 def _load_correction_payload() -> dict[str, Any]:
@@ -1658,16 +1733,20 @@ def _load_correction_payload() -> dict[str, Any]:
     current_hour = now.hour
 
     hour_start = now.replace(minute=0, second=0, microsecond=0)
+    prev_dt = hour_start - timedelta(hours=1)
+    next_dt = hour_start + timedelta(hours=1)
     load_pack = forecast_load_hours(
-        start_dt=hour_start,
-        hours=max(26 - current_hour, 2),
+        start_dt=prev_dt,
+        hours=max(28 - current_hour, 4),
         lookback_days=guardian_settings.get_settings().planner_load_lookback_days,
     )
-    load_by_hour: dict[int, dict[str, Any]] = {}
-    for row in load_pack.get("hours", []):
-        if str(row.get("date")) != d_iso:
-            continue
-        load_by_hour[int(row["hour"])] = row
+    load_by_key: dict[tuple[str, int], dict[str, Any]] = {
+        (str(row["date"]), int(row["hour"])): row
+        for row in load_pack.get("hours", [])
+    }
+    load_by_hour: dict[int, dict[str, Any]] = {
+        h: row for (d, h), row in load_by_key.items() if d == d_iso
+    }
 
     f50_row = load_by_hour.get(current_hour, {})
     f50_current = float(
@@ -1681,8 +1760,30 @@ def _load_correction_payload() -> dict[str, Any]:
     f75_current = float(
         f50_row.get("load_kwh_p75") if f50_row.get("load_kwh_p75") is not None else f50_current
     )
+    prev_key = (prev_dt.date().isoformat(), prev_dt.hour)
+    next_key = (next_dt.date().isoformat(), next_dt.hour)
+    prev_lr = load_by_key.get(prev_key, {})
+    next_lr = load_by_key.get(next_key, {})
+    f50_prev = (
+        float(prev_lr.get("load_base_kwh_p50") or prev_lr.get("load_kwh_p50") or 0.0)
+        if prev_key in load_by_key
+        else None
+    )
+    f50_next = float(
+        next_lr.get("load_base_kwh_p50") or next_lr.get("load_kwh_p50") or 0.0
+    )
+    next_p25 = float(
+        next_lr.get("load_kwh_p25") if next_lr.get("load_kwh_p25") is not None else f50_next
+    )
+    next_p75 = float(
+        next_lr.get("load_kwh_p75") if next_lr.get("load_kwh_p75") is not None else f50_next
+    )
 
-    state = build_load_intra_meta(now)
+    state = build_load_intra_meta(
+        now,
+        f50_current_kwh=f50_current,
+        f50_prev_kwh=f50_prev,
+    )
     state["f50_current_kwh"] = f50_current
     state["enabled"] = LOAD_CORRECTION_ENABLED
     alpha = float(state.get("alpha") or 0.0)
@@ -1694,6 +1795,17 @@ def _load_correction_payload() -> dict[str, Any]:
 
     load_plan_kwh = state.get("load_plan_kwh")
     k_intra = state.get("k_intra")
+    spill_load = float(state.get("spill_min") or 0.0)
+    load_plan_next: float | None = f50_next
+    if k_intra is not None and spill_load > 0.0:
+        load_plan_next, _, _, _ = mix_load_base_keep_ev(
+            load_base=f50_next,
+            ev_kwh=0.0,
+            k=float(k_intra),
+            spill_min=spill_load,
+            load_p25=next_p25,
+            load_p75=next_p75,
+        )
     k_plan_only: float | None = None
     rate_plan_only: float | None = None
     if k_intra is not None and a_so_far is not None:
@@ -1743,6 +1855,8 @@ def _load_correction_payload() -> dict[str, Any]:
             entry["f50_kwh"] = f50_current
             if a_so_far is not None:
                 entry["delta_so_far_kwh"] = float(a_so_far) - f50_current * alpha
+        elif (d_iso, h) == next_key:
+            entry["load_plan_kwh"] = load_plan_next
         today_hours.append(entry)
 
     milp_load = planner_load_milp_snapshot(
@@ -1763,20 +1877,25 @@ def _load_correction_payload() -> dict[str, Any]:
             **state,
             "clip_min": LOAD_CORRECTION_K_MIN,
             "clip_max": LOAD_CORRECTION_K_MAX,
+            "load_plan_next_kwh": load_plan_next,
         },
         "projections": {
             "forecast_full_hour_kwh": f50_current,
+            "forecast_next_hour_kwh": f50_next,
             "k_intra_only_kwh": k_plan_only,
             "rate_only_kwh": rate_plan_only,
             "final_plan_kwh": load_plan_kwh,
+            "next_plan_kwh": load_plan_next,
             "remaining_kwh": remaining_kwh,
         },
         "minute_series": minute_series,
         "projection_curve": _load_correction_projection_curve(
             f50_kwh=f50_current,
+            f50_next_kwh=f50_next,
             alpha=alpha,
             a_so_far_kwh=float(a_so_far or 0.0),
             load_plan_kwh=float(load_plan_kwh) if load_plan_kwh is not None else None,
+            load_plan_next_kwh=float(load_plan_next) if load_plan_next is not None else None,
             minute_series=minute_series,
         ),
         "today_hours": today_hours,
