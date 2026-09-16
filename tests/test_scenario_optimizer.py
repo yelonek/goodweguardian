@@ -1,4 +1,4 @@
-"""Testy optymalizatora wieloscenariuszowego (tracking-SP + legacy shared)."""
+"""Testy optymalizatora wieloscenariuszowego (shared EV 5×5)."""
 
 from __future__ import annotations
 
@@ -9,10 +9,11 @@ from planner.models import HourInputs
 from planner.optimizer import optimize_horizon
 from planner.policy_output import map_hour_to_exec_mode
 from planner.scenario_optimizer import optimize_horizon_scenarios
+from planner.scenarios import QUANTILES, scenario_name
 
 
 def _evening_export_morning_risk_hours() -> list[HourInputs]:
-    """Wieczorny szczyt RCE + drogi poranek bez PV w pesymistycznym scenariuszu."""
+    """Wieczorny szczyt RCE + drogi poranek bez PV w niskich kwantylach."""
     return [
         HourInputs(
             date="2026-06-14",
@@ -21,6 +22,7 @@ def _evening_export_morning_risk_hours() -> list[HourInputs]:
             pv_kwh=0.02,
             pv_kwh_p10=0.0,
             pv_kwh_p90=0.05,
+            load_kwh_p25=0.4,
             load_kwh_p75=0.55,
             import_pln_per_kwh=1.11,
             export_pln_per_kwh=0.59,
@@ -32,6 +34,7 @@ def _evening_export_morning_risk_hours() -> list[HourInputs]:
             pv_kwh=0.0,
             pv_kwh_p10=0.0,
             pv_kwh_p90=0.0,
+            load_kwh_p25=0.4,
             load_kwh_p75=0.6,
             import_pln_per_kwh=0.59,
             export_pln_per_kwh=0.56,
@@ -43,6 +46,7 @@ def _evening_export_morning_risk_hours() -> list[HourInputs]:
             pv_kwh=0.3,
             pv_kwh_p10=0.0,
             pv_kwh_p90=0.5,
+            load_kwh_p25=0.35,
             load_kwh_p75=0.7,
             import_pln_per_kwh=1.11,
             export_pln_per_kwh=0.56,
@@ -54,6 +58,7 @@ def _evening_export_morning_risk_hours() -> list[HourInputs]:
             pv_kwh=1.5,
             pv_kwh_p10=0.2,
             pv_kwh_p90=2.0,
+            load_kwh_p25=0.7,
             load_kwh_p75=2.5,
             import_pln_per_kwh=1.11,
             export_pln_per_kwh=0.14,
@@ -65,6 +70,7 @@ def _evening_export_morning_risk_hours() -> list[HourInputs]:
             pv_kwh=0.2,
             pv_kwh_p10=0.0,
             pv_kwh_p90=0.4,
+            load_kwh_p25=0.4,
             load_kwh_p75=0.55,
             import_pln_per_kwh=1.11,
             export_pln_per_kwh=0.78,
@@ -73,7 +79,7 @@ def _evening_export_morning_risk_hours() -> list[HourInputs]:
 
 
 def test_scenario_exports_at_high_rce() -> None:
-    """Regresja: przy wysokim RCE planer musi eksportować, nie neutral."""
+    """RCE > import: zrzut zostaje."""
     bp = BatteryParams(capacity_kwh=10.0, soc_min_pct=10.0, soc_max_pct=100.0, max_power_kwh_per_h=5.0)
     hours = [
         HourInputs(
@@ -83,6 +89,7 @@ def test_scenario_exports_at_high_rce() -> None:
             pv_kwh=0.1,
             pv_kwh_p10=0.0,
             pv_kwh_p90=0.2,
+            load_kwh_p25=0.6,
             load_kwh_p75=1.0,
             import_pln_per_kwh=1.11,
             export_pln_per_kwh=1.69,
@@ -94,6 +101,7 @@ def test_scenario_exports_at_high_rce() -> None:
             pv_kwh=0.1,
             pv_kwh_p10=0.0,
             pv_kwh_p90=0.3,
+            load_kwh_p25=0.4,
             load_kwh_p75=0.7,
             import_pln_per_kwh=1.11,
             export_pln_per_kwh=0.56,
@@ -102,73 +110,93 @@ def test_scenario_exports_at_high_rce() -> None:
     res = optimize_horizon_scenarios(hours, soc_start_pct=50.0, params=bp)
     assert res.scenario_meta is not None
     assert res.scenario_meta.get("fallback") != "deterministic_p50"
+    assert res.scenario_meta.get("model") == "shared_battery_grid_recourse"
     assert res.hours[0].target_net_kwh > 0.5
 
 
-def test_optimize_horizon_uses_tracking_when_enabled(
+def test_optimize_horizon_uses_shared_when_scenarios_enabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import planner.config as cfg
 
     monkeypatch.setattr(cfg, "_SCENARIO_OPTIMIZER_RAW", "1")
-    monkeypatch.setattr(cfg, "_SOC_TRACKING_RAW", "1")
     bp = BatteryParams(capacity_kwh=10.0, soc_min_pct=10.0, soc_max_pct=100.0, max_power_kwh_per_h=5.0)
     hours = _evening_export_morning_risk_hours()
     res = optimize_horizon(hours, soc_start_pct=61.0, params=bp)
     assert res.hours
     assert res.scenario_meta is not None
-    assert res.scenario_meta.get("model") == "soc_tracking_recourse"
+    assert res.scenario_meta.get("model") == "shared_battery_grid_recourse"
 
 
-def test_tracking_keeps_dawn_reserve_vs_p50(
+def test_shared_plan_differs_from_det_p50_when_p10_would_import(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Tracking-SP używa det MILP p50 jako planu egzekucji (nie winduje SOC przez scenariusze).
+    """Tani zrzut + p10 z drogim importem: plan = shared, nie overlay det p50.
 
-    Po refaktorze (2026-07-29): plan egzekucji pochodzi z deterministycznego MILP p50.
-    scenario_optimizer służy do obliczania E[cashflow] i metadanych ryzyka, ale NIE
-    zmienia trajektorii SOC względem czystego p50. Dzięki temu planer nie eksportuje
-    PV rano za niską cenę żeby potem odkupować z sieci — ładuje baterię z PV.
+    Nie asertujemy zakazu zrzutu — tylko że trajektoria nie jest kopiowana z p50.
     """
     import planner.config as cfg
-    import planner.scenario_optimizer as so
-    import planner.scenarios as scen
 
     bp = BatteryParams(
         capacity_kwh=10.0, soc_min_pct=10.0, soc_max_pct=100.0, max_power_kwh_per_h=5.0
     )
-    hours = _evening_export_morning_risk_hours()
+    hours = [
+        HourInputs(
+            date="2026-09-15",
+            hour=6,
+            load_kwh=0.3,
+            pv_kwh=0.0,
+            pv_kwh_p10=0.0,
+            pv_kwh_p90=0.0,
+            load_kwh_p25=0.25,
+            load_kwh_p75=0.4,
+            import_pln_per_kwh=1.11,
+            export_pln_per_kwh=0.40,
+        ),
+        *[
+            HourInputs(
+                date="2026-09-15",
+                hour=h,
+                load_kwh=1.5,
+                pv_kwh=2.0,
+                pv_kwh_p10=0.0,
+                pv_kwh_p90=3.0,
+                load_kwh_p25=1.2,
+                load_kwh_p75=1.8,
+                import_pln_per_kwh=1.11,
+                export_pln_per_kwh=0.20,
+            )
+            for h in range(7, 13)
+        ],
+    ]
 
     monkeypatch.setattr(cfg, "_SCENARIO_OPTIMIZER_RAW", "off")
-    p50 = optimize_horizon(hours, soc_start_pct=80.0, params=bp)
+    p50 = optimize_horizon(hours, soc_start_pct=40.0, params=bp)
 
     monkeypatch.setattr(cfg, "_SCENARIO_OPTIMIZER_RAW", "1")
-    monkeypatch.setattr(cfg, "_SOC_TRACKING_RAW", "1")
-    monkeypatch.setattr(cfg, "PLANNER_SOC_TRACKING_LAMBDA", 0.25)
-    monkeypatch.setattr(so, "PLANNER_SOC_TRACKING_LAMBDA", 0.25)
-    monkeypatch.setattr(scen, "PLANNER_SCENARIO_WEIGHT_PESSIMISTIC", 0.6)
-    monkeypatch.setattr(scen, "PLANNER_SCENARIO_WEIGHT_BASE", 0.39)
-    monkeypatch.setattr(scen, "PLANNER_SCENARIO_WEIGHT_OPTIMISTIC", 0.01)
-    tracked = optimize_horizon(hours, soc_start_pct=80.0, params=bp)
+    shared = optimize_horizon(hours, soc_start_pct=40.0, params=bp)
 
-    assert tracked.scenario_meta is not None
-    assert tracked.scenario_meta.get("model") == "soc_tracking_recourse"
-    # Plan egzekucji = det MILP p50: trajektoria SOC identyczna z p50.
-    assert len(tracked.soc_trajectory_pct) >= 3
-    assert tracked.soc_trajectory_pct[2] == pytest.approx(p50.soc_trajectory_pct[2], abs=1.0)
+    assert shared.scenario_meta is not None
+    assert shared.scenario_meta.get("model") == "shared_battery_grid_recourse"
+    assert shared.scenario_meta.get("fallback") != "deterministic_p50"
+    assert len(shared.soc_trajectory_pct) == len(p50.soc_trajectory_pct)
+    diverged = any(
+        abs(a - b) > 2.0
+        for a, b in zip(shared.soc_trajectory_pct, p50.soc_trajectory_pct, strict=True)
+    )
+    assert diverged, (
+        f"shared SOC {shared.soc_trajectory_pct} nie może być kopią det p50 "
+        f"{p50.soc_trajectory_pct}"
+    )
 
 
-def test_midday_pv_soak_raises_soc_star_not_export_then_grid(
+def test_midday_pv_soak_raises_soc_not_export_then_grid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Case 17.07: tanie RCE 10–12 + EV@13 → soc* rośnie w południe, bez charge_grid na baterię o 13."""
+    """Tanie PV + później drogi import/EV: soak do baterii, nie eksport-potem-sieć."""
     import planner.config as cfg
-    import planner.scenario_optimizer as so
 
     monkeypatch.setattr(cfg, "_SCENARIO_OPTIMIZER_RAW", "1")
-    monkeypatch.setattr(cfg, "_SOC_TRACKING_RAW", "1")
-    monkeypatch.setattr(cfg, "PLANNER_SOC_TRACKING_LAMBDA", 0.12)
-    monkeypatch.setattr(so, "PLANNER_SOC_TRACKING_LAMBDA", 0.12)
 
     bp = BatteryParams(capacity_kwh=10.0, soc_min_pct=10.0, soc_max_pct=100.0, max_power_kwh_per_h=5.2)
     hours = [
@@ -179,6 +207,7 @@ def test_midday_pv_soak_raises_soc_star_not_export_then_grid(
             pv_kwh=4.4,
             pv_kwh_p10=1.5,
             pv_kwh_p90=5.0,
+            load_kwh_p25=0.8,
             load_kwh_p75=1.2,
             import_pln_per_kwh=1.11,
             export_pln_per_kwh=0.565,
@@ -190,6 +219,7 @@ def test_midday_pv_soak_raises_soc_star_not_export_then_grid(
             pv_kwh=4.9,
             pv_kwh_p10=1.6,
             pv_kwh_p90=5.5,
+            load_kwh_p25=0.9,
             load_kwh_p75=1.3,
             import_pln_per_kwh=1.11,
             export_pln_per_kwh=0.541,
@@ -201,6 +231,7 @@ def test_midday_pv_soak_raises_soc_star_not_export_then_grid(
             pv_kwh=5.0,
             pv_kwh_p10=1.7,
             pv_kwh_p90=5.6,
+            load_kwh_p25=0.8,
             load_kwh_p75=1.2,
             import_pln_per_kwh=1.11,
             export_pln_per_kwh=0.510,
@@ -208,10 +239,11 @@ def test_midday_pv_soak_raises_soc_star_not_export_then_grid(
         HourInputs(
             date="2026-07-17",
             hour=13,
-            load_kwh=12.8,  # EV 11 + dom
+            load_kwh=12.8,
             pv_kwh=4.6,
             pv_kwh_p10=2.0,
             pv_kwh_p90=5.2,
+            load_kwh_p25=12.0,
             load_kwh_p75=13.5,
             import_pln_per_kwh=0.59,
             export_pln_per_kwh=0.495,
@@ -223,6 +255,7 @@ def test_midday_pv_soak_raises_soc_star_not_export_then_grid(
             pv_kwh=0.3,
             pv_kwh_p10=0.0,
             pv_kwh_p90=0.5,
+            load_kwh_p25=0.4,
             load_kwh_p75=0.6,
             import_pln_per_kwh=1.11,
             export_pln_per_kwh=1.08,
@@ -230,14 +263,15 @@ def test_midday_pv_soak_raises_soc_star_not_export_then_grid(
     ]
     res = optimize_horizon_scenarios(hours, soc_start_pct=10.0, params=bp)
     assert res.scenario_meta is not None
-    assert res.scenario_meta.get("model") == "soc_tracking_recourse"
+    assert res.scenario_meta.get("model") == "shared_battery_grid_recourse"
 
     by_h = {hp.hour: hp for hp in res.hours}
-    # SOC* rośnie przez południe (soak 11–12).
-    assert by_h[12].soc_end_pct > by_h[10].soc_start_pct + 15.0
-    assert by_h[12].soc_end_pct >= 40.0
+    midday_charge = (
+        by_h[10].battery_delta_kwh + by_h[11].battery_delta_kwh + by_h[12].battery_delta_kwh
+    )
+    assert midday_charge > 0.8
+    assert by_h[12].soc_end_pct > by_h[10].soc_start_pct + 8.0
 
-    # Godzina z rosnącym SOC → soak (neutral), nie export_pv_surplus.
     row12 = map_hour_to_exec_mode(
         by_h[12],
         hours[2],
@@ -246,9 +280,49 @@ def test_midday_pv_soak_raises_soc_star_not_export_then_grid(
     assert row12.exec_mode == "neutral"
     assert row12.exec_mode != "export_pv_surplus"
 
-    # O 13 bateria nie dobija się z sieci (EV i tak ciągnie import domu).
-    assert by_h[13].battery_delta_kwh < 1.0
-    assert by_h[13].soc_end_pct >= by_h[12].soc_end_pct - 1.0
+
+def test_cheap_pv_then_expensive_import_soaks_not_export_then_grid() -> None:
+    """Tanie PV w południe, wieczorem drogi import bez PV: soak, nie eksport-potem-sieć."""
+    bp = BatteryParams(capacity_kwh=10.0, soc_min_pct=10.0, soc_max_pct=100.0, max_power_kwh_per_h=5.0)
+    hours = [
+        HourInputs(
+            date="2026-07-17",
+            hour=h,
+            load_kwh=1.0,
+            pv_kwh=pv,
+            pv_kwh_p10=pv * 0.7,
+            pv_kwh_p90=pv * 1.1,
+            load_kwh_p25=0.8,
+            load_kwh_p75=1.2,
+            import_pln_per_kwh=1.11,
+            export_pln_per_kwh=0.22,
+        )
+        for h, pv in ((10, 4.4), (11, 4.9), (12, 5.0))
+    ] + [
+        HourInputs(
+            date="2026-07-17",
+            hour=h,
+            load_kwh=1.8,
+            pv_kwh=0.0,
+            pv_kwh_p10=0.0,
+            pv_kwh_p90=0.0,
+            load_kwh_p25=1.5,
+            load_kwh_p75=2.1,
+            import_pln_per_kwh=1.11,
+            export_pln_per_kwh=0.20,
+        )
+        for h in (18, 19, 20)
+    ]
+    res = optimize_horizon_scenarios(hours, soc_start_pct=15.0, params=bp)
+    assert res.scenario_meta is not None
+    assert res.scenario_meta.get("fallback") != "deterministic_p50"
+    by_h = {hp.hour: hp for hp in res.hours}
+    assert by_h[12].soc_end_pct >= 45.0
+    midday_export = sum(max(0.0, by_h[h].target_net_kwh) for h in (10, 11, 12))
+    midday_charge = sum(max(0.0, by_h[h].battery_delta_kwh) for h in (10, 11, 12))
+    assert midday_charge > midday_export
+    evening_discharge = sum(-min(0.0, by_h[h].battery_delta_kwh) for h in (18, 19, 20))
+    assert evening_discharge > 1.5
 
 
 def test_scenario_milp_no_grid_charge_when_pv_surplus() -> None:
@@ -262,6 +336,7 @@ def test_scenario_milp_no_grid_charge_when_pv_surplus() -> None:
             pv_kwh=4.5,
             pv_kwh_p10=2.0,
             pv_kwh_p90=5.5,
+            load_kwh_p25=1.8,
             load_kwh_p75=8.5,
             import_pln_per_kwh=1.11,
             export_pln_per_kwh=0.59,
@@ -273,6 +348,7 @@ def test_scenario_milp_no_grid_charge_when_pv_surplus() -> None:
             pv_kwh=3.8,
             pv_kwh_p10=1.5,
             pv_kwh_p90=4.5,
+            load_kwh_p25=1.6,
             load_kwh_p75=7.0,
             import_pln_per_kwh=1.11,
             export_pln_per_kwh=0.56,
@@ -284,6 +360,7 @@ def test_scenario_milp_no_grid_charge_when_pv_surplus() -> None:
             pv_kwh=0.1,
             pv_kwh_p10=0.0,
             pv_kwh_p90=0.2,
+            load_kwh_p25=0.4,
             load_kwh_p75=0.6,
             import_pln_per_kwh=1.11,
             export_pln_per_kwh=0.78,
@@ -295,43 +372,29 @@ def test_scenario_milp_no_grid_charge_when_pv_surplus() -> None:
         assert h14.target_net_kwh >= -0.05
 
 
-def test_legacy_shared_battery_still_available(monkeypatch: pytest.MonkeyPatch) -> None:
-    import planner.config as cfg
-
-    monkeypatch.setattr(cfg, "_SCENARIO_OPTIMIZER_RAW", "1")
-    monkeypatch.setattr(cfg, "_SOC_TRACKING_RAW", "off")
-    bp = BatteryParams(capacity_kwh=10.0, soc_min_pct=10.0, soc_max_pct=100.0, max_power_kwh_per_h=5.0)
-    res = optimize_horizon_scenarios(
-        _evening_export_morning_risk_hours(), soc_start_pct=61.0, params=bp
-    )
-    assert res.scenario_meta is not None
-    assert res.scenario_meta.get("model") == "shared_battery_grid_recourse"
-    assert res.scenarios_detail is not None
-    assert res.scenarios_detail.model == "shared_battery_grid_recourse"
-    # Shared SOC: wszystkie scenariusze mają tę samą trajektorię.
-    socs = [s.soc_pct for s in res.scenarios_detail.scenarios.values()]
-    assert len(socs) == 3
-    assert socs[0] == socs[1] == socs[2]
-
-
-def test_tracking_scenarios_detail_has_three_soc_trajectories() -> None:
-    """Tracking-SP: scenarios_detail z 3 trajektoriami SOC (H+1) + net/CF_h (H)."""
+def test_shared_5x5_converges_with_25_series() -> None:
     bp = BatteryParams(capacity_kwh=10.0, soc_min_pct=10.0, soc_max_pct=100.0, max_power_kwh_per_h=5.0)
     hours = _evening_export_morning_risk_hours()
     res = optimize_horizon_scenarios(hours, soc_start_pct=61.0, params=bp)
+    assert res.scenario_meta is not None
+    assert res.scenario_meta.get("model") == "shared_battery_grid_recourse"
+    assert res.scenario_meta.get("fallback") != "deterministic_p50"
     detail = res.scenarios_detail
     assert detail is not None
-    assert detail.model == "soc_tracking_recourse"
+    assert detail.model == "shared_battery_grid_recourse"
+    expected_keys = {scenario_name(qpv, qld) for qpv in QUANTILES for qld in QUANTILES}
+    assert set(detail.scenarios.keys()) == expected_keys
+    assert abs(sum(s.weight for s in detail.scenarios.values()) - 1.0) < 1e-9
     assert len(detail.soc_star_pct) == len(hours) + 1
     assert detail.soc_star_pct == pytest.approx(res.soc_trajectory_pct)
-    assert set(detail.scenarios.keys()) == {"pessimistic", "base", "optimistic"}
-    assert len(detail.slots) == len(hours)
+    socs = [s.soc_pct for s in detail.scenarios.values()]
+    assert all(s == socs[0] for s in socs)
     for name, series in detail.scenarios.items():
         assert len(series.soc_pct) == len(hours) + 1, name
         assert len(series.net_kwh) == len(hours), name
         assert len(series.cashflow_hour_pln) == len(hours), name
-        assert series.weight > 0
-        assert abs(sum(series.cashflow_hour_pln) - series.cashflow_pln) < 1e-6
+        assert series.weight == pytest.approx(1.0 / 25.0)
+        assert abs(sum(series.cashflow_hour_pln) - series.cashflow_pln) < 1e-5
 
 
 def test_scenarios_detail_serializes_into_daily_plan() -> None:
@@ -355,18 +418,19 @@ def test_scenarios_detail_serializes_into_daily_plan() -> None:
         soc_start_pct=50.0,
         soc_trajectory_pct=list(res.soc_trajectory_pct),
         expected_total_cashflow_pln=res.total_cashflow_pln,
-        optimizer="lp_soc_tracking_v1",
+        optimizer="lp_battery_scenarios_v1",
         inputs_snapshot={},
         hours=res.hours,
         scenarios_detail=res.scenarios_detail,
     )
     raw = plan.model_dump()
     assert raw["scenarios_detail"] is not None
-    assert "pessimistic" in raw["scenarios_detail"]["scenarios"]
-    assert len(raw["scenarios_detail"]["scenarios"]["base"]["soc_pct"]) == len(hours) + 1
+    assert "pv50_ld50" in raw["scenarios_detail"]["scenarios"]
+    assert len(raw["scenarios_detail"]["scenarios"]) == 25
+    assert len(raw["scenarios_detail"]["scenarios"]["pv50_ld50"]["soc_pct"]) == len(hours) + 1
     roundtrip = DailyPlan.model_validate(raw)
     assert roundtrip.scenarios_detail is not None
     assert isinstance(roundtrip.scenarios_detail, ScenariosDetail)
     assert isinstance(
-        roundtrip.scenarios_detail.scenarios["base"], ScenarioSeriesDetail
+        roundtrip.scenarios_detail.scenarios["pv50_ld50"], ScenarioSeriesDetail
     )

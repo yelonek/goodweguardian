@@ -17,7 +17,12 @@ from planner.battery import (
     soc_kwh,
 )
 from planner.config import PLANNER_BATTERY_CYCLE_COST_PLN, planner_scenario_optimizer_enabled
-from planner.hour_remainder import balance_rhs_kwh, remaining_battery_delta_kwh
+from planner.hour_remainder import (
+    balance_rhs_kwh,
+    meter_export_so_far_kwh,
+    pv_remainder_kwh,
+    remaining_battery_delta_kwh,
+)
 from planner.models import HourInputs, HourPlan, ScenariosDetail
 from planner.night_grid_policy import (
     add_green_stock_constraints,
@@ -175,10 +180,11 @@ def _solve_milp(
         green_index=green_index,
         ch_pv_index=ch_pv_index,
         dis_g_index=dis_g_index,
-        pv_kwh_of=lambda h: max(0.0, float(hours_in[h].pv_kwh)),
+        pv_kwh_of=lambda h: pv_remainder_kwh(hours_in[h]),
         pmax_of=lambda h: max_power_for_hour(hours_in[h], params),
         lb=lb,
         ub=ub,
+        export_already_kwh_of=lambda h: meter_export_so_far_kwh(hours_in[h]),
     )
 
     a_eq = np.vstack(eq_rows)
@@ -343,12 +349,21 @@ def _fallback_neutral(
     soc_start_pct: float,
     bp: BatteryParams,
 ) -> OptimizeResult:
+    """Bezpieczny plan gdy MILP nie ma rozwiązania.
+
+    ``target_net`` = już zarejestrowany licznik (``N₀``), nie 0. ``net=0`` przy
+    ``N₀=+2 kWh`` oznacza import 2 kWh — Guardian soak wtedy ładuje z sieci
+    (2026-08-28 07:41, 2026-08-29 19:41). Przyszłe godziny bez ``N₀`` zostają ~0.
+    """
+    log.warning(
+        "optimizer: fallback neutralny — trzymamy N₀ bieżącej h, nie clawback do net=0"
+    )
     plans: list[HourPlan] = []
     soc = soc_start_pct
     total = 0.0
     traj = [soc]
     for hin in hours_in:
-        net = 0.0
+        net = float(hin.net_so_far_kwh or 0.0)
         bd = remaining_battery_delta_kwh(hin, net)
         soc_new = apply_battery_step(soc, bd, bp) or soc
         cf = cashflow_pln_for_hour(
@@ -370,4 +385,9 @@ def _fallback_neutral(
         )
         soc = soc_new
         traj.append(soc)
-    return OptimizeResult(hours=plans, total_cashflow_pln=total, soc_trajectory_pct=traj)
+    return OptimizeResult(
+        hours=plans,
+        total_cashflow_pln=total,
+        soc_trajectory_pct=traj,
+        scenario_meta={"fallback": "neutral_hold_meter"},
+    )

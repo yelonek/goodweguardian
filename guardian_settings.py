@@ -40,6 +40,7 @@ GROUP_LABELS: dict[str, str] = {
     "night_reserve": "Rezerwa nocna SOC",
     "pricing": "Ceny i taryfa",
     "planner": "Planer / magazyn",
+    "alerts": "Alarmy / anomalie",
 }
 GROUP_ORDER: list[str] = list(GROUP_LABELS.keys())
 
@@ -178,34 +179,9 @@ class GuardianSettings(BaseModel):
     )
     planner_scenario_optimizer: bool = Field(
         True, json_schema_extra=_meta("planner"),
-        description="Wieloscenariuszowy MILP (p10/p50/p90). Wyłączony = deterministyczny p50.",
-    )
-    planner_scenario_weight_pessimistic: float = Field(
-        0.15, ge=0.0, json_schema_extra=_meta("planner"),
-        description="Waga scenariusza pesymistycznego (normalizowana).",
-    )
-    planner_scenario_weight_base: float = Field(
-        0.80, ge=0.0, json_schema_extra=_meta("planner"),
-        description="Waga scenariusza bazowego (normalizowana).",
-    )
-    planner_scenario_weight_optimistic: float = Field(
-        0.05, ge=0.0, json_schema_extra=_meta("planner"),
-        description="Waga scenariusza optymistycznego (normalizowana).",
-    )
-    planner_soc_tracking: bool = Field(
-        True, json_schema_extra=_meta("planner"),
         description=(
-            "Tracking-SP: wspólna wizja SOC* + recourse ch/dis per scenariusz. "
-            "Wyłączony = stary shared ch/dis (non-anticipativity na przepływach)."
-        ),
-    )
-    planner_soc_tracking_lambda: float = Field(
-        0.12,
-        ge=0.0,
-        json_schema_extra=_meta("planner", "PLN/kWh"),
-        description=(
-            "Kara |SOC_s − SOC*| w tracking-SP [PLN / kWh energii magazynu]. "
-            "Za duże ≈ nadmierna ostrożność; za małe ≈ wizja jak p50."
+            "Wieloscenariuszowy MILP: jedna bateria, max E[CF] po siatce 5×5 "
+            "(kwantyle 10/30/50/70/90, wagi 1/25). Wyłączony = deterministyczny p50."
         ),
     )
     pv_weather_correction_enabled: bool = Field(
@@ -215,6 +191,48 @@ class GuardianSettings(BaseModel):
             "Korekta PV pogodą OWM (Free: clouds/pop/weather) na h+2…h+6. "
             "Wymaga OPENWEATHER_API_KEY + lat/lon w .env. Wyłączony = surowy Solcast od h+2."
         ),
+    )
+
+    # --- Alarmy / anomalie (ntfy + banner) ---
+    anomaly_alerts_enabled: bool = Field(
+        True, json_schema_extra=_meta("alerts"),
+        description="Wykrywanie anomalii palących kasę (ntfy + banner). Wyłącza tylko detektory, nie sterowanie.",
+    )
+    anomaly_debounce_min: int = Field(
+        3, ge=1, le=15, json_schema_extra=_meta("alerts", "min"),
+        description="Ile kolejnych minut warunek musi trwać, zanim poleci alarm.",
+    )
+    anomaly_cooldown_min: int = Field(
+        30, ge=5, le=240, json_schema_extra=_meta("alerts", "min"),
+        description="Minimalny odstęp między kolejnymi pushami tego samego alarmu.",
+    )
+    anomaly_clear_min: int = Field(
+        2, ge=1, le=15, json_schema_extra=_meta("alerts", "min"),
+        description="Po ilu minutach bez warunku zdejmujemy banner (bez pusha „cleared”).",
+    )
+    anomaly_ev_kw_threshold: float = Field(
+        3.5, ge=0.0, json_schema_extra=_meta("alerts", "kW"),
+        description="Próg mocy TWC w drogiej G12 — powyżej „zbyt szybkie ładowanie EV”.",
+    )
+    anomaly_import_w_threshold: float = Field(
+        500.0, ge=0.0, json_schema_extra=_meta("alerts", "W"),
+        description="Próg importu z sieci (moc ujemna) dla alarmu PV+import w drogiej taryfie.",
+    )
+    anomaly_pv_w_threshold: float = Field(
+        400.0, ge=0.0, json_schema_extra=_meta("alerts", "W"),
+        description="Próg produkcji PV, od którego import w drogiej taryfie jest anomalią.",
+    )
+    anomaly_cash_pln_per_h: float = Field(
+        1.5, ge=0.0, json_schema_extra=_meta("alerts", "PLN/h"),
+        description="Nie pchać drobnicy poniżej tej stawki (gdy taryfa G12 jest uzupełniona).",
+    )
+    anomaly_plan_miss_kwh: float = Field(
+        0.8, ge=0.0, json_schema_extra=_meta("alerts", "kWh"),
+        description="Opóźnienie bilansu vs liniowe tempo planu (export_profit / surplus).",
+    )
+    anomaly_plan_miss_after_minute: int = Field(
+        10, ge=0, le=50, json_schema_extra=_meta("alerts", "min"),
+        description="Od której minuty godziny oceniamy miss planu (unikamy startu slotu).",
     )
 
 

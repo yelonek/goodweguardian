@@ -63,7 +63,7 @@ class ScenarioSeriesDetail(BaseModel):
 
 
 class ScenariosDetail(BaseModel):
-    """Trzy plany scenariuszowe + wspólna wizja soc* (tracking-SP)."""
+    """25 światów 5×5 + wspólna trajektoria SOC (shared EV)."""
 
     model: str
     expected_cashflow_pln: float
@@ -91,7 +91,7 @@ class DailyPlan(BaseModel):
     optimizer: str
     inputs_snapshot: dict[str, Any]
     hours: list[HourPlan]
-    # Szeregi pess/base/opt (tracking-SP); None przy deterministycznym / starym planie.
+    # Szeregi 5×5 (shared EV); None przy deterministycznym / starym planie.
     scenarios_detail: ScenariosDetail | None = None
 
 

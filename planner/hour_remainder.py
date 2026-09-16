@@ -42,6 +42,26 @@ def balance_rhs_kwh(hin: HourInputs) -> float:
     return load_rem - pv_rem - n0
 
 
+def pv_remainder_kwh(hin: HourInputs, *, pv_kwh: float | None = None) -> float:
+    """PV jeszcze w slocie [kWh]: pełne ``pv_kwh`` minus ``pv_so_far``."""
+    pv = float(hin.pv_kwh if pv_kwh is None else pv_kwh)
+    pv_so = float(hin.pv_so_far_kwh or 0.0)
+    return max(0.0, pv - pv_so)
+
+
+def meter_export_so_far_kwh(hin: HourInputs) -> float:
+    """Już na liczniku jako eksport (``N₀ > 0``). Nie wymaga nowego ``dis_g``."""
+    return max(0.0, float(hin.net_so_far_kwh or 0.0))
+
+
+def green_export_cap_rhs_kwh(hin: HourInputs, *, pv_kwh: float | None = None) -> float:
+    """RHS ``exp − dis_g ≤ …``: PV reszty + już sprzedane (nie zjadaj N₀ limitem mocy).
+
+    Na ``:00`` (N₀=0, so_far=0) = pełne PV. Mid-hour: ``exp ≤ N₀⁺ + PV_rem + dis_g``.
+    """
+    return pv_remainder_kwh(hin, pv_kwh=pv_kwh) + meter_export_so_far_kwh(hin)
+
+
 def remaining_battery_delta_kwh(hin: HourInputs, net_end_kwh: float) -> float:
     """Δ baterii [kWh] od ``now`` do końca h (spójne z SOC₀→SOC_end)."""
     from planner.battery import battery_delta_from_net

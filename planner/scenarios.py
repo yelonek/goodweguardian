@@ -1,15 +1,15 @@
-"""Scenariusze prognozy PV/load dla optymalizatora ryzyka."""
+"""Siatka 5×5 niezależnych światów PV×load (kwantyle 10/30/50/70/90)."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from planner.config import (
-    PLANNER_SCENARIO_WEIGHT_BASE,
-    PLANNER_SCENARIO_WEIGHT_OPTIMISTIC,
-    PLANNER_SCENARIO_WEIGHT_PESSIMISTIC,
-)
 from planner.models import HourInputs
+
+# Const jak k_intra — nie stroimy z settings.json.
+SCENARIO_GRID_N = 5
+QUANTILES: tuple[int, ...] = (10, 30, 50, 70, 90)
+REPRESENTATIVE_NAME = "pv50_ld50"
 
 
 @dataclass(frozen=True)
@@ -22,56 +22,84 @@ class PlanningScenario:
     load_kwh: tuple[float, ...]
 
 
-def _pv_band(hin: HourInputs, which: str) -> float:
-    if which == "p10":
-        return float(hin.pv_kwh_p10 if hin.pv_kwh_p10 is not None else hin.pv_kwh)
-    if which == "p90":
-        return float(hin.pv_kwh_p90 if hin.pv_kwh_p90 is not None else hin.pv_kwh)
-    return float(hin.pv_kwh)
+def scenario_name(pv_q: int, ld_q: int) -> str:
+    return f"pv{int(pv_q)}_ld{int(ld_q)}"
 
 
-def _load_band(hin: HourInputs, which: str) -> float:
-    if which == "p75":
-        return float(hin.load_kwh_p75 if hin.load_kwh_p75 is not None else hin.load_kwh)
-    return float(hin.load_kwh)
+def interpolate_from_knots(q: float, knots: list[tuple[float, float]]) -> float:
+    """Interpolacja odcinkami z ekstrapolacją skrajnego odcinka; clamp energii ≥ 0."""
+    pts = sorted(((float(k), float(v)) for k, v in knots), key=lambda p: p[0])
+    if not pts:
+        return 0.0
+    if len(pts) == 1:
+        return max(0.0, pts[0][1])
+    qf = float(q)
+    if qf <= pts[0][0]:
+        q0, v0 = pts[0]
+        q1, v1 = pts[1]
+    elif qf >= pts[-1][0]:
+        q0, v0 = pts[-2]
+        q1, v1 = pts[-1]
+    else:
+        q0, v0 = pts[0]
+        q1, v1 = pts[1]
+        for i in range(len(pts) - 1):
+            if pts[i][0] <= qf <= pts[i + 1][0]:
+                q0, v0 = pts[i]
+                q1, v1 = pts[i + 1]
+                break
+    if q1 == q0:
+        return max(0.0, v0)
+    t = (qf - q0) / (q1 - q0)
+    return max(0.0, v0 + t * (v1 - v0))
+
+
+def _pv_knots(hin: HourInputs) -> list[tuple[float, float]]:
+    p50 = float(hin.pv_kwh)
+    p10 = float(hin.pv_kwh_p10 if hin.pv_kwh_p10 is not None else p50)
+    p90 = float(hin.pv_kwh_p90 if hin.pv_kwh_p90 is not None else p50)
+    return [(10.0, p10), (50.0, p50), (90.0, p90)]
+
+
+def _load_knots(hin: HourInputs) -> list[tuple[float, float]]:
+    p50 = float(hin.load_kwh)
+    p25 = float(hin.load_kwh_p25 if hin.load_kwh_p25 is not None else p50)
+    p75 = float(hin.load_kwh_p75 if hin.load_kwh_p75 is not None else p50)
+    return [(25.0, p25), (50.0, p50), (75.0, p75)]
+
+
+def pv_at_quantile(hin: HourInputs, q: float) -> float:
+    return interpolate_from_knots(q, _pv_knots(hin))
+
+
+def load_at_quantile(hin: HourInputs, q: float) -> float:
+    return interpolate_from_knots(q, _load_knots(hin))
+
+
+def representative_scenario_index(scenarios: list[PlanningScenario]) -> int:
+    for i, sc in enumerate(scenarios):
+        if sc.name == REPRESENTATIVE_NAME:
+            return i
+    return 0
 
 
 def build_planning_scenarios(hours_in: list[HourInputs]) -> list[PlanningScenario]:
-    """
-    Trzy scenariusze: pesymistyczny (PV p10, load p75), bazowy (p50), optymistyczny (PV p90, load p50).
-    """
+    """25 niezależnych światów: PV q ∈ QUANTILES × load q ∈ QUANTILES, wagi 1/25."""
     if not hours_in:
         return []
-
-    pess_pv, pess_load = [], []
-    base_pv, base_load = [], []
-    opt_pv, opt_load = [], []
-    for hin in hours_in:
-        pess_pv.append(_pv_band(hin, "p10"))
-        pess_load.append(_load_band(hin, "p75"))
-        base_pv.append(_pv_band(hin, "p50"))
-        base_load.append(_load_band(hin, "p50"))
-        opt_pv.append(_pv_band(hin, "p90"))
-        opt_load.append(_load_band(hin, "p50"))
-
-    w_p = float(PLANNER_SCENARIO_WEIGHT_PESSIMISTIC)
-    w_b = float(PLANNER_SCENARIO_WEIGHT_BASE)
-    w_o = float(PLANNER_SCENARIO_WEIGHT_OPTIMISTIC)
-    total = w_p + w_b + w_o
-    if total <= 0.0:
-        w_p, w_b, w_o = 0.15, 0.80, 0.05
-        total = 1.0
-    w_p, w_b, w_o = w_p / total, w_b / total, w_o / total
-
-    return [
-        PlanningScenario("pessimistic", w_p, tuple(pess_pv), tuple(pess_load)),
-        PlanningScenario("base", w_b, tuple(base_pv), tuple(base_load)),
-        PlanningScenario("optimistic", w_o, tuple(opt_pv), tuple(opt_load)),
-    ]
-
-
-def base_scenario_index(scenarios: list[PlanningScenario]) -> int:
-    for i, sc in enumerate(scenarios):
-        if sc.name == "base":
-            return i
-    return 0
+    n = len(QUANTILES)
+    weight = 1.0 / float(n * n)
+    out: list[PlanningScenario] = []
+    for q_pv in QUANTILES:
+        for q_ld in QUANTILES:
+            pv = tuple(pv_at_quantile(hin, q_pv) for hin in hours_in)
+            load = tuple(load_at_quantile(hin, q_ld) for hin in hours_in)
+            out.append(
+                PlanningScenario(
+                    name=scenario_name(q_pv, q_ld),
+                    weight=weight,
+                    pv_kwh=pv,
+                    load_kwh=load,
+                )
+            )
+    return out

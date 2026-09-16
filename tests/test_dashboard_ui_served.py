@@ -35,6 +35,9 @@ def test_index_uses_external_ui_file() -> None:
     assert "function renderForecastDayCharts(" in js.text
     assert "function renderForecastLoadResidualChart(" in js.text
     assert "function forecastHourGridFlowsKwh(" in js.text
+    assert "function _slotXTicks(" in js.text
+    assert 'yUnit: "SOC %"' in js.text
+    assert ".plan-sc-chart .tick-label" in body
     assert 'id="kpiExportAvgCards"' in body
     assert "function renderKpiExportAvg(" in js.text
     assert "/api/kpi/export-avg" in js.text

@@ -263,13 +263,12 @@ def test_milp_night_grid_fill_does_not_feed_morning_dump(
     assert max(h.soc_end_pct for h in res.hours[:2]) < 80.0
 
 
-def test_tracking_milp_also_blocks_night_flipflop(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Tracking-SP (scenariusze włączone) też nie kupuje w nocy pod wieczorny zrzut w tym samym oknie."""
+def test_shared_milp_also_blocks_night_flipflop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Shared 5×5 (scenariusze włączone) też nie kupuje w nocy pod wieczorny zrzut w tym samym oknie."""
     import planner.config as cfg
     import planner.optimizer as opt_mod
 
     monkeypatch.setattr(cfg, "_SCENARIO_OPTIMIZER_RAW", "1")
-    monkeypatch.setattr(cfg, "_SOC_TRACKING_RAW", "1")
     monkeypatch.setattr(opt_mod, "planner_scenario_optimizer_enabled", lambda: True)
     hours = [
         _hin(1, imp=0.20, exp=0.05),

@@ -9,7 +9,13 @@ import pytest
 
 from economics import cashflow_pln_for_hour
 from planner.battery import BatteryParams, battery_delta_from_net
-from planner.hour_remainder import hour_remaining_fraction, scale_hour_inputs_for_remainder
+from planner.hour_remainder import (
+    green_export_cap_rhs_kwh,
+    hour_remaining_fraction,
+    meter_export_so_far_kwh,
+    pv_remainder_kwh,
+    scale_hour_inputs_for_remainder,
+)
 from planner.models import HourInputs
 from planner.optimizer import optimize_horizon
 from planner.audit import append_audit, new_event, read_audit_events
@@ -269,6 +275,44 @@ def test_scale_hour_inputs_load_narrow_not_naive_frac(
     assert scaled.load_kwh_p75 >= scaled.load_kwh
 
 
+def test_green_export_cap_rhs_is_remainder_pv_plus_meter_export() -> None:
+    mid = HourInputs(
+        date="2026-08-29",
+        hour=20,
+        load_kwh=0.61,
+        pv_kwh=1.0,
+        import_pln_per_kwh=1.11,
+        export_pln_per_kwh=1.09,
+        hour_fraction=0.5,
+        net_so_far_kwh=2.15,
+        pv_so_far_kwh=0.4,
+        load_so_far_kwh=0.3,
+    )
+    assert pv_remainder_kwh(mid) == pytest.approx(0.6)
+    assert meter_export_so_far_kwh(mid) == pytest.approx(2.15)
+    assert green_export_cap_rhs_kwh(mid) == pytest.approx(2.75)
+    assert meter_export_so_far_kwh(
+        HourInputs(
+            date="2026-08-29",
+            hour=20,
+            load_kwh=0.6,
+            pv_kwh=0.0,
+            import_pln_per_kwh=1.11,
+            export_pln_per_kwh=1.09,
+            net_so_far_kwh=-0.4,
+        )
+    ) == pytest.approx(0.0)
+    full = HourInputs(
+        date="2026-08-29",
+        hour=21,
+        load_kwh=0.57,
+        pv_kwh=2.0,
+        import_pln_per_kwh=1.11,
+        export_pln_per_kwh=0.88,
+    )
+    assert green_export_cap_rhs_kwh(full) == pytest.approx(2.0)
+
+
 def test_partial_current_hour_limits_soc_drop(monkeypatch: pytest.MonkeyPatch) -> None:
     """Regresja 20:50: nie planuj końca h20 na ~10% SOC przy starcie ~59%."""
     monkeypatch.setattr(opt_mod, "planner_scenario_optimizer_enabled", lambda: False)
@@ -297,6 +341,49 @@ def test_partial_current_hour_limits_soc_drop(monkeypatch: pytest.MonkeyPatch) -
     # max ~0.83 kWh discharge w reszcie h20 → SOC nie spada o ~50 pp jak przy pełnej h
     assert res.hours[0].soc_end_pct > 45.0
     assert res.hours[1].target_net_kwh > 0.3
+
+
+def test_mid_hour_green_cap_keeps_already_exported_plus_remainder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regresja 2026-08-29 20:30: N₀=+2.15, 30 min, RCE h20>h21 → nie tnij exp do pmax.
+
+    Stary cap ``exp ≤ dis_g ≤ 2.75`` zjadał już sprzedane kWh. Ma być
+    ``exp ≤ N₀ + PV_rem + dis_g`` ≈ 2.15 + 2.75.
+    """
+    monkeypatch.setattr(opt_mod, "planner_scenario_optimizer_enabled", lambda: False)
+    bp = BatteryParams(
+        capacity_kwh=10.77,
+        soc_min_pct=11.0,
+        soc_max_pct=100.0,
+        max_power_kwh_per_h=5.5,
+    )
+    hours = [
+        HourInputs(
+            date="2026-08-29",
+            hour=20,
+            load_kwh=0.61,
+            pv_kwh=0.0,
+            import_pln_per_kwh=1.11,
+            export_pln_per_kwh=1.09,
+            hour_fraction=0.5,
+            net_so_far_kwh=2.15,
+            load_so_far_kwh=0.30,
+            pv_so_far_kwh=0.0,
+        ),
+        HourInputs(
+            date="2026-08-29",
+            hour=21,
+            load_kwh=0.57,
+            pv_kwh=0.0,
+            import_pln_per_kwh=1.11,
+            export_pln_per_kwh=0.88,
+        ),
+    ]
+    res = optimize_horizon(hours, soc_start_pct=57.0, params=bp, green_stock_kwh=6.14)
+    # Stary bug: target_net ≈ 2.6 (sufit pmax). Poprawnie: dociągnij zrzut w droższej h20.
+    assert res.hours[0].target_net_kwh > 3.5
+    assert res.hours[0].target_net_kwh > res.hours[1].target_net_kwh
 
 
 def test_partial_hour_keeps_more_soc_than_full_hour(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -491,3 +578,42 @@ def test_no_forced_grid_charge_to_min_on_expensive_tariff(monkeypatch) -> None:
             f"(battery_delta={h.battery_delta_kwh:.3f})"
         )
         assert h.soc_end_pct < 11.0
+
+
+def test_fallback_neutral_holds_meter_so_far_not_clawback() -> None:
+    """Regresja 2026-08-29 19:40: MILP infeasible + N₀=+2.22 → nie planuj importu 2 kWh."""
+    from planner.optimizer import _fallback_neutral
+
+    bp = BatteryParams(
+        capacity_kwh=10.77, soc_min_pct=11.0, soc_max_pct=100.0, max_power_kwh_per_h=5.5
+    )
+    hours = [
+        HourInputs(
+            date="2026-08-29",
+            hour=19,
+            load_kwh=0.8,
+            pv_kwh=0.05,
+            import_pln_per_kwh=1.11,
+            export_pln_per_kwh=1.31,
+            hour_fraction=20 / 60,
+            net_so_far_kwh=2.22,
+            load_so_far_kwh=0.5,
+            pv_so_far_kwh=0.04,
+        ),
+        HourInputs(
+            date="2026-08-29",
+            hour=20,
+            load_kwh=0.6,
+            pv_kwh=0.0,
+            import_pln_per_kwh=1.11,
+            export_pln_per_kwh=1.38,
+        ),
+    ]
+    res = _fallback_neutral(hours, 66.0, bp)
+    assert res.scenario_meta is not None
+    assert res.scenario_meta.get("fallback") == "neutral_hold_meter"
+    assert res.hours[0].target_net_kwh == pytest.approx(2.22)
+    assert res.hours[1].target_net_kwh == pytest.approx(0.0)
+    # Δ baterii = PV_rem − load_rem (dom z magazynu), nie +N₀ z sieci.
+    assert res.hours[0].battery_delta_kwh < 0.0
+

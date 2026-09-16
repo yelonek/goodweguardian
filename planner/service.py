@@ -69,15 +69,13 @@ def build_rolling_plan(
         hour_inputs, opt.hours, now=now_local
     )
     optimizer_name = (
-        "lp_soc_tracking_v1"
+        "lp_battery_scenarios_v1"
         if planner_scenario_optimizer_enabled()
         else "lp_battery_v1"
     )
-    if planner_scenario_optimizer_enabled():
-        from planner.config import planner_soc_tracking_enabled
-
-        if not planner_soc_tracking_enabled():
-            optimizer_name = "lp_battery_scenarios_v1"
+    fb = (opt.scenario_meta or {}).get("fallback")
+    if fb:
+        optimizer_name = f"fallback_{fb}"
     plan_id = str(uuid.uuid4())
     generated = datetime.now(UTC)
     anchor_date = now_local.date().isoformat()

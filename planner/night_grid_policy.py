@@ -364,11 +364,14 @@ def add_green_stock_constraints(
     pmax_of: Callable[[int], float],
     lb: np.ndarray,
     ub: np.ndarray,
+    export_already_kwh_of: Callable[[int], float] | None = None,
 ) -> None:
     """Eksport z baterii tylko z zielonego zapasu (PV). Nocny zakup z sieci nie powiększa green.
 
     ``green[h+1] = green[h] + η₁·ch_pv − dis_g/η₁``;
-    ``ch_pv ≤ min(ch, pv)``; ``dis_g ≤ dis``; ``exp ≤ pv + dis_g``; ``green ≤ soc``.
+    ``ch_pv ≤ min(ch, pv_rem)``; ``dis_g ≤ dis``;
+    ``exp ≤ pv_rem + N₀⁺ + dis_g`` (``N₀⁺`` = już sprzedane w tej h — nie zjadają
+    limitu mocy reszty godziny); ``green ≤ soc``.
     """
     n_h = n_hours
     g0 = min(max(0.0, float(green0_kwh)), float(soc_max_kwh))
@@ -385,6 +388,11 @@ def add_green_stock_constraints(
     for h in range(n_h):
         pmax = max(float(pmax_of(h)), 1e-6)
         pv = max(0.0, float(pv_kwh_of(h)))
+        already = (
+            0.0
+            if export_already_kwh_of is None
+            else max(0.0, float(export_already_kwh_of(h)))
+        )
         lb[ch_pv_index(h)] = 0.0
         ub[ch_pv_index(h)] = min(pmax, pv) if pv > 0.0 else 0.0
         lb[dis_g_index(h)] = 0.0
@@ -415,7 +423,7 @@ def add_green_stock_constraints(
             row[exp_index(h)] = 1.0
             row[dis_g_index(h)] = -1.0
             ineq_rows.append(row)
-            ineq_rhs.append(pv)
+            ineq_rhs.append(pv + already)
 
         row = np.zeros(n_vars)
         row[green_index(h)] = 1.0

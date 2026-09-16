@@ -121,6 +121,29 @@ function describeEcoOverrideSlots(slots, { showStart = false } = {}) {
   }).join(" · ");
 }
 
+function renderAnomalyBanner(status) {
+  const el = document.getElementById("anomalyAlertBanner");
+  const list = document.getElementById("anomalyAlertList");
+  if (!el || !list) return;
+  const payload = status && status.anomaly_alerts;
+  const active = (payload && Array.isArray(payload.active)) ? payload.active : [];
+  if (!active.length) {
+    el.hidden = true;
+    document.body.classList.remove("anomaly-alert-active");
+    list.innerHTML = "";
+    return;
+  }
+  el.hidden = false;
+  document.body.classList.add("anomaly-alert-active");
+  list.innerHTML = active.map((a) => {
+    const pln = (a.est_pln_per_h != null && Number(a.est_pln_per_h) > 0.05)
+      ? ` <span class="anomaly-alert-pln">~${Number(a.est_pln_per_h).toFixed(1)} zł/h</span>`
+      : "";
+    const body = a.body ? ` — ${escapeHtml(a.body)}` : "";
+    return `<div class="anomaly-alert-item"><strong>${escapeHtml(a.title || a.rule_id)}</strong>${pln}${body}</div>`;
+  }).join("");
+}
+
 function renderEcoOverrideBanner(status) {
   const el = document.getElementById("ecoOverrideBanner");
   const detail = document.getElementById("ecoOverrideDetail");
@@ -167,6 +190,7 @@ async function refreshEcoOverrideBanner() {
   try {
     const j = await fetchJson("/api/status", 8000);
     renderEcoOverrideBanner(j);
+    renderAnomalyBanner(j);
   } catch (e) {
     console.warn("eco override banner:", e);
   }
@@ -424,20 +448,30 @@ function renderPlanDayBoard(day, dimmed) {
   );
 }
 
-const SCENARIO_ORDER = ["pessimistic", "base", "optimistic"];
-const SCENARIO_LABELS = {
-  pessimistic: "pesymistyczny",
-  base: "bazowy",
-  optimistic: "optymistyczny",
-};
-const SCENARIO_CSS = {
-  pessimistic: "pess",
-  base: "base",
-  optimistic: "opt",
-};
-
 let _planScSecondaryMode = "cum"; // cum | net
 let _planScDetailCache = null;
+
+function _parseScenarioName(name) {
+  const m = String(name).match(/pv(\d+)_ld(\d+)/);
+  if (!m) return { pv: 50, ld: 50 };
+  return { pv: Number(m[1]), ld: Number(m[2]) };
+}
+
+function _scenarioNames(sc) {
+  return Object.keys(sc || {}).sort((a, b) => {
+    const pa = _parseScenarioName(a);
+    const pb = _parseScenarioName(b);
+    return pa.pv - pb.pv || pa.ld - pb.ld || a.localeCompare(b);
+  });
+}
+
+function _scStroke(name) {
+  const { pv, ld } = _parseScenarioName(name);
+  const hue = 8 + (Math.min(90, Math.max(0, pv)) / 90) * 125;
+  const sat = 55 + (Math.min(90, Math.max(0, ld)) / 90) * 20;
+  const light = 36 + (Math.min(90, Math.max(0, ld)) / 90) * 18;
+  return `hsl(${hue}, ${sat}%, ${light}%)`;
+}
 
 function _cumSum(arr) {
   const out = [];
@@ -460,59 +494,107 @@ function _linePath(xs, ys, toX, toY) {
   return `M ${pts.join(" L ")}`;
 }
 
+/** Ticki X dla horyzontu planera: lokalna godzina ze slots (0 / co 6 h / północ). */
+function _slotXTicks(slots, nPoints) {
+  const n = Math.max(1, nPoints);
+  const items = [];
+  const seen = new Set();
+  const put = (pos, label) => {
+    const i = Math.round(pos);
+    if (i < 0 || i > n - 1 || seen.has(i)) return;
+    seen.add(i);
+    items.push({ pos: i, label: String(label) });
+  };
+  if (n < 2) {
+    put(0, slots[0] != null ? Number(slots[0].hour) : 0);
+    return items;
+  }
+  if (!slots.length) {
+    put(0, "0");
+    put(n - 1, String(n - 1));
+    return items;
+  }
+  put(0, Number(slots[0].hour));
+  let prevDate = slots[0].date;
+  const limit = Math.min(slots.length, n);
+  for (let i = 0; i < limit; i++) {
+    const hr = Number(slots[i].hour);
+    const date = slots[i].date;
+    if (i > 0 && date !== prevDate) {
+      put(i, 0);
+      prevDate = date;
+    } else if (hr % 6 === 0) {
+      put(i, hr);
+    }
+  }
+  if (n === slots.length + 1) {
+    const last = slots[slots.length - 1];
+    put(n - 1, (Number(last.hour) + 1) % 24);
+  } else {
+    const lastIdx = Math.min(slots.length, n) - 1;
+    put(lastIdx, Number(slots[lastIdx].hour));
+  }
+  return items.sort((a, b) => a.pos - b.pos);
+}
+
 function renderScenarioSocSvg(detail) {
   const star = (detail.soc_star_pct || []).map(Number);
   const sc = detail.scenarios || {};
-  const pess = (sc.pessimistic?.soc_pct || []).map(Number);
-  const base = (sc.base?.soc_pct || []).map(Number);
-  const opt = (sc.optimistic?.soc_pct || []).map(Number);
+  const names = _scenarioNames(sc);
+  const series = names.map((name) => (sc[name].soc_pct || []).map(Number));
   const n = star.length;
   if (n < 2) return "";
-  const all = [...star, ...pess, ...base, ...opt].filter((y) => !Number.isNaN(y));
+  const all = [...star, ...series.flat()].filter((y) => !Number.isNaN(y));
   const minY = Math.max(0, Math.min(...all) - 3);
   const maxY = Math.min(100, Math.max(...all) + 3);
-  const span = maxY - minY || 1;
-  const w = 640;
-  const h = 180;
-  const padL = 8;
-  const padR = 8;
-  const padT = 10;
-  const padB = 16;
-  const toX = (i) => padL + (i / Math.max(1, n - 1)) * (w - padL - padR);
-  const toY = (y) => padT + (1 - (y - minY) / span) * (h - padT - padB);
+  const w = 720;
+  const h = 200;
+  const pad = { l: 48, r: 22, t: 18, b: 28 };
+  const { toX, toY, html: axes } = svgDayChartAxes({
+    w, h, pad, minY, maxY, nHours: n, yUnit: "SOC %", xUnit: "h",
+    xTickItems: _slotXTicks(detail.slots || [], n),
+  });
   const xs = Array.from({ length: n }, (_, i) => i);
 
   let envelope = "";
-  if (pess.length === n && opt.length === n) {
+  if (series.length) {
     const top = [];
     const bot = [];
     for (let i = 0; i < n; i++) {
-      const a = pess[i];
-      const b = opt[i];
-      top.push(`${toX(i).toFixed(1)},${toY(Math.max(a, b)).toFixed(1)}`);
-      bot.push(`${toX(n - 1 - i).toFixed(1)},${toY(Math.min(pess[n - 1 - i], opt[n - 1 - i])).toFixed(1)}`);
+      const col = series.map((s) => s[i]).filter((y) => y != null && !Number.isNaN(y));
+      if (!col.length) continue;
+      top.push(`${toX(i).toFixed(1)},${toY(Math.max(...col)).toFixed(1)}`);
     }
-    envelope = `<path class="envelope" d="M ${top.join(" L ")} L ${bot.join(" L ")} Z"/>`;
+    for (let i = n - 1; i >= 0; i--) {
+      const col = series.map((s) => s[i]).filter((y) => y != null && !Number.isNaN(y));
+      if (!col.length) continue;
+      bot.push(`${toX(i).toFixed(1)},${toY(Math.min(...col)).toFixed(1)}`);
+    }
+    if (top.length && bot.length) {
+      envelope = `<path class="envelope" d="M ${top.join(" L ")} L ${bot.join(" L ")} Z"/>`;
+    }
   }
 
-  const paths = [
-    envelope,
-    _linePath(xs, pess, toX, toY) ? `<path class="line-pess" d="${_linePath(xs, pess, toX, toY)}"/>` : "",
-    _linePath(xs, opt, toX, toY) ? `<path class="line-opt" d="${_linePath(xs, opt, toX, toY)}"/>` : "",
-    _linePath(xs, base, toX, toY) ? `<path class="line-base" d="${_linePath(xs, base, toX, toY)}"/>` : "",
-    _linePath(xs, star, toX, toY) ? `<path class="line-star" d="${_linePath(xs, star, toX, toY)}"/>` : "",
-  ].filter(Boolean).join("");
+  const worldPaths = names.map((name, i) => {
+    const d = _linePath(xs, series[i], toX, toY);
+    return d
+      ? `<path class="line-world" style="stroke:${_scStroke(name)}" d="${d}"/>`
+      : "";
+  }).join("");
+  const starPath = _linePath(xs, star, toX, toY)
+    ? `<path class="line-star" d="${_linePath(xs, star, toX, toY)}"/>`
+    : "";
 
   return (
     `<div class="plan-sc-chart-wrap">` +
-    `<svg class="plan-sc-chart" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">${paths}</svg>` +
+    `<svg class="plan-sc-chart" viewBox="0 0 ${w} ${h}">${axes}${envelope}${worldPaths}${starPath}</svg>` +
     `</div>`
   );
 }
 
 function renderScenarioSecondarySvg(detail, mode) {
   const sc = detail.scenarios || {};
-  const names = SCENARIO_ORDER.filter((n) => sc[n]);
+  const names = _scenarioNames(sc);
   if (!names.length) return "";
   const series = {};
   let n = 0;
@@ -527,44 +609,26 @@ function renderScenarioSecondarySvg(detail, mode) {
   const all = names.flatMap((name) => series[name]).filter((y) => !Number.isNaN(y));
   const minY = Math.min(0, ...all);
   const maxY = Math.max(0, ...all);
-  const span = (maxY - minY) || 1;
-  const w = 640;
-  const h = 160;
-  const padL = 8;
-  const padR = 8;
-  const padT = 10;
-  const padB = 14;
-  const toX = (i) => padL + ((i + 0.5) / n) * (w - padL - padR);
-  const toY = (y) => padT + (1 - (y - minY) / span) * (h - padT - padB);
-  const zeroY = toY(0);
-  const groupW = (w - padL - padR) / n;
-  const barW = Math.max(2, Math.min(10, (groupW * 0.7) / names.length));
+  const w = 720;
+  const h = 200;
+  const pad = { l: 48, r: 22, t: 18, b: 28 };
+  const { toX, toY, html: axes } = svgDayChartAxes({
+    w, h, pad, minY, maxY, nHours: n, showZero: true,
+    yUnit: mode === "net" ? "kWh" : "PLN", xUnit: "h",
+    xTickItems: _slotXTicks(detail.slots || [], n),
+  });
+  const xs = Array.from({ length: n }, (_, i) => i);
 
-  let body = `<line class="zero" x1="${padL}" y1="${zeroY.toFixed(1)}" x2="${(w - padR).toFixed(1)}" y2="${zeroY.toFixed(1)}"/>`;
-  if (mode === "cum") {
-    const xs = Array.from({ length: n }, (_, i) => i);
-    const lineToX = (i) => padL + (i / Math.max(1, n - 1)) * (w - padL - padR);
-    for (const name of names) {
-      const cls = `line-${SCENARIO_CSS[name]}`;
-      const d = _linePath(xs, series[name], lineToX, toY);
-      if (d) body += `<path class="${cls}" d="${d}"/>`;
-    }
-  } else {
-    for (let i = 0; i < n; i++) {
-      names.forEach((name, ki) => {
-        const y = series[name][i];
-        if (y == null || Number.isNaN(y)) return;
-        const cx = toX(i) + (ki - (names.length - 1) / 2) * (barW + 1);
-        const y1 = toY(y);
-        const top = Math.min(y1, zeroY);
-        const height = Math.abs(y1 - zeroY);
-        body += `<rect class="bar-${SCENARIO_CSS[name]}" x="${(cx - barW / 2).toFixed(1)}" y="${top.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(1, height).toFixed(1)}"/>`;
-      });
+  let body = axes;
+  for (const name of names) {
+    const d = _linePath(xs, series[name], toX, toY);
+    if (d) {
+      body += `<path class="line-world" style="stroke:${_scStroke(name)}" d="${d}"/>`;
     }
   }
   return (
     `<div class="plan-sc-chart-wrap">` +
-    `<svg class="plan-sc-chart" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">${body}</svg>` +
+    `<svg class="plan-sc-chart" viewBox="0 0 ${w} ${h}">${body}</svg>` +
     `</div>`
   );
 }
@@ -574,45 +638,48 @@ function renderScenariosPanel(detail) {
     return "";
   }
   _planScDetailCache = detail;
-  const isTracking = String(detail.model || "").includes("tracking");
+  const names = _scenarioNames(detail.scenarios);
   const eCf = detail.expected_cashflow_pln != null
     ? Number(detail.expected_cashflow_pln).toFixed(2)
     : "—";
-  const pen = detail.tracking_penalty_pln != null
-    ? Number(detail.tracking_penalty_pln).toFixed(2)
-    : null;
+  const cfs = names.map((n) => Number(detail.scenarios[n].cashflow_pln || 0));
+  const cfMin = cfs.length ? Math.min(...cfs) : null;
+  const cfMax = cfs.length ? Math.max(...cfs) : null;
+  const mid = detail.scenarios.pv50_ld50;
+  const midCf = mid != null ? Number(mid.cashflow_pln || 0) : null;
 
   const kpiCards = [
     `<div class="plan-sc-kpi star"><div class="k">E[CF]</div><div class="v">${eCf} PLN</div>` +
-    (pen != null ? `<div class="w">penalty λ·|ΔSOC| ${pen} PLN</div>` : "") +
-    `</div>`,
+    `<div class="w">${names.length} światów 5×5 · π=1/${names.length || 25}</div></div>`,
   ];
-  for (const name of SCENARIO_ORDER) {
-    const s = detail.scenarios[name];
-    if (!s) continue;
-    const w = Number(s.weight || 0);
-    const cf = Number(s.cashflow_pln || 0);
-    const contrib = w * cf;
+  if (cfMin != null && cfMax != null) {
     kpiCards.push(
-      `<div class="plan-sc-kpi">` +
-      `<div class="k">${SCENARIO_LABELS[name] || name}</div>` +
-      `<div class="v">${cf.toFixed(2)} PLN</div>` +
-      `<div class="w">π=${w.toFixed(2)} · π·CF=${contrib.toFixed(2)}</div>` +
-      `</div>`
+      `<div class="plan-sc-kpi"><div class="k">CF min…max</div>` +
+      `<div class="v">${cfMin.toFixed(2)}…${cfMax.toFixed(2)}</div>` +
+      `<div class="w">PLN per świat</div></div>`
+    );
+  }
+  if (midCf != null) {
+    kpiCards.push(
+      `<div class="plan-sc-kpi"><div class="k">pv50_ld50</div>` +
+      `<div class="v">${midCf.toFixed(2)} PLN</div>` +
+      `<div class="w">reprezentatywny net planu</div></div>`
     );
   }
 
   const legend =
     `<div class="plan-sc-legend">` +
-    `<span><i class="star"></i>soc*</span>` +
-    `<span><i class="pess"></i>pesymistyczny</span>` +
-    `<span><i class="base"></i>bazowy</span>` +
-    `<span><i class="opt"></i>optymistyczny</span>` +
+    `<span><i class="star"></i>SOC shared</span>` +
+    `<span><i class="pv10"></i>PV q10</span>` +
+    `<span><i class="pv50"></i>PV q50</span>` +
+    `<span><i class="pv90"></i>PV q90</span>` +
+    `<span class="muted">load = saturacja koloru</span>` +
     `</div>`;
 
-  const note = isTracking
-    ? `<p class="muted" style="font-size:11px;margin:0 0 8px;">Wspólna wizja <strong>soc*</strong>; linie scenariuszy = recourse (osobne ch/dis).</p>`
-    : `<p class="muted" style="font-size:11px;margin:0 0 8px;">Legacy shared ch/dis — jedna trajektoria SOC, różne net/CF per scenariusz.</p>`;
+  const note =
+    `<p class="muted" style="font-size:11px;margin:0 0 8px;">` +
+    `Jedna bateria (shared) max E[CF]. Wszystkie ${names.length} serii net/CF; SOC wspólny.` +
+    `</p>`;
 
   const mode = _planScSecondaryMode;
   const toggle =
@@ -671,7 +738,7 @@ function renderPlanTimeline(p) {
   const hero =
     `<div class="plan-hero">` +
     `<div><div class="plan-hero-key">Plan</div><div>${planId}… · ważny do ${validUntil}</div></div>` +
-    `<div><div class="plan-hero-key">Σ cashflow</div><div class="plan-hero-val">${cash}</div></div>` +
+    `<div><div class="plan-hero-key">E[CF]</div><div class="plan-hero-val">${cash}</div></div>` +
     `<div><div class="plan-hero-key">SOC plan</div><div>${socStart} → ${socEnd}</div></div>` +
     `<span class="status-pill ${execOn ? "status-on" : "status-off"}">egzekucja: ${execOn ? "tak" : "nie"}</span>` +
     `</div>`;
@@ -1049,7 +1116,7 @@ function forecastHourGridFlowsKwh(r, pv, dom, ev) {
 /** Shared SVG frame: Y ticks, X hour ticks, optional zero line, now marker. */
 function svgDayChartAxes({
   w, h, pad, minY, maxY, nHours = 24, nowFrac = null, showZero = false, yUnit = "",
-  rightAxis = null,
+  xUnit = "", rightAxis = null, xTickItems = null,
 }) {
   const innerW = w - pad.l - pad.r;
   const innerH = h - pad.t - pad.b;
@@ -1091,10 +1158,24 @@ function svgDayChartAxes({
     }
   }
 
-  const xTicks = [0, 6, 12, 18, 23];
-  for (const hr of xTicks) {
-    const x = toX(hr);
-    parts.push(`<text class="tick-label" x="${x.toFixed(1)}" y="${(h - 6).toFixed(1)}" text-anchor="middle">${hr}</text>`);
+  const tickItems = Array.isArray(xTickItems) && xTickItems.length
+    ? xTickItems
+    : [0, 6, 12, 18, 23].map((hr) => ({ pos: hr, label: String(hr) }));
+  const xUnitReserve = xUnit ? 16 : 0;
+  let lastTickX = -999;
+  for (const t of tickItems) {
+    const x = toX(t.pos);
+    if (x - lastTickX < 22) continue;
+    if (x > w - 6 - xUnitReserve) continue;
+    lastTickX = x;
+    parts.push(
+      `<text class="tick-label" x="${x.toFixed(1)}" y="${(h - 6).toFixed(1)}" text-anchor="middle">${escapeHtml(String(t.label))}</text>`
+    );
+  }
+  if (xUnit) {
+    parts.push(
+      `<text class="tick-label" x="${(w - 4).toFixed(1)}" y="${(h - 6).toFixed(1)}" text-anchor="end">${escapeHtml(xUnit)}</text>`
+    );
   }
 
   if (showZero && minY < 0 && maxY > 0) {
