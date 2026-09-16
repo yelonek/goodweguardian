@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from planner.load_correction import (
+    apply_load_correction,
     build_load_intra_meta,
     compute_load_k_intra,
     load_energy_so_far_in_hour,
@@ -297,3 +298,59 @@ def test_load_k_uses_current_after_carry_window(
     assert meta["k_intra"] == pytest.approx(float(meta["k_intra_current"]))
     assert meta["k_prev"] == pytest.approx(1.0)
     assert meta["spill_min"] == pytest.approx(10.0)
+
+
+def test_apply_load_correction_mixes_next_hour_keeps_ev(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import planner.load_correction as load_mod
+
+    monkeypatch.setattr("planner.intra_hour.TELEMETRY_DIR", tmp_path)
+    monkeypatch.setattr(load_mod, "LOAD_CORRECTION_ENABLED", True)
+    path = tmp_path / "telemetry_2026-06-11.jsonl"
+    rows = [
+        {"local_hour": 12, "local_minute": m, "consumption_w": 2000.0}
+        for m in range(30)
+    ]
+    path.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    now = datetime(2026, 6, 11, 12, 30, 0)
+    load_by_key = {
+        ("2026-06-11", 12): {
+            "load_base_kwh_p50": 2.0,
+            "load_kwh_p25": 1.5,
+            "load_kwh_p75": 2.5,
+            "source": "hist",
+        },
+        ("2026-06-11", 13): {
+            "load_base_kwh_p50": 2.0,
+            "load_kwh_p25": 1.0,
+            "load_kwh_p75": 2.5,
+            "source": "hist",
+        },
+    }
+    ev = {("2026-06-11", 13): 3.0}
+    corrected, sources, meta = apply_load_correction(
+        [("2026-06-11", 12), ("2026-06-11", 13)],
+        load_by_key,
+        now=now,
+        ev_schedule=ev,
+    )
+    assert sources[("2026-06-11", 13)] == "load_intra_next"
+    nxt = corrected[("2026-06-11", 13)]
+    base, total, p25, p75 = mix_load_base_keep_ev(
+        load_base=2.0,
+        ev_kwh=3.0,
+        k=float(meta["k_intra"]),
+        spill_min=float(meta["spill_min"]),
+        load_p25=1.0,
+        load_p75=2.5,
+    )
+    assert nxt["base"] == pytest.approx(base)
+    assert nxt["total"] == pytest.approx(total)
+    assert nxt["ev"] == pytest.approx(3.0)
+    assert nxt["p25"] == pytest.approx(p25)
+    assert nxt["p75"] == pytest.approx(p75)
+    cur = corrected[("2026-06-11", 12)]
+    assert sources[("2026-06-11", 12)] == "hist"
+    assert cur["base"] == pytest.approx(2.0)
+    assert cur["total"] == pytest.approx(2.0)

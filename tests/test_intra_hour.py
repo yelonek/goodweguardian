@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from planner.intra_hour import energy_in_hour, mix_k_into_hour, recent_average_kw
+from planner.intra_hour import energy_in_hour, mix_k_into_hour, mix_or_scale_quantile, recent_average_kw
 
 
 def test_energy_in_hour_uses_power_field(
@@ -53,3 +53,14 @@ def test_recent_average_respects_window(
 
 def test_mix_k_into_hour_reexport_shape() -> None:
     assert mix_k_into_hour(f50=2.0, k=0.5, spill_min=30) == pytest.approx(1.5)
+
+
+def test_mix_or_scale_quantile_mix_vs_scale() -> None:
+    mixed = mix_or_scale_quantile(
+        q_raw=1.0, f50_raw=2.0, k=0.5, spill_min=30, mix=True, corrected=1.6
+    )
+    assert mixed == mix_k_into_hour(f50=2.0, k=0.5, spill_min=30, q_raw=1.0)
+    scaled = mix_or_scale_quantile(
+        q_raw=1.0, f50_raw=2.0, k=0.5, spill_min=30, mix=False, corrected=1.6
+    )
+    assert scaled == pytest.approx(0.8)

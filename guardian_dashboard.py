@@ -93,11 +93,10 @@ from planner.load_correction import (
     LOAD_CORRECTION_ENABLED,
     LOAD_CORRECTION_K_MAX,
     LOAD_CORRECTION_K_MIN,
-    apply_load_plan_to_meta,
-    build_load_intra_meta,
+    apply_load_correction,
+    load_base_from_row,
     load_minute_series_in_hour,
     load_plan_current_hour_kwh,
-    mix_load_base_keep_ev,
 )
 from planner.load_planner_display import planner_load_milp_snapshot
 from tesla_wall_charger import hourly_ev_kwh_from_telemetry, twc_enabled
@@ -1749,63 +1748,30 @@ def _load_correction_payload() -> dict[str, Any]:
     }
 
     f50_row = load_by_hour.get(current_hour, {})
-    f50_current = float(
-        f50_row.get("load_base_kwh_p50")
-        or f50_row.get("load_kwh_p50")
-        or 0.0
-    )
+    f50_current = load_base_from_row(f50_row)
     f25_current = float(
         f50_row.get("load_kwh_p25") if f50_row.get("load_kwh_p25") is not None else f50_current
     )
     f75_current = float(
         f50_row.get("load_kwh_p75") if f50_row.get("load_kwh_p75") is not None else f50_current
     )
-    prev_key = (prev_dt.date().isoformat(), prev_dt.hour)
     next_key = (next_dt.date().isoformat(), next_dt.hour)
-    prev_lr = load_by_key.get(prev_key, {})
     next_lr = load_by_key.get(next_key, {})
-    f50_prev = (
-        float(prev_lr.get("load_base_kwh_p50") or prev_lr.get("load_kwh_p50") or 0.0)
-        if prev_key in load_by_key
-        else None
-    )
-    f50_next = float(
-        next_lr.get("load_base_kwh_p50") or next_lr.get("load_kwh_p50") or 0.0
-    )
-    next_p25 = float(
-        next_lr.get("load_kwh_p25") if next_lr.get("load_kwh_p25") is not None else f50_next
-    )
-    next_p75 = float(
-        next_lr.get("load_kwh_p75") if next_lr.get("load_kwh_p75") is not None else f50_next
-    )
+    f50_next = load_base_from_row(next_lr)
 
-    state = build_load_intra_meta(
-        now,
-        f50_current_kwh=f50_current,
-        f50_prev_kwh=f50_prev,
-    )
+    slots = [(d_iso, current_hour), next_key]
+    _, _, state = apply_load_correction(slots, load_by_key, now=now)
     state["f50_current_kwh"] = f50_current
     state["enabled"] = LOAD_CORRECTION_ENABLED
     alpha = float(state.get("alpha") or 0.0)
     a_so_far = state.get("a_so_far_kwh")
     minute_series = load_minute_series_in_hour(now)
 
-    if LOAD_CORRECTION_ENABLED and a_so_far is not None:
-        apply_load_plan_to_meta(state, f50_kwh=f50_current)
-
     load_plan_kwh = state.get("load_plan_kwh")
     k_intra = state.get("k_intra")
-    spill_load = float(state.get("spill_min") or 0.0)
-    load_plan_next: float | None = f50_next
-    if k_intra is not None and spill_load > 0.0:
-        load_plan_next, _, _, _ = mix_load_base_keep_ev(
-            load_base=f50_next,
-            ev_kwh=0.0,
-            k=float(k_intra),
-            spill_min=spill_load,
-            load_p25=next_p25,
-            load_p75=next_p75,
-        )
+    load_plan_next = state.get("load_plan_next_kwh")
+    if load_plan_next is None:
+        load_plan_next = f50_next
     k_plan_only: float | None = None
     rate_plan_only: float | None = None
     if k_intra is not None and a_so_far is not None:
@@ -1835,9 +1801,7 @@ def _load_correction_payload() -> dict[str, Any]:
         act = load_actual.get(h)
         f50_h = None
         if row:
-            f50_h = float(
-                row.get("load_base_kwh_p50") or row.get("load_kwh_p50") or 0.0
-            )
+            f50_h = load_base_from_row(row)
         if f50_h is None and act is None and h != current_hour:
             continue
         entry: dict[str, Any] = {

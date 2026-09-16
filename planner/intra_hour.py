@@ -231,3 +231,25 @@ def compute_k_prev_hour(
     meta["k_prev"] = k_prev
     meta["k_prev_raw"] = detail.get("k_raw")
     return k_prev, meta
+
+
+def mix_or_scale_quantile(
+    *,
+    q_raw: float,
+    f50_raw: float,
+    k: float | None,
+    spill_min: float,
+    mix: bool,
+    corrected: float | None = None,
+) -> float:
+    """h+1: mix k na ``spill_min``; inaczej skala ``corrected / F50`` (albo surowy q)."""
+    if mix and k is not None and float(spill_min) > 0.0:
+        return mix_k_into_hour(
+            f50=float(f50_raw),
+            k=float(k),
+            spill_min=float(spill_min),
+            q_raw=float(q_raw),
+        )
+    if corrected is not None and float(f50_raw) > 1e-9:
+        return max(0.0, float(q_raw) * (float(corrected) / float(f50_raw)))
+    return max(0.0, float(q_raw))

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from planner.intra_hour import (
@@ -424,3 +424,105 @@ def apply_load_plan_to_meta(
         }
     )
     return load_meta
+
+
+def load_base_from_row(row: dict[str, Any] | None) -> float:
+    """p50 load domu bez EV: ``load_base_kwh_p50`` albo starsze ``load_kwh_p50``."""
+    if not row:
+        return 0.0
+    return float(row.get("load_base_kwh_p50") or row.get("load_kwh_p50") or 0.0)
+
+
+def _load_bands_from_row(row: dict[str, Any] | None, load_base: float) -> tuple[float, float]:
+    if not row:
+        return load_base, load_base
+    p25 = float(row["load_kwh_p25"]) if row.get("load_kwh_p25") is not None else load_base
+    p75 = float(row["load_kwh_p75"]) if row.get("load_kwh_p75") is not None else load_base
+    return p25, p75
+
+
+def apply_load_correction(
+    slots: list[tuple[str, int]],
+    load_by_key: dict[tuple[str, int], dict[str, Any]],
+    *,
+    now: datetime,
+    ev_schedule: dict[tuple[str, int], float] | None = None,
+) -> tuple[dict[tuple[str, int], dict[str, float]], dict[tuple[str, int], str], dict[str, Any]]:
+    """
+    Skorygowany load per slot: ``{base, total, p25, p75, ev}``.
+
+    - bieżąca h na :00: k na ``load_base`` (EV po skali)
+    - h+1: ``mix_load_base_keep_ev`` na ``spill_min``
+    - reszta: surowa prognoza; mid-hour resztę liczy ``hour_remainder``
+    """
+    ev_schedule = ev_schedule or {}
+    if not slots:
+        return {}, {}, {"enabled": LOAD_CORRECTION_ENABLED, "applied": False}
+
+    current_slot = (now.date().isoformat(), now.hour)
+    next_dt = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    next_slot = (next_dt.date().isoformat(), next_dt.hour)
+    prev_dt = now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
+    prev_slot = (prev_dt.date().isoformat(), prev_dt.hour)
+
+    cur_base = load_base_from_row(load_by_key.get(current_slot))
+    cur_ev = float(ev_schedule.get(current_slot, 0.0))
+    prev_row = load_by_key.get(prev_slot)
+    f50_prev = load_base_from_row(prev_row) if prev_row is not None else None
+
+    state = build_load_intra_meta(
+        now,
+        f50_current_kwh=cur_base + cur_ev,
+        f50_prev_kwh=f50_prev,
+    )
+    if LOAD_CORRECTION_ENABLED:
+        apply_load_plan_to_meta(state, f50_kwh=cur_base + cur_ev)
+    k_intra = state.get("k_intra")
+    spill_min = float(state.get("spill_min") or 0.0)
+    alpha = float(state.get("alpha") or 0.0)
+
+    corrected: dict[tuple[str, int], dict[str, float]] = {}
+    sources: dict[tuple[str, int], str] = {}
+    for slot in slots:
+        row = load_by_key.get(slot, {})
+        base = load_base_from_row(row)
+        ev_kwh = float(ev_schedule.get(slot, 0.0))
+        p25, p75 = _load_bands_from_row(row, base)
+        source = str(row.get("source") or "unknown")
+        if slot == next_slot and k_intra is not None and spill_min > 0.0:
+            base, total, p25, p75 = mix_load_base_keep_ev(
+                load_base=base,
+                ev_kwh=ev_kwh,
+                k=float(k_intra),
+                spill_min=spill_min,
+                load_p25=p25,
+                load_p75=p75,
+            )
+            source = "load_intra_next"
+        elif slot == current_slot and alpha <= 1e-9 and k_intra is not None:
+            k = float(k_intra)
+            p25 = max(0.0, p25 * k)
+            p75 = max(0.0, p75 * k)
+            base = max(0.0, base * k)
+            total = base + ev_kwh
+            if ev_kwh > 0:
+                p75 = max(p75, total)
+            source = "load_intra_current"
+        else:
+            total = base + ev_kwh
+            if ev_kwh > 0:
+                p75 = max(p75, total)
+        corrected[slot] = {
+            "base": base,
+            "total": total,
+            "p25": p25,
+            "p75": p75,
+            "ev": ev_kwh,
+        }
+        sources[slot] = source
+
+    next_pack = corrected.get(next_slot)
+    state["load_plan_next_kwh"] = None if next_pack is None else next_pack["total"]
+    state["current_slot"] = {"date": current_slot[0], "hour": current_slot[1]}
+    state["next_slot"] = {"date": next_slot[0], "hour": next_slot[1]}
+    return corrected, sources, state

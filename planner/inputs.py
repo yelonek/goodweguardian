@@ -15,7 +15,8 @@ from load_forecast import forecast_load_hours
 from planner.config import PLANNER_LOAD_LOOKBACK_DAYS
 from planner.models import HourInputs
 from planner.hour_remainder import scale_hour_inputs_for_remainder
-from planner.load_correction import build_load_intra_meta
+from planner.intra_hour import mix_or_scale_quantile
+from planner.load_correction import apply_load_correction
 from planner.pv_correction import apply_pv_correction
 from planner.pv_feature_archive import archive_pv_features
 from planner.pv_weather_correction import apply_pv_weather_correction
@@ -49,8 +50,8 @@ def build_hour_inputs_for_slots(
     n_slots = len(slots)
 
     load_pack = forecast_load_hours(
-        start_dt=first_dt,
-        hours=n_slots + 2,
+        start_dt=first_dt - timedelta(hours=1),
+        hours=n_slots + 3,
         lookback_days=lookback,
     )
     load_by_key = {
@@ -89,17 +90,38 @@ def build_hour_inputs_for_slots(
         ev_plans_by_date[d_iso] = plan.model_dump()
         ev_schedule.update(ev_schedule_map(plan))
 
+    load_corrected, load_sources, load_intra_meta = apply_load_correction(
+        slots,
+        load_by_key,
+        now=now_local,
+        ev_schedule=ev_schedule,
+    )
+    k_pv = pv_correction_meta.get("k_intra")
+    spill_pv = float(pv_correction_meta.get("spill_min") or 0.0)
+
     out: list[HourInputs] = []
     pricing_cache: dict[str, dict] = {}
-    load_intra_meta = build_load_intra_meta(now_local)
 
     for d_iso, h in slots:
         key = (d_iso, h)
         lr = load_by_key.get(key, {})
-        load_base = float(lr.get("load_base_kwh_p50") or lr.get("load_kwh_p50") or 0.0)
-        ev_kwh = float(ev_schedule.get(key, 0.0))
-        load_kwh = load_base + ev_kwh
-        load_src = str(lr.get("source") or "unknown")
+        pack = load_corrected.get(key)
+        if pack is not None:
+            load_base = float(pack["base"])
+            load_kwh = float(pack["total"])
+            load_p25 = float(pack["p25"])
+            load_p75 = float(pack["p75"])
+            ev_kwh = float(pack["ev"])
+            load_src = str(load_sources.get(key) or lr.get("source") or "unknown")
+        else:
+            load_base = float(lr.get("load_base_kwh_p50") or lr.get("load_kwh_p50") or 0.0)
+            ev_kwh = float(ev_schedule.get(key, 0.0))
+            load_kwh = load_base + ev_kwh
+            load_p25 = float(lr.get("load_kwh_p25") if lr.get("load_kwh_p25") is not None else load_base)
+            load_p75 = float(lr.get("load_kwh_p75") if lr.get("load_kwh_p75") is not None else load_base)
+            if ev_kwh > 0:
+                load_p75 = max(load_p75, load_kwh)
+            load_src = str(lr.get("source") or "unknown")
 
         if key in pv_corrected:
             pv_kwh = float(pv_corrected[key])
@@ -113,17 +135,25 @@ def build_hour_inputs_for_slots(
         pv_p10_raw = float(pr.get("pv_kw_p10") if pr and pr.get("pv_kw_p10") is not None else pv_p50_raw)
         pv_p90_raw = float(pr.get("pv_kw_p90") if pr and pr.get("pv_kw_p90") is not None else pv_p50_raw)
         if pv_p50_raw > 1e-9 and key in pv_corrected:
-            k_scale = pv_kwh / pv_p50_raw
-            pv_p10 = max(0.0, pv_p10_raw * k_scale)
-            pv_p90 = max(0.0, pv_p90_raw * k_scale)
+            pv_p10 = mix_or_scale_quantile(
+                q_raw=pv_p10_raw,
+                f50_raw=pv_p50_raw,
+                k=float(k_pv) if k_pv is not None else None,
+                spill_min=spill_pv,
+                mix=pv_sources.get(key) == "pv_intra_next",
+                corrected=pv_kwh,
+            )
+            pv_p90 = mix_or_scale_quantile(
+                q_raw=pv_p90_raw,
+                f50_raw=pv_p50_raw,
+                k=float(k_pv) if k_pv is not None else None,
+                spill_min=spill_pv,
+                mix=pv_sources.get(key) == "pv_intra_next",
+                corrected=pv_kwh,
+            )
         else:
             pv_p10 = max(0.0, pv_p10_raw)
             pv_p90 = max(0.0, pv_p90_raw)
-
-        load_p75 = float(lr.get("load_kwh_p75") if lr.get("load_kwh_p75") is not None else load_kwh)
-        load_p25 = float(lr.get("load_kwh_p25") if lr.get("load_kwh_p25") is not None else load_kwh)
-        if ev_kwh > 0:
-            load_p75 = max(load_p75, load_kwh)
 
         if d_iso not in pricing_cache:
             pricing_cache[d_iso] = pricing_day_breakdown(date.fromisoformat(d_iso))
