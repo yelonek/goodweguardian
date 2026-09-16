@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
-import json
-import logging
 from datetime import datetime, timedelta
 from typing import Any
 
-from guardian_config import TELEMETRY_DIR
+from planner.intra_hour import (
+    clip_k,
+    compute_k_prev_hour as _compute_k_prev_hour,
+    correction_spill_minutes,
+    energy_in_hour,
+    hour_elapsed_fraction,
+    minute_series_in_hour,
+    mix_k_into_hour,
+    prev_local_hour,
+    rate_blend_weight,
+    recent_average_kw,
+)
 
 # Parametry algorytmu k_intra — const (nie strojenie UI).
 PV_CORRECTION_ENABLED = True
@@ -30,18 +39,13 @@ PV_BAND_RATE_P10_FACTOR = 0.70
 PV_BAND_RATE_P90_FACTOR = 1.15
 PV_BAND_RATE_MIN_ALPHA = 0.15
 
-log = logging.getLogger("planner")
+# Przeniesienie k z poprzedniej godziny: zegar nie czyści nieba.
+PV_K_CARRY_ALPHA = 0.15
+PV_K_PREV_MIN_SAMPLES = 15
+# Persistence od teraz: wyciek k na h+1 = max(0, 60 − reszta bieżącej).
+PV_CORRECTION_HORIZON_MIN = 60
 
 HorizonSlot = tuple[str, int]
-
-
-def hour_elapsed_fraction(now: datetime) -> float:
-    """α = ułamek bieżącej godziny lokalnej (0 na :00:00)."""
-    return (now.minute + now.second / 60.0) / 60.0
-
-
-def clip_k(value: float, *, k_min: float, k_max: float) -> float:
-    return max(k_min, min(k_max, value))
 
 
 def _rate_blend_weight(
@@ -50,14 +54,7 @@ def _rate_blend_weight(
     blend_start: float = PV_CORRECTION_RATE_BLEND_START,
     blend_end: float = PV_CORRECTION_RATE_BLEND_END,
 ) -> float:
-    """0 na początku godziny → 1 gdy alpha >= blend_end."""
-    if blend_end <= blend_start:
-        return 0.0
-    if alpha <= blend_start:
-        return 0.0
-    if alpha >= blend_end:
-        return 1.0
-    return (alpha - blend_start) / (blend_end - blend_start)
+    return rate_blend_weight(alpha, blend_start=blend_start, blend_end=blend_end)
 
 
 def pv_recent_average_kw(
@@ -65,82 +62,62 @@ def pv_recent_average_kw(
     *,
     window_min: int = PV_CORRECTION_RATE_WINDOW_MIN,
 ) -> tuple[float, int] | None:
-    """
-    Średnia moc PV [kW] z ostatnich ``window_min`` minut bieżącej godziny lokalnej.
-    """
-    if window_min <= 0:
-        return None
-    path = TELEMETRY_DIR / f"telemetry_{now.date().isoformat()}.jsonl"
-    target_hour = now.hour
-    start_minute = max(0, now.minute - window_min)
-    power_kw: list[float] = []
+    """Średnia moc PV [kW] z ostatnich ``window_min`` minut bieżącej godziny lokalnej."""
+    return recent_average_kw(
+        now, window_min=window_min, power_field="pv_w", log_label="pv"
+    )
 
-    if not path.exists():
-        return None
 
-    try:
-        with path.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    row = json.loads(line)
-                    if int(row["local_hour"]) != target_hour:
-                        continue
-                    minute = int(row.get("local_minute", 0))
-                    if minute > now.minute or minute < start_minute:
-                        continue
-                    power_kw.append(float(row.get("pv_w", 0.0)) / 1000.0)
-                except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-                    continue
-    except OSError as e:
-        log.debug("pv recent average read failed %s: %s", path, e)
-        return None
-
-    if not power_kw:
-        return None
-    return sum(power_kw) / len(power_kw), len(power_kw)
+def pv_energy_in_hour(
+    *,
+    local_date: str,
+    hour: int,
+    until_minute: int | None = None,
+) -> tuple[float, int] | None:
+    """Energia PV [kWh] w godzinie lokalnej. ``until_minute`` włącznie; None = cała h."""
+    return energy_in_hour(
+        local_date=local_date,
+        hour=hour,
+        until_minute=until_minute,
+        power_field="pv_w",
+        log_label="pv",
+    )
 
 
 def pv_energy_so_far_in_hour(now: datetime) -> tuple[float, int] | None:
-    """
-    Energia PV [kWh] od początku bieżącej godziny lokalnej (średnia moc × czas próbek).
+    """Energia PV [kWh] od początku bieżącej godziny lokalnej."""
+    return pv_energy_in_hour(
+        local_date=now.date().isoformat(),
+        hour=now.hour,
+        until_minute=now.minute,
+    )
 
-    Zwraca (energia, liczba_próbek) lub None gdy brak telemetrii w tej godzinie.
-    """
-    path = TELEMETRY_DIR / f"telemetry_{now.date().isoformat()}.jsonl"
-    target_hour = now.hour
-    energy_kwh = 0.0
-    count = 0
 
-    if not path.exists():
-        return None
-
+def _f50_from_archive(date_iso: str, hour: int) -> float | None:
     try:
-        with path.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    row = json.loads(line)
-                    if int(row["local_hour"]) != target_hour:
-                        continue
-                    minute = int(row.get("local_minute", 0))
-                    if minute > now.minute:
-                        continue
-                    energy_kwh += float(row.get("pv_w", 0.0)) / 1000.0 / 60.0
-                    count += 1
-                except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-                    continue
-    except OSError as e:
-        log.debug("pv energy read failed %s: %s", path, e)
+        from planner.pv_feature_archive import load_day_archive
+    except ImportError:
         return None
+    day = load_day_archive(date_iso)
+    if day is None:
+        return None
+    row = day.hours.get(f"{int(hour):02d}")
+    if row is None or row.solcast_p50_kwh is None:
+        return None
+    return float(row.solcast_p50_kwh)
 
-    if count == 0:
-        return None
-    return energy_kwh, count
+
+def resolve_f50_prev_kwh(
+    now: datetime,
+    *,
+    f50_prev_kwh: float | None = None,
+) -> float:
+    """F50 Solcast poprzedniej godziny: jawny argument, inaczej archiwum cech."""
+    if f50_prev_kwh is not None:
+        return float(f50_prev_kwh)
+    prev = prev_local_hour(now)
+    archived = _f50_from_archive(prev.date().isoformat(), prev.hour)
+    return float(archived) if archived is not None else 0.0
 
 
 def _clip_ramp_weight(
@@ -150,13 +127,7 @@ def _clip_ramp_weight(
     ramp_end: float = PV_CORRECTION_CLIP_RAMP_END,
 ) -> float:
     """0 = wąski clip (początek h), 1 = szeroki clip (późna godzina)."""
-    if ramp_end <= ramp_start:
-        return 0.0
-    if alpha <= ramp_start:
-        return 0.0
-    if alpha >= ramp_end:
-        return 1.0
-    return (alpha - ramp_start) / (ramp_end - ramp_start)
+    return rate_blend_weight(alpha, blend_start=ramp_start, blend_end=ramp_end)
 
 
 def effective_clip_bounds(
@@ -185,42 +156,7 @@ def effective_clip_bounds(
 
 def pv_minute_series_in_hour(now: datetime) -> list[dict[str, float | int]]:
     """Minutowa seria PV w bieżącej godzinie: moc [kW] i energia skumulowana [kWh]."""
-    path = TELEMETRY_DIR / f"telemetry_{now.date().isoformat()}.jsonl"
-    target_hour = now.hour
-    if not path.exists():
-        return []
-
-    by_minute: dict[int, float] = {}
-    try:
-        with path.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    row = json.loads(line)
-                    if int(row["local_hour"]) != target_hour:
-                        continue
-                    minute = int(row.get("local_minute", 0))
-                    if minute > now.minute:
-                        continue
-                    by_minute[minute] = float(row.get("pv_w", 0.0)) / 1000.0
-                except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-                    continue
-    except OSError as e:
-        log.debug("pv minute series read failed %s: %s", path, e)
-        return []
-
-    if not by_minute:
-        return []
-
-    series: list[dict[str, float | int]] = []
-    cum_kwh = 0.0
-    for minute in sorted(by_minute):
-        pv_kw = by_minute[minute]
-        cum_kwh += pv_kw / 60.0
-        series.append({"minute": minute, "pv_kw": pv_kw, "cum_kwh": cum_kwh})
-    return series
+    return minute_series_in_hour(now, power_field="pv_w", kw_key="pv_kw", log_label="pv")
 
 
 def compute_k_intra_detail(
@@ -292,6 +228,21 @@ def compute_k_intra(
     return k_intra, reason
 
 
+def compute_k_prev_hour(
+    now: datetime,
+    *,
+    f50_prev_kwh: float,
+) -> tuple[float | None, dict[str, Any]]:
+    """k = A_prev / F50_prev z pełnej poprzedniej godziny (sygnał nieba)."""
+    return _compute_k_prev_hour(
+        now,
+        f50_prev_kwh=f50_prev_kwh,
+        energy_in_hour_fn=pv_energy_in_hour,
+        k_detail_fn=compute_k_intra_detail,
+        min_samples=PV_K_PREV_MIN_SAMPLES,
+    )
+
+
 def pv_plan_current_hour_kwh(
     *,
     f50_kwh: float,
@@ -334,8 +285,14 @@ def pv_plan_current_hour_kwh(
     return max(a_so_far_kwh, blended), meta
 
 
-def pv_plan_next_hour_kwh(*, f50_kwh: float, k_intra: float) -> float:
-    return max(0.0, f50_kwh * k_intra)
+def pv_plan_next_hour_kwh(
+    *,
+    f50_kwh: float,
+    k_intra: float,
+    spill_min: float = 60.0,
+) -> float:
+    """h+1: k tylko na ``spill_min`` minut, reszta surowy F50."""
+    return mix_k_into_hour(f50=f50_kwh, k=k_intra, spill_min=spill_min)
 
 
 def telemetry_rate_plan_viable(
@@ -437,8 +394,13 @@ def build_pv_intra_state(
     now: datetime,
     *,
     f50_current_kwh: float,
+    f50_prev_kwh: float | None = None,
 ) -> dict[str, Any]:
-    """Stan korekty dla bieżącej godziny lokalnej."""
+    """Stan korekty dla bieżącej godziny lokalnej.
+
+    Na początku slotu (α < ``PV_K_CARRY_ALPHA``) k pochodzi z poprzedniej godziny:
+    zegar nie czyści nieba. F50 prev: argument albo archiwum Solcast sprzed :00.
+    """
     alpha = hour_elapsed_fraction(now)
     energy = pv_energy_so_far_in_hour(now)
     a_so_far = float(energy[0]) if energy is not None else None
@@ -446,6 +408,7 @@ def build_pv_intra_state(
     recent = pv_recent_average_kw(now)
     recent_kw = float(recent[0]) if recent is not None else None
     recent_samples = int(recent[1]) if recent is not None else 0
+    f50_prev = resolve_f50_prev_kwh(now, f50_prev_kwh=f50_prev_kwh)
 
     meta: dict[str, Any] = {
         "enabled": PV_CORRECTION_ENABLED,
@@ -459,6 +422,8 @@ def build_pv_intra_state(
         "recent_samples": recent_samples,
         "f_elapsed_kwh": alpha * f50_current_kwh,
         "k_intra": None,
+        "k_intra_current": None,
+        "k_intra_source": None,
         "reason": "disabled",
         "plan_method": None,
     }
@@ -466,19 +431,35 @@ def build_pv_intra_state(
     if not PV_CORRECTION_ENABLED:
         return meta
 
-    if a_so_far is None:
-        meta["reason"] = "no_telemetry"
+    k_prev, prev_meta = compute_k_prev_hour(now, f50_prev_kwh=f50_prev)
+    meta.update(prev_meta)
+
+    k_intra: float | None = None
+    reason = "no_telemetry"
+    if a_so_far is not None:
+        k_intra, reason, k_detail = compute_k_intra_detail(
+            f50_kwh=f50_current_kwh,
+            a_so_far_kwh=a_so_far,
+            alpha=alpha,
+        )
+        meta.update(k_detail)
+        meta["k_intra_current"] = k_intra
+    else:
+        meta["reason"] = reason
+
+    if alpha < PV_K_CARRY_ALPHA and k_prev is not None:
+        meta["k_intra"] = k_prev
+        meta["reason"] = "prev_hour_sky"
+        meta["applied"] = True
+        meta["k_intra_source"] = "prev_hour"
+        if a_so_far is None:
+            meta["a_so_far_kwh"] = 0.0
         return meta
 
-    k_intra, reason, k_detail = compute_k_intra_detail(
-        f50_kwh=f50_current_kwh,
-        a_so_far_kwh=a_so_far,
-        alpha=alpha,
-    )
-    meta.update(k_detail)
     meta["k_intra"] = k_intra
     meta["reason"] = reason
     meta["applied"] = k_intra is not None
+    meta["k_intra_source"] = "current_hour" if k_intra is not None else None
     return meta
 
 
@@ -494,7 +475,7 @@ def apply_pv_correction(
     - bieżąca h: A_so_far + (1−α)×F50×k_intra (gdy k_intra aktywne)
     - bieżąca h (fallback): A_so_far + recent_kw×(1−α) gdy F50≈0 / brak k_intra,
       ale telemetria pokazuje produkcję (regresja 2026-07-25 06:40)
-    - h+1: k_intra × F50
+    - h+1: k na pierwsze ``spill`` min (horyzont 60 min od teraz), reszta F50
     - pozostałe: surowy F50 (pv_kw z Solcast)
     """
     if not slots:
@@ -506,8 +487,27 @@ def apply_pv_correction(
 
     f50_row = pv_by_key.get(current_slot, {})
     f50_current = float(f50_row.get("pv_kw") or 0.0)
-    state = build_pv_intra_state(now, f50_current_kwh=f50_current)
+    prev_dt = now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
+    prev_slot: HorizonSlot = (prev_dt.date().isoformat(), prev_dt.hour)
+    prev_row = pv_by_key.get(prev_slot)
+    f50_prev: float | None
+    if prev_row is not None and prev_row.get("pv_kw") is not None:
+        f50_prev = float(prev_row.get("pv_kw") or 0.0)
+    else:
+        f50_prev = None
+    state = build_pv_intra_state(
+        now,
+        f50_current_kwh=f50_current,
+        f50_prev_kwh=f50_prev,
+    )
     k_intra = state.get("k_intra")
+    alpha = float(state.get("alpha") or 0.0)
+    spill_min = correction_spill_minutes(
+        alpha, horizon_min=PV_CORRECTION_HORIZON_MIN
+    )
+    state["horizon_min"] = PV_CORRECTION_HORIZON_MIN
+    state["spill_min"] = spill_min
+    state["mix_w"] = max(0.0, min(1.0, spill_min / 60.0))
     use_rate_fallback = k_intra is None and telemetry_rate_plan_viable(
         alpha=float(state.get("alpha") or 0.0),
         a_so_far_kwh=state.get("a_so_far_kwh"),
@@ -538,8 +538,12 @@ def apply_pv_correction(
                 state["rate_plan_kwh"] = plan_meta.get("rate_plan_kwh")
                 state["rate_blend_weight"] = plan_meta.get("rate_blend_weight")
                 source = "pv_intra_current"
-            elif slot == next_slot:
-                value = pv_plan_next_hour_kwh(f50_kwh=f50, k_intra=float(k_intra))
+            elif slot == next_slot and spill_min > 0.0:
+                value = pv_plan_next_hour_kwh(
+                    f50_kwh=f50,
+                    k_intra=float(k_intra),
+                    spill_min=spill_min,
+                )
                 source = "pv_intra_next"
         elif use_rate_fallback and slot == current_slot:
             value, plan_meta = pv_plan_current_hour_from_rate(

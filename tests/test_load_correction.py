@@ -9,10 +9,12 @@ from pathlib import Path
 import pytest
 
 from planner.load_correction import (
+    build_load_intra_meta,
     compute_load_k_intra,
     load_energy_so_far_in_hour,
     load_plan_current_hour_kwh,
     load_remainder_bands_kwh,
+    mix_load_base_keep_ev,
 )
 from planner.hour_remainder import scale_hour_inputs_for_remainder
 from planner.models import HourInputs
@@ -205,7 +207,7 @@ def test_scale_hour_inputs_applies_load_plan_mid_hour(
 def test_load_energy_so_far_in_hour(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("planner.load_correction.TELEMETRY_DIR", tmp_path)
+    monkeypatch.setattr("planner.intra_hour.TELEMETRY_DIR", tmp_path)
     path = tmp_path / "telemetry_2026-06-11.jsonl"
     rows = [
         {"local_hour": 11, "local_minute": 0, "consumption_w": 1200},
@@ -219,3 +221,79 @@ def test_load_energy_so_far_in_hour(
     energy, samples = got
     assert samples == 3
     assert energy == pytest.approx((1200 + 1300 + 1250) / 1000.0 / 60.0)
+
+
+def test_mix_load_base_keep_ev_does_not_scale_ev() -> None:
+    """k na bazę domu; 3 kWh EV wchodzi 1:1 po mix."""
+    base, total, p25, p75 = mix_load_base_keep_ev(
+        load_base=2.0,
+        ev_kwh=3.0,
+        k=1.2,
+        spill_min=30,
+        load_p25=1.0,
+        load_p75=2.5,
+    )
+    # w=0.5 → 0.5·2.4 + 0.5·2.0 = 2.2; EV +3
+    assert base == pytest.approx(2.2)
+    assert total == pytest.approx(5.2)
+    assert p25 == pytest.approx(0.5 * 2.4 + 0.5 * 1.0)
+    assert p75 == pytest.approx(5.2)  # EV podnosi p75 do total
+
+
+def test_mix_load_base_keep_ev_full_spill_still_adds_ev() -> None:
+    base, total, _p25, p75 = mix_load_base_keep_ev(
+        load_base=2.0,
+        ev_kwh=4.0,
+        k=0.65,
+        spill_min=60,
+        load_p25=1.5,
+        load_p75=2.5,
+    )
+    assert base == pytest.approx(1.3)
+    assert total == pytest.approx(5.3)
+    assert p75 == pytest.approx(5.3)
+
+
+def test_load_k_carries_prev_hour_across_clock_roll(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import planner.load_correction as load_mod
+
+    monkeypatch.setattr("planner.intra_hour.TELEMETRY_DIR", tmp_path)
+    monkeypatch.setattr(load_mod, "LOAD_CORRECTION_ENABLED", True)
+    path = tmp_path / "telemetry_2026-06-11.jsonl"
+    rows = [
+        {"local_hour": 12, "local_minute": m, "consumption_w": 2000.0}
+        for m in range(60)
+    ]
+    path.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    now = datetime(2026, 6, 11, 13, 0, 0)
+    meta = build_load_intra_meta(now, f50_current_kwh=3.0, f50_prev_kwh=2.0)
+    assert meta["reason"] == "prev_hour_load"
+    assert meta["k_intra_source"] == "prev_hour"
+    assert meta["k_intra"] == pytest.approx(1.0)
+    assert meta["spill_min"] == pytest.approx(0.0)
+
+
+def test_load_k_uses_current_after_carry_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import planner.load_correction as load_mod
+
+    monkeypatch.setattr("planner.intra_hour.TELEMETRY_DIR", tmp_path)
+    path = tmp_path / "telemetry_2026-06-11.jsonl"
+    rows = [
+        {"local_hour": 12, "local_minute": m, "consumption_w": 2000.0}
+        for m in range(60)
+    ] + [
+        {"local_hour": 13, "local_minute": m, "consumption_w": 1000.0}
+        for m in range(11)
+    ]
+    path.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    now = datetime(2026, 6, 11, 13, 10, 0)
+    meta = build_load_intra_meta(now, f50_current_kwh=3.0, f50_prev_kwh=2.0)
+    assert meta["k_intra_source"] == "current_hour"
+    assert meta["reason"] == "ok"
+    assert meta["k_intra"] == pytest.approx(float(meta["k_intra_current"]))
+    assert meta["k_prev"] == pytest.approx(1.0)
+    assert meta["spill_min"] == pytest.approx(10.0)

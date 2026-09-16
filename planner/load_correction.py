@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
-import json
-import logging
 from datetime import datetime
 from typing import Any
 
-from guardian_config import TELEMETRY_DIR
-from planner.pv_correction import hour_elapsed_fraction
+from planner.intra_hour import (
+    clip_k,
+    compute_k_prev_hour as _compute_k_prev_hour,
+    correction_spill_minutes,
+    energy_in_hour,
+    hour_elapsed_fraction,
+    minute_series_in_hour,
+    mix_k_into_hour,
+    rate_blend_weight,
+    recent_average_kw,
+)
 
 # Kill-switch i tempo — const jak PV_BAND_* / PV_CORRECTION_*.
 LOAD_CORRECTION_ENABLED = True
@@ -25,11 +32,9 @@ LOAD_BAND_RATE_P25_FACTOR = 0.70
 LOAD_BAND_RATE_P75_FACTOR = 1.15
 LOAD_BAND_RATE_MIN_ALPHA = 0.15
 
-log = logging.getLogger("planner")
-
-
-def _clip_k(value: float, *, k_min: float, k_max: float) -> float:
-    return max(k_min, min(k_max, value))
+LOAD_K_CARRY_ALPHA = 0.15
+LOAD_K_PREV_MIN_SAMPLES = 15
+LOAD_CORRECTION_HORIZON_MIN = 60
 
 
 def _rate_blend_weight(
@@ -38,14 +43,7 @@ def _rate_blend_weight(
     blend_start: float = LOAD_CORRECTION_RATE_BLEND_START,
     blend_end: float = LOAD_CORRECTION_RATE_BLEND_END,
 ) -> float:
-    """0 na początku godziny → 1 gdy alpha >= blend_end."""
-    if blend_end <= blend_start:
-        return 0.0
-    if alpha <= blend_start:
-        return 0.0
-    if alpha >= blend_end:
-        return 1.0
-    return (alpha - blend_start) / (blend_end - blend_start)
+    return rate_blend_weight(alpha, blend_start=blend_start, blend_end=blend_end)
 
 
 def load_recent_average_kw(
@@ -54,124 +52,41 @@ def load_recent_average_kw(
     window_min: int = LOAD_BAND_RATE_WINDOW_MIN,
 ) -> tuple[float, int] | None:
     """Średnia moc load [kW] z ostatnich ``window_min`` minut bieżącej godziny."""
-    if window_min <= 0:
-        return None
-    path = TELEMETRY_DIR / f"telemetry_{now.date().isoformat()}.jsonl"
-    target_hour = now.hour
-    start_minute = max(0, now.minute - window_min)
-    power_kw: list[float] = []
-
-    if not path.exists():
-        return None
-
-    try:
-        with path.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    row = json.loads(line)
-                    if int(row["local_hour"]) != target_hour:
-                        continue
-                    minute = int(row.get("local_minute", 0))
-                    if minute > now.minute or minute < start_minute:
-                        continue
-                    power_kw.append(float(row.get("consumption_w", 0.0)) / 1000.0)
-                except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-                    continue
-    except OSError as e:
-        log.debug("load recent average read failed %s: %s", path, e)
-        return None
-
-    if not power_kw:
-        return None
-    return sum(power_kw) / len(power_kw), len(power_kw)
+    return recent_average_kw(
+        now, window_min=window_min, power_field="consumption_w", log_label="load"
+    )
 
 
 def load_minute_series_in_hour(now: datetime) -> list[dict[str, float | int]]:
-    """
-    Minutowa kumulacja load [kWh] w bieżącej godzinie lokalnej.
+    """Minutowa kumulacja load [kWh] w bieżącej godzinie lokalnej."""
+    return minute_series_in_hour(
+        now, power_field="consumption_w", kw_key="load_kw", log_label="load"
+    )
 
-    Jak PV: ostatnia znana moc w minucie × 1/60, skumulowana od :00.
-    """
-    path = TELEMETRY_DIR / f"telemetry_{now.date().isoformat()}.jsonl"
-    target_hour = now.hour
-    by_minute: dict[int, float] = {}
 
-    if not path.exists():
-        return []
-
-    try:
-        with path.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    row = json.loads(line)
-                    if int(row["local_hour"]) != target_hour:
-                        continue
-                    minute = int(row.get("local_minute", 0))
-                    if minute > now.minute:
-                        continue
-                    by_minute[minute] = float(row.get("consumption_w", 0.0)) / 1000.0
-                except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-                    continue
-    except OSError as e:
-        log.debug("load minute series read failed %s: %s", path, e)
-        return []
-
-    if not by_minute:
-        return []
-
-    series: list[dict[str, float | int]] = []
-    cum_kwh = 0.0
-    for minute in sorted(by_minute):
-        load_kw = by_minute[minute]
-        cum_kwh += load_kw / 60.0
-        series.append({"minute": minute, "load_kw": load_kw, "cum_kwh": cum_kwh})
-    return series
+def load_energy_in_hour(
+    *,
+    local_date: str,
+    hour: int,
+    until_minute: int | None = None,
+) -> tuple[float, int] | None:
+    """Energia load [kWh] w godzinie lokalnej. ``until_minute`` włącznie; None = cała h."""
+    return energy_in_hour(
+        local_date=local_date,
+        hour=hour,
+        until_minute=until_minute,
+        power_field="consumption_w",
+        log_label="load",
+    )
 
 
 def load_energy_so_far_in_hour(now: datetime) -> tuple[float, int] | None:
-    """
-    Energia load [kWh] od początku bieżącej godziny lokalnej.
-
-    Zwraca ``(energia, liczba_próbek)`` lub ``None`` gdy brak telemetrii.
-    """
-    path = TELEMETRY_DIR / f"telemetry_{now.date().isoformat()}.jsonl"
-    target_hour = now.hour
-    energy_kwh = 0.0
-    count = 0
-
-    if not path.exists():
-        return None
-
-    try:
-        with path.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    row = json.loads(line)
-                    if int(row["local_hour"]) != target_hour:
-                        continue
-                    minute = int(row.get("local_minute", 0))
-                    if minute > now.minute:
-                        continue
-                    energy_kwh += float(row.get("consumption_w", 0.0)) / 1000.0 / 60.0
-                    count += 1
-                except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-                    continue
-    except OSError as e:
-        log.debug("load energy read failed %s: %s", path, e)
-        return None
-
-    if count == 0:
-        return None
-    return energy_kwh, count
+    """Energia load [kWh] od początku bieżącej godziny lokalnej."""
+    return load_energy_in_hour(
+        local_date=now.date().isoformat(),
+        hour=now.hour,
+        until_minute=now.minute,
+    )
 
 
 def compute_load_k_intra_detail(
@@ -203,7 +118,7 @@ def compute_load_k_intra_detail(
         return None, "f_elapsed_below_eps", meta
 
     k_raw = a_so_far_kwh / f_elapsed
-    k_intra = _clip_k(k_raw, k_min=k_min, k_max=k_max)
+    k_intra = clip_k(k_raw, k_min=k_min, k_max=k_max)
     meta.update({"k_raw": k_raw, "k_intra": k_intra})
     return k_intra, "ok", meta
 
@@ -226,6 +141,40 @@ def compute_load_k_intra(
         k_max=k_max,
     )
     return k_intra, reason
+
+
+def mix_load_base_keep_ev(
+    *,
+    load_base: float,
+    ev_kwh: float,
+    k: float,
+    spill_min: float,
+    load_p25: float,
+    load_p75: float,
+) -> tuple[float, float, float, float]:
+    """k miesza tylko ``load_base``; EV dodawane po mix. (base, total, p25, p75)."""
+    base = mix_k_into_hour(f50=load_base, k=k, spill_min=spill_min)
+    p25 = mix_k_into_hour(f50=load_base, k=k, spill_min=spill_min, q_raw=load_p25)
+    p75 = mix_k_into_hour(f50=load_base, k=k, spill_min=spill_min, q_raw=load_p75)
+    total = max(0.0, base + float(ev_kwh))
+    if ev_kwh > 0:
+        p75 = max(p75, total)
+    return base, total, p25, p75
+
+
+def compute_load_k_prev_hour(
+    now: datetime,
+    *,
+    f50_prev_kwh: float,
+) -> tuple[float | None, dict[str, Any]]:
+    """k_load z pełnej poprzedniej godziny (sygnał domu)."""
+    return _compute_k_prev_hour(
+        now,
+        f50_prev_kwh=f50_prev_kwh,
+        energy_in_hour_fn=load_energy_in_hour,
+        k_detail_fn=compute_load_k_intra_detail,
+        min_samples=LOAD_K_PREV_MIN_SAMPLES,
+    )
 
 
 def load_plan_current_hour_kwh(
@@ -332,8 +281,13 @@ def load_remainder_bands_kwh(
     return p50_rem, p25_rem, p75_rem
 
 
-def build_load_intra_meta(now: datetime) -> dict[str, Any]:
-    """Meta load so-far / tempo dla mid-hour (snapshot / hour_remainder)."""
+def build_load_intra_meta(
+    now: datetime,
+    *,
+    f50_current_kwh: float | None = None,
+    f50_prev_kwh: float | None = None,
+) -> dict[str, Any]:
+    """Meta load so-far / tempo; opcjonalnie k z carry jak PV."""
     alpha = hour_elapsed_fraction(now)
     energy = load_energy_so_far_in_hour(now)
     a_so_far = float(energy[0]) if energy is not None else None
@@ -341,7 +295,8 @@ def build_load_intra_meta(now: datetime) -> dict[str, Any]:
     recent = load_recent_average_kw(now)
     recent_kw = float(recent[0]) if recent is not None else None
     recent_samples = int(recent[1]) if recent is not None else 0
-    return {
+    spill_min = correction_spill_minutes(alpha, horizon_min=LOAD_CORRECTION_HORIZON_MIN)
+    meta: dict[str, Any] = {
         "enabled": LOAD_CORRECTION_ENABLED,
         "band_narrow_enabled": LOAD_BAND_NARROW_ENABLED,
         "applied": False,
@@ -351,12 +306,54 @@ def build_load_intra_meta(now: datetime) -> dict[str, Any]:
         "recent_kw": recent_kw,
         "recent_samples": recent_samples,
         "k_intra": None,
+        "k_intra_current": None,
+        "k_intra_source": None,
         "reason": "pending",
         "plan_method": None,
         "load_plan_kwh": None,
         "rate_plan_kwh": None,
         "rate_blend_weight": None,
+        "horizon_min": LOAD_CORRECTION_HORIZON_MIN,
+        "spill_min": spill_min,
+        "mix_w": max(0.0, min(1.0, spill_min / 60.0)),
     }
+    if not LOAD_CORRECTION_ENABLED:
+        meta["reason"] = "disabled"
+        return meta
+
+    f50_prev = 0.0 if f50_prev_kwh is None else float(f50_prev_kwh)
+    k_prev, prev_meta = compute_load_k_prev_hour(now, f50_prev_kwh=f50_prev)
+    meta.update(prev_meta)
+
+    k_intra: float | None = None
+    reason = "no_telemetry"
+    if a_so_far is not None and f50_current_kwh is not None:
+        k_intra, reason, k_detail = compute_load_k_intra_detail(
+            f50_kwh=float(f50_current_kwh),
+            a_so_far_kwh=a_so_far,
+            alpha=alpha,
+        )
+        meta.update(k_detail)
+        meta["k_intra_current"] = k_intra
+
+    if alpha < LOAD_K_CARRY_ALPHA and k_prev is not None:
+        meta["k_intra"] = k_prev
+        meta["reason"] = "prev_hour_load"
+        meta["applied"] = True
+        meta["k_intra_source"] = "prev_hour"
+        if a_so_far is None:
+            meta["a_so_far_kwh"] = 0.0
+        return meta
+
+    if a_so_far is not None and f50_current_kwh is None:
+        meta["reason"] = "pending"
+        return meta
+
+    meta["k_intra"] = k_intra
+    meta["reason"] = reason if a_so_far is not None else "pending"
+    meta["applied"] = k_intra is not None
+    meta["k_intra_source"] = "current_hour" if k_intra is not None else None
+    return meta
 
 
 def apply_load_plan_to_meta(
@@ -375,28 +372,39 @@ def apply_load_plan_to_meta(
         return load_meta
 
     a_so_far = load_meta.get("a_so_far_kwh")
-    if a_so_far is None:
-        load_meta["reason"] = "no_telemetry"
-        load_meta["applied"] = False
-        return load_meta
-
     alpha = float(load_meta.get("alpha") or 0.0)
-    k_intra, reason, k_detail = compute_load_k_intra_detail(
-        f50_kwh=float(f50_kwh),
-        a_so_far_kwh=float(a_so_far),
-        alpha=alpha,
-    )
-    load_meta.update(
-        {
-            "k_raw": k_detail.get("k_raw"),
-            "f_elapsed_kwh": k_detail.get("f_elapsed_kwh"),
-            "k_intra": k_intra,
-            "reason": reason,
-            "applied": False,
-        }
-    )
-    if k_intra is None:
-        return load_meta
+    k_intra = load_meta.get("k_intra")
+    reason = str(load_meta.get("reason") or "")
+
+    if k_intra is None or reason in {"pending", "no_telemetry", "hour_start", "f_elapsed_below_eps"}:
+        if a_so_far is None:
+            if k_intra is None:
+                load_meta["reason"] = "no_telemetry"
+                load_meta["applied"] = False
+                return load_meta
+            a_so_far = 0.0
+            load_meta["a_so_far_kwh"] = 0.0
+        else:
+            k_intra, reason, k_detail = compute_load_k_intra_detail(
+                f50_kwh=float(f50_kwh),
+                a_so_far_kwh=float(a_so_far),
+                alpha=alpha,
+            )
+            load_meta.update(
+                {
+                    "k_raw": k_detail.get("k_raw"),
+                    "f_elapsed_kwh": k_detail.get("f_elapsed_kwh"),
+                    "k_intra": k_intra,
+                    "reason": reason,
+                    "applied": False,
+                }
+            )
+            if k_intra is None:
+                return load_meta
+
+    if a_so_far is None:
+        a_so_far = 0.0
+        load_meta["a_so_far_kwh"] = 0.0
 
     plan, plan_meta = load_plan_current_hour_kwh(
         f50_kwh=float(f50_kwh),

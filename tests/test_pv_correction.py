@@ -11,7 +11,9 @@ import pytest
 from planner.pv_correction import (
     apply_pv_correction,
     compute_k_intra,
+    correction_spill_minutes,
     hour_elapsed_fraction,
+    mix_k_into_hour,
     pv_energy_so_far_in_hour,
     pv_plan_current_hour_kwh,
     pv_plan_next_hour_kwh,
@@ -24,19 +26,6 @@ def test_hour_elapsed_fraction() -> None:
     assert hour_elapsed_fraction(datetime(2026, 6, 11, 11, 0, 0)) == pytest.approx(0.0)
     assert hour_elapsed_fraction(datetime(2026, 6, 11, 11, 30, 0)) == pytest.approx(0.5)
     assert hour_elapsed_fraction(datetime(2026, 6, 11, 11, 30, 30)) == pytest.approx(0.508333, rel=1e-4)
-
-
-def test_compute_k_intra_example_1130() -> None:
-    k, reason = compute_k_intra(
-        f50_kwh=2.0,
-        a_so_far_kwh=0.125,
-        alpha=0.5,
-        eps_kwh_per_h=0.1,
-        k_min=0.65,
-        k_max=1.35,
-    )
-    assert reason == "ok"
-    assert k == pytest.approx(0.65)
 
 
 def test_compute_k_intra_below_eps() -> None:
@@ -67,6 +56,22 @@ def test_pv_plan_current_and_next_hour() -> None:
     assert plan == pytest.approx(0.775)
     assert meta["method"] == "k_intra"
     assert pv_plan_next_hour_kwh(f50_kwh=2.0, k_intra=0.65) == pytest.approx(1.3)
+    assert pv_plan_next_hour_kwh(
+        f50_kwh=2.0, k_intra=0.65, spill_min=30
+    ) == pytest.approx(1.65)
+
+
+def test_correction_spill_minutes_one_hour_horizon() -> None:
+    assert correction_spill_minutes(0.0, horizon_min=60) == pytest.approx(0.0)
+    assert correction_spill_minutes(0.5, horizon_min=60) == pytest.approx(30.0)
+    assert correction_spill_minutes(59 / 60, horizon_min=60) == pytest.approx(59.0)
+
+
+def test_mix_k_into_hour_half_spill() -> None:
+    # w=0.5, k=0.65, F50=2.5 → 0.5·1.625 + 0.5·2.5
+    assert mix_k_into_hour(f50=2.5, k=0.65, spill_min=30) == pytest.approx(2.0625)
+    assert mix_k_into_hour(f50=2.5, k=0.65, spill_min=0) == pytest.approx(2.5)
+    assert mix_k_into_hour(f50=2.5, k=0.65, spill_min=60) == pytest.approx(1.625)
 
 
 def test_pv_plan_rate_blend_lowers_cloudy_hour() -> None:
@@ -93,7 +98,7 @@ def test_pv_recent_average_kw_from_telemetry(
 ) -> None:
     import planner.pv_correction as pv_mod
 
-    monkeypatch.setattr(pv_mod, "TELEMETRY_DIR", tmp_path)
+    monkeypatch.setattr("planner.intra_hour.TELEMETRY_DIR", tmp_path)
     path = tmp_path / "telemetry_2026-06-11.jsonl"
     rows = [
         {"local_hour": 12, "local_minute": 10, "pv_w": 1000.0},
@@ -186,7 +191,7 @@ def test_apply_pv_correction_adjusts_current_and_next(
     monkeypatch.setattr(
         pv_mod,
         "build_pv_intra_state",
-        lambda _now, f50_current_kwh: {
+        lambda _now, f50_current_kwh, **_kwargs: {
             "enabled": True,
             "applied": True,
             "alpha": 0.5,
@@ -204,12 +209,13 @@ def test_apply_pv_correction_adjusts_current_and_next(
 
     corrected, sources, meta = apply_pv_correction(slots, pv_by_key, now=now)
     assert corrected[("2026-06-11", 11)] == pytest.approx(0.775)
-    assert corrected[("2026-06-11", 12)] == pytest.approx(1.625)
+    assert corrected[("2026-06-11", 12)] == pytest.approx(2.0625)
     assert corrected[("2026-06-11", 13)] == pytest.approx(1.0)
     assert sources[("2026-06-11", 11)] == "pv_intra_current"
     assert sources[("2026-06-11", 12)] == "pv_intra_next"
     assert sources[("2026-06-11", 13)] == "solcast_proxy"
     assert meta["applied"] is True
+    assert meta["spill_min"] == pytest.approx(30.0)
 
 
 def test_pv_energy_so_far_from_telemetry(
@@ -218,7 +224,7 @@ def test_pv_energy_so_far_from_telemetry(
 ) -> None:
     import planner.pv_correction as pv_mod
 
-    monkeypatch.setattr(pv_mod, "TELEMETRY_DIR", tmp_path)
+    monkeypatch.setattr("planner.intra_hour.TELEMETRY_DIR", tmp_path)
     day = "2026-06-11"
     path = tmp_path / f"telemetry_{day}.jsonl"
     rows = [
@@ -332,7 +338,7 @@ def test_apply_pv_correction_f50_missing_uses_telemetry_rate(
     monkeypatch.setattr(
         pv_mod,
         "build_pv_intra_state",
-        lambda _now, f50_current_kwh: {
+        lambda _now, f50_current_kwh, **_kwargs: {
             "enabled": True,
             "applied": False,
             "alpha": 40.0 / 60.0,
@@ -377,3 +383,97 @@ def test_pv_remainder_bands_kill_switch_uses_subtract(
     assert p50 == pytest.approx(1.8)
     assert p10 == pytest.approx(0.0)
     assert p90 == pytest.approx(2.0)
+
+
+def _write_hour_telemetry(path: Path, *, hour: int, pv_w: float, minutes: range) -> None:
+    rows = [
+        {"local_hour": hour, "local_minute": m, "pv_w": pv_w} for m in minutes
+    ]
+    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    chunk = "\n".join(json.dumps(r) for r in rows) + "\n"
+    path.write_text(existing + chunk, encoding="utf-8")
+
+
+def test_k_intra_carries_prev_hour_across_clock_roll(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """:00 nie zeruje nieba — k z A_prev/F50_prev, nie hour_start i nie 1-sample clip."""
+    import planner.pv_correction as pv_mod
+
+    monkeypatch.setattr("planner.intra_hour.TELEMETRY_DIR", tmp_path)
+    monkeypatch.setattr(pv_mod, "PV_CORRECTION_ENABLED", True)
+    path = tmp_path / "telemetry_2026-06-11.jsonl"
+    _write_hour_telemetry(path, hour=12, pv_w=1000.0, minutes=range(60))
+
+    now = datetime(2026, 6, 11, 13, 0, 0)
+    slots = [("2026-06-11", 13), ("2026-06-11", 14)]
+    pv_by_key = {
+        ("2026-06-11", 12): {"pv_kw": 2.0},
+        ("2026-06-11", 13): {"pv_kw": 3.0},
+        ("2026-06-11", 14): {"pv_kw": 2.5},
+    }
+    corrected, sources, meta = apply_pv_correction(slots, pv_by_key, now=now)
+    assert meta["reason"] == "prev_hour_sky"
+    assert meta["k_intra_source"] == "prev_hour"
+    assert meta["k_intra"] == pytest.approx(0.5)
+    assert corrected[("2026-06-11", 13)] == pytest.approx(1.5)
+    assert corrected[("2026-06-11", 14)] == pytest.approx(2.5)
+    assert sources[("2026-06-11", 13)] == "pv_intra_current"
+    assert sources[("2026-06-11", 14)] == "solcast_proxy"
+
+
+def test_k_intra_carry_ignores_one_sample_clip_before_alpha(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Przed α=0.15 jedna próbka nie może wypchnąć k do clipu 1.35."""
+    import planner.pv_correction as pv_mod
+
+    monkeypatch.setattr("planner.intra_hour.TELEMETRY_DIR", tmp_path)
+    monkeypatch.setattr(pv_mod, "PV_CORRECTION_ENABLED", True)
+    path = tmp_path / "telemetry_2026-06-11.jsonl"
+    _write_hour_telemetry(path, hour=12, pv_w=1000.0, minutes=range(60))
+    _write_hour_telemetry(path, hour=13, pv_w=8000.0, minutes=range(9))
+
+    now = datetime(2026, 6, 11, 13, 8, 0)
+    slots = [("2026-06-11", 13), ("2026-06-11", 14)]
+    pv_by_key = {
+        ("2026-06-11", 12): {"pv_kw": 2.0},
+        ("2026-06-11", 13): {"pv_kw": 3.0},
+        ("2026-06-11", 14): {"pv_kw": 2.5},
+    }
+    _, _, meta = apply_pv_correction(slots, pv_by_key, now=now)
+    assert hour_elapsed_fraction(now) < pv_mod.PV_K_CARRY_ALPHA
+    assert meta["reason"] == "prev_hour_sky"
+    assert meta["k_intra"] == pytest.approx(0.5)
+    assert meta.get("k_intra_current") == pytest.approx(1.35)
+
+
+def test_k_intra_uses_current_hour_after_carry_window(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Po ~9 min nowa godzina ma własny sygnał — k z bieżącego slotu."""
+    import planner.pv_correction as pv_mod
+
+    monkeypatch.setattr("planner.intra_hour.TELEMETRY_DIR", tmp_path)
+    monkeypatch.setattr(pv_mod, "PV_CORRECTION_ENABLED", True)
+    path = tmp_path / "telemetry_2026-06-11.jsonl"
+    _write_hour_telemetry(path, hour=12, pv_w=1000.0, minutes=range(60))
+    _write_hour_telemetry(path, hour=13, pv_w=1000.0, minutes=range(11))
+
+    now = datetime(2026, 6, 11, 13, 10, 0)
+    slots = [("2026-06-11", 13), ("2026-06-11", 14)]
+    pv_by_key = {
+        ("2026-06-11", 12): {"pv_kw": 2.0},
+        ("2026-06-11", 13): {"pv_kw": 3.0},
+        ("2026-06-11", 14): {"pv_kw": 2.5},
+    }
+    _, _, meta = apply_pv_correction(slots, pv_by_key, now=now)
+    assert hour_elapsed_fraction(now) >= pv_mod.PV_K_CARRY_ALPHA
+    assert meta["k_intra_source"] == "current_hour"
+    assert meta["reason"] == "ok"
+    assert meta["k_intra"] == pytest.approx(float(meta["k_intra_current"]))
+    assert meta["k_intra"] != pytest.approx(0.5)
+    assert meta["k_prev"] == pytest.approx(0.5)
