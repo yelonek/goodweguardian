@@ -167,6 +167,20 @@ class TestWatchdogPolicy:
         assert d.mode == "charge"
         assert d.reason == "end_hour_battery_soak"
 
+    def test_end_hour_does_not_clawback_large_export(
+        self, default_inputs: BalanceInputs
+    ) -> None:
+        default_inputs.remaining_kwh = 2.22
+        default_inputs.time_to_end_s = 1140.0
+        default_inputs.pv_w = 10.0
+        default_inputs.consumption_w = 500.0
+        d = decide_watchdog(
+            default_inputs,
+            cfg=WatchdogConfig(end_hour_window_s=1200, end_hour_max_remaining_kwh=0.05),
+        )
+        assert d.mode != "charge"
+        assert d.reason == "neutral_keep_exported_kwh"
+
     def test_end_hour_skips_buffer_build_below_soak_target(
         self, default_inputs: BalanceInputs
     ) -> None:
@@ -474,7 +488,7 @@ class TestWatchdogPolicy:
     ) -> None:
         default_inputs.soc_pct = 15.0
         default_inputs.time_to_end_s = 2400
-        default_inputs.remaining_kwh = 3.0
+        default_inputs.remaining_kwh = 0.3
         default_inputs.pv_w = 6000.0
         default_inputs.consumption_w = 500.0
         d = decide_watchdog(default_inputs, cfg=WatchdogConfig())

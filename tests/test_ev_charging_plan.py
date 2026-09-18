@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
 import pytest
 
 from ev_charging_plan import (
     EvChargingDeclaration,
     allocate_ev_schedule,
+    build_ev_recommendation,
     build_horizon_slot_rows,
     compute_cheap_budget,
     ev_schedule_map,
+    resolve_ev_put_target_kwh,
 )
 from pv_pyramid import export_kwh_for_slot
 from planner.models import DailyPlan, HourPlan
@@ -243,6 +245,59 @@ def test_partial_delivery_allocates_only_remainder(
     assert len(plan.slots) == 1
     assert plan.slots[0].hour == 13
     assert plan.slots[0].kwh == pytest.approx(0.6)
+    assert not any("już naładowano" in w.lower() for w in plan.warnings)
+
+
+def test_declaration_default_power_is_3_kw() -> None:
+    decl = EvChargingDeclaration(date="2026-09-01", target_kwh=5.0)
+    assert decl.max_power_kw == pytest.approx(3.0)
+
+
+def test_resolve_ev_put_target_remaining_adds_delivered() -> None:
+    assert resolve_ev_put_target_kwh(
+        remaining_kwh=10.0, target_kwh=None, delivered_kwh=8.0
+    ) == pytest.approx(18.0)
+
+
+def test_resolve_ev_put_target_legacy_target_kwh() -> None:
+    assert resolve_ev_put_target_kwh(
+        remaining_kwh=None, target_kwh=15.0, delivered_kwh=8.0
+    ) == pytest.approx(15.0)
+
+
+def test_resolve_ev_put_target_remaining_wins_over_target() -> None:
+    assert resolve_ev_put_target_kwh(
+        remaining_kwh=10.0, target_kwh=15.0, delivered_kwh=8.0
+    ) == pytest.approx(18.0)
+
+
+def test_resolve_ev_put_target_requires_one_field() -> None:
+    with pytest.raises(ValueError, match="remaining_kwh albo target_kwh"):
+        resolve_ev_put_target_kwh(
+            remaining_kwh=None, target_kwh=None, delivered_kwh=8.0
+        )
+
+
+def test_recommendation_includes_delivered_without_declaration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    d = "2026-09-01"
+    monkeypatch.setattr("ev_charging_plan.twc_enabled", lambda: True)
+    monkeypatch.setattr(
+        "ev_charging_plan.hourly_ev_kwh_from_telemetry",
+        lambda _day: {8: 2.0, 9: 6.0},
+    )
+    monkeypatch.setattr(
+        "ev_charging_plan.build_horizon_slot_rows",
+        lambda slots: [_slot_row(date_iso, hour) for date_iso, hour in slots],
+    )
+    plan = build_ev_recommendation(
+        local_date=date(2026, 9, 1), now=datetime(2026, 9, 1, 10, 0)
+    )
+    assert plan.declaration is None
+    assert plan.delivered_kwh == pytest.approx(8.0)
+    assert [s.hour for s in plan.past_slots] == [8, 9]
+    assert not any("już naładowano" in w.lower() for w in plan.warnings)
 
 
 def test_ev_schedule_map_include_past() -> None:

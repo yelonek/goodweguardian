@@ -101,10 +101,19 @@ TESLA_WC_HOST = (
 ).strip()
 TESLA_WC_TIMEOUT_S = _float_env("TESLA_WC_TIMEOUT_S", 5.0)
 TESLA_WC_MAX_KW = _float_env("TESLA_WC_MAX_KW", 11.0)
+# Domyślna moc *planowanego* ładowania EV (PV/dzień). 11 kW = limit ścianki, tania taryfa.
+EV_CHARGING_DEFAULT_POWER_KW = _float_env("EV_CHARGING_DEFAULT_POWER_KW", 3.0)
 
 EV_CHARGING_DECLARATION_PATH = Path(
     os.environ.get("EV_CHARGING_DECLARATION_PATH")
     or (STATE_DIR / "ev_charging_declaration.json")
+)
+
+# ntfy (self-host w compose). Pusty URL = tylko banner na dashboardzie.
+NTFY_URL = (os.environ.get("NTFY_URL") or "").strip().rstrip("/")
+NTFY_TOKEN = (os.environ.get("NTFY_TOKEN") or "").strip()
+ANOMALY_ALERTS_PATH = Path(
+    os.environ.get("ANOMALY_ALERTS_PATH") or (STATE_DIR / "anomaly_alerts.json")
 )
 
 

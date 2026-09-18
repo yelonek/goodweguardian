@@ -56,3 +56,17 @@ def test_index_uses_external_ui_file() -> None:
     assert "remaining_kwh: remaining" in js.text
     assert 'getElementById("evTargetKwh")' not in js.text
     assert 'getElementById("evRemainingKwh")' in js.text
+    assert 'data-page="charging">Ładowanie</a>' in body
+    assert 'id="page-charging"' in body
+    assert 'id="chargingBudgetCompare"' in body
+    assert "function loadCharging(" in js.text
+    assert "charging: loadCharging" in js.text
+    forecast = body.split('id="page-forecast"', 1)[1].split('id="page-charging"', 1)[0]
+    charging = body.split('id="page-charging"', 1)[1].split('id="page-pv-correction"', 1)[0]
+    overview = body.split('id="page-overview"', 1)[1].split('id="page-history"', 1)[0]
+    assert "evChargingPanel" not in forecast
+    assert "pvPyramidBlock" not in overview
+    assert 'id="evChargingPanel"' in charging
+    assert 'id="pvPyramidBlock"' in charging
+    assert 'class="forecast-day-chart-block wide"' in forecast
+    assert "viewBox=\"0 0 960 320\"" in forecast

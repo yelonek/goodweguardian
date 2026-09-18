@@ -20,6 +20,11 @@ _EXEC_SKIP_SOC_FULL: frozenset[ExecMode] = frozenset({"export_profit"})
 # Hold CHARGE −1% przy pełnej baterii / rezerwie nocnej (kontrakt, nie strojenie).
 SOC_HOLD_CHARGE_PCT = -1
 
+# Soak końca h może cofnąć z sieci tylko drobny „uwięziony” ogonek (regresja 0,29 kWh).
+# Większy dodatni bilans to sprzedany eksport (albo zły target=0 po fallbacku MILP) —
+# nie odkupujemy go CHARGE −74% (2026-08-28 07:41, 2026-08-29 19:41).
+END_HOUR_STRANDED_MAX_KWH = 0.5
+
 # Domyślna długość zwykłego eco-slotu [min] (nie strojenie UI).
 WATCHDOG_MAX_SLOT_MIN = 5
 
@@ -278,6 +283,12 @@ def _deficit_recovery_decision(
     )
 
 
+def _may_soak_clawback(remaining_kwh: float, target_kwh: float) -> bool:
+    """True = nadmiar względem celu jest drobnym ogonkiem, nie całogodzinnym zrzutem."""
+    excess = float(remaining_kwh) - float(target_kwh)
+    return 0.0 < excess <= END_HOUR_STRANDED_MAX_KWH
+
+
 def _soak_charge_decision(
     inp: BalanceInputs, cfg: WatchdogConfig, *, target_kwh: float, reason: str
 ) -> WatchdogDecision:
@@ -310,8 +321,11 @@ def _end_hour_soak_decision(
     if inp.time_to_end_s > float(cfg.end_hour_window_s):
         return None
     max_rem = float(cfg.end_hour_max_remaining_kwh)
-    if float(inp.remaining_kwh) <= max_rem:
+    remaining = float(inp.remaining_kwh)
+    if remaining <= max_rem:
         return None
+    if not _may_soak_clawback(remaining, max_rem):
+        return _neutral_decision("neutral_keep_exported_kwh")
     return _soak_charge_decision(
         inp, cfg, target_kwh=max_rem, reason="end_hour_battery_soak"
     )
@@ -323,8 +337,9 @@ def _flappy_end_hour_soak(
     """Soak końca h względem targetu Flappy — też gdy load > PV.
 
     Już wyeksportowane kWh nie spadają, gdy GoodWe karmi dom z baterii (sieć ≈ 0).
-    Jedyny sposób ściągnięcia bilansu to CHARGE (import na liczniku). Nie soakujemy
-    w import (``remaining ≤ 0``) ani przy pełnym SOC.
+    Jedyny sposób ściągnięcia bilansu to CHARGE (import na liczniku). Tylko drobny
+    ogonek (``END_HOUR_STRANDED_MAX_KWH``) — nie odkupujemy całogodzinnego zrzutu.
+    Nie soakujemy w import (``remaining ≤ 0``) ani przy pełnym SOC.
     """
     if inp.time_to_end_s > float(cfg.end_hour_window_s):
         return None
@@ -340,6 +355,8 @@ def _flappy_end_hour_soak(
     )
     if net <= soak_floor:
         return None
+    if not _may_soak_clawback(net, soak_floor):
+        return _neutral_decision("neutral_keep_exported_kwh")
     return _soak_charge_decision(
         inp, cfg, target_kwh=soak_floor, reason="end_hour_battery_soak"
     )
@@ -353,8 +370,11 @@ def _continuous_soak_decision(
         return None
     if float(inp.remaining_kwh) <= float(cfg.soak_trigger_kwh):
         return None
+    target = float(cfg.soak_target_kwh)
+    if not _may_soak_clawback(float(inp.remaining_kwh), target):
+        return None
     return _soak_charge_decision(
-        inp, cfg, target_kwh=float(cfg.soak_target_kwh), reason="continuous_battery_soak"
+        inp, cfg, target_kwh=target, reason="continuous_battery_soak"
     )
 
 
@@ -503,6 +523,7 @@ def decide_flappy_relative(
         target >= 0.0
         and float(inp.pv_w) > float(inp.consumption_w)
         and net > target + float(cfg.soak_trigger_kwh)
+        and _may_soak_clawback(net, target)
     ):
         return _soak_charge_decision(
             inp, cfg, target_kwh=target, reason="neutral_pv_soak"

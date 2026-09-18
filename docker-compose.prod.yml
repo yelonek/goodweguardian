@@ -28,3 +28,21 @@ services:
       - ./logs:/app/logs
       - ./state:/app/state
       - ./data:/app/data
+
+  ntfy:
+    image: binwiederhier/ntfy:v2.11.0
+    container_name: guardian-ntfy
+    restart: unless-stopped
+    command: ["serve"]
+    environment:
+      TZ: Europe/Warsaw
+      NTFY_BASE_URL: ${NTFY_BASE_URL:-http://127.0.0.1:2586}
+      NTFY_BEHIND_PROXY: "true"
+      NTFY_AUTH_FILE: /var/lib/ntfy/auth.db
+      NTFY_AUTH_DEFAULT_ACCESS: deny
+      NTFY_CACHE_FILE: /var/lib/ntfy/cache.db
+      NTFY_ATTACHMENT_CACHE_DIR: /var/lib/ntfy/attachments
+    volumes:
+      - ./data/ntfy:/var/lib/ntfy
+    ports:
+      - "127.0.0.1:2586:80"

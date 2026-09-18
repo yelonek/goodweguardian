@@ -83,17 +83,47 @@ def representative_scenario_index(scenarios: list[PlanningScenario]) -> int:
     return 0
 
 
-def build_planning_scenarios(hours_in: list[HourInputs]) -> list[PlanningScenario]:
-    """25 niezależnych światów: PV q ∈ QUANTILES × load q ∈ QUANTILES, wagi 1/25."""
+def collapse_nowcast_hour_indices(hours_in: list[HourInputs]) -> frozenset[int]:
+    """Bieżący slot (indeks 0) i każda niepełna godzina: nowcast p50, nie wachlarz."""
+    return frozenset(
+        i
+        for i, hin in enumerate(hours_in)
+        if i == 0 or float(hin.hour_fraction) < 1.0 - 1e-9
+    )
+
+
+collapse_pv_hour_indices = collapse_nowcast_hour_indices
+
+
+def build_planning_scenarios(
+    hours_in: list[HourInputs],
+    *,
+    collapse_pv_hours: frozenset[int] | None = None,
+    collapse_load_hours: frozenset[int] | None = None,
+) -> list[PlanningScenario]:
+    """25 niezależnych światów: PV q ∈ QUANTILES × load q ∈ QUANTILES, wagi 1/25.
+
+    ``collapse_*_hours`` — te indeksy biorą ``hin.pv_kwh`` / ``hin.load_kwh``
+    (nowcast) we wszystkich światach. Domyślnie pusto; optimizer podaje
+    ``collapse_nowcast_hour_indices``.
+    """
     if not hours_in:
         return []
+    collapsed_pv = collapse_pv_hours if collapse_pv_hours is not None else frozenset()
+    collapsed_ld = collapse_load_hours if collapse_load_hours is not None else frozenset()
     n = len(QUANTILES)
     weight = 1.0 / float(n * n)
     out: list[PlanningScenario] = []
     for q_pv in QUANTILES:
         for q_ld in QUANTILES:
-            pv = tuple(pv_at_quantile(hin, q_pv) for hin in hours_in)
-            load = tuple(load_at_quantile(hin, q_ld) for hin in hours_in)
+            pv = tuple(
+                float(hin.pv_kwh) if i in collapsed_pv else pv_at_quantile(hin, q_pv)
+                for i, hin in enumerate(hours_in)
+            )
+            load = tuple(
+                float(hin.load_kwh) if i in collapsed_ld else load_at_quantile(hin, q_ld)
+                for i, hin in enumerate(hours_in)
+            )
             out.append(
                 PlanningScenario(
                     name=scenario_name(q_pv, q_ld),

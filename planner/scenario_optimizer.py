@@ -35,6 +35,7 @@ from planner.optimizer import OptimizeResult, _big_m, _soc_pct, _solve_milp
 from planner.scenarios import (
     PlanningScenario,
     build_planning_scenarios,
+    collapse_nowcast_hour_indices,
     representative_scenario_index,
 )
 
@@ -528,7 +529,12 @@ def optimize_horizon_scenarios(
     if not hours_in:
         return OptimizeResult(hours=[], total_cashflow_pln=0.0, soc_trajectory_pct=[soc_start_pct])
 
-    scenarios = build_planning_scenarios(hours_in)
+    nowcast = collapse_nowcast_hour_indices(hours_in)
+    scenarios = build_planning_scenarios(
+        hours_in,
+        collapse_pv_hours=nowcast,
+        collapse_load_hours=nowcast,
+    )
     solved = _solve_shared_milp(
         hours_in,
         scenarios,

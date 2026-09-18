@@ -82,6 +82,7 @@ from tesla_wall_charger import (
     hour_start_twc_kwh_from_telemetry,
     twc_enabled,
 )
+from alert_store import process_cycle_alerts
 
 
 def _local_now() -> datetime:
@@ -474,6 +475,29 @@ async def run_one_cycle() -> None:
             logging.getLogger("guardian").warning(
                 "telemetry build/append failed", exc_info=True
             )
+
+    try:
+        process_cycle_alerts(
+            now=now,
+            grid_w=grid_w,
+            pv_w=pv_w,
+            consumption_w=consumption_w,
+            soc_pct=soc_pct,
+            battery_w=battery_w,
+            remaining_kwh=remaining_kwh,
+            time_to_end_s=time_to_end_s,
+            plan_target_net_kwh=plan_target_net_kwh,
+            exec_mode=exec_mode,
+            planner_execution_enabled=plan_exec_ok,
+            policy_missing=bool(plan_exec_ok and policy_active is None),
+            control_enabled=control_ok,
+            watchdog_reason=decision.reason,
+            E_twc_kwh=E_twc_kwh,
+        )
+    except Exception:
+        logging.getLogger("guardian").warning(
+            "anomaly alerts failed", exc_info=True
+        )
 
     if not control_ok:
         return

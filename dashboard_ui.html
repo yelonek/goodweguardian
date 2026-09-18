@@ -255,10 +255,13 @@
     /* Day forecast charts (Prognoza) */
     .forecast-day-charts {
       margin: 14px 0 18px;
-      max-width: 1100px;
-      display: flex;
-      flex-direction: column;
-      gap: 14px;
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 16px;
+    }
+    @media (min-width: 1100px) {
+      .forecast-day-charts { grid-template-columns: 1fr 1fr; }
+      .forecast-day-chart-block.wide { grid-column: 1 / -1; }
     }
     .forecast-day-chart-block h3 {
       margin: 0 0 4px;
@@ -279,10 +282,11 @@
     }
     .forecast-day-chart {
       width: 100%;
-      height: 200px;
+      height: 280px;
       display: block;
     }
-    .forecast-day-chart.tall { height: 240px; }
+    .forecast-day-chart.tall { height: 300px; }
+    .forecast-day-chart.xl { height: 360px; }
     .forecast-day-chart .axis-line { stroke: rgba(127,127,127,0.35); stroke-width: 1; }
     .forecast-day-chart .zero-line { stroke: rgba(127,127,127,0.65); stroke-width: 1.25; }
     .forecast-day-chart .grid-line { stroke: rgba(127,127,127,0.18); stroke-width: 1; }
@@ -414,7 +418,25 @@
     table.forecast.twc-on .twc-col { display: table-cell; }
     table.forecast .ev-plan-col { display: none; }
     table.forecast.ev-plan-on .ev-plan-col { display: table-cell; }
-    .ev-charging-panel { margin: 12px 0 16px; padding: 12px 14px; border: 1px solid rgba(127,127,127,0.35); border-radius: 8px; max-width: 960px; }
+    .charging-layout {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 16px;
+      align-items: start;
+    }
+    @media (min-width: 1000px) {
+      .charging-layout {
+        grid-template-columns: minmax(280px, 1fr) minmax(360px, 1.15fr);
+      }
+    }
+    .charging-budget-compare {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      gap: 10px;
+      margin: 0 0 14px;
+    }
+    .charging-budget-note { font-size: 12px; line-height: 1.4; margin: 0 0 14px; max-width: 960px; }
+    .ev-charging-panel { margin: 0; padding: 12px 14px; border: 1px solid rgba(127,127,127,0.35); border-radius: 8px; max-width: none; }
     .ev-charging-panel .grid-ev { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; align-items: end; margin-top: 8px; }
     .ev-charging-panel label { display: block; font-size: 11px; opacity: 0.85; margin-bottom: 2px; }
     .ev-charging-panel input { width: 100%; box-sizing: border-box; }
@@ -463,6 +485,7 @@
     .pv-correction-chart path.line-actual { fill: none; stroke: #0d8050; stroke-width: 2.5; }
     .pv-correction-chart path.line-plan { fill: none; stroke: rgba(200, 120, 40, 0.95); stroke-width: 2; }
     .pv-correction-chart line.now-v { stroke: rgba(255, 215, 0, 0.9); stroke-width: 1.5; stroke-dasharray: 4 3; }
+    .pv-correction-chart line.hour-v { stroke: rgba(127, 127, 127, 0.45); stroke-width: 1; stroke-dasharray: 2 4; }
     .pv-correction-bars { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; margin: 12px 0; }
     .pv-correction-bar-item { font-size: 11px; }
     .pv-correction-bar-item .bar-label { opacity: 0.8; margin-bottom: 4px; }
@@ -522,7 +545,7 @@
     @media (min-width: 900px) {
       .pv-correction-cols { grid-template-columns: 1.4fr 1fr; }
     }
-    .pv-pyramid-block { margin-top: 16px; max-width: 960px; }
+    .pv-pyramid-block { margin-top: 0; max-width: none; }
     .pv-pyramid-block h3 { margin: 0 0 6px; font-size: 1rem; }
     .pv-pyramid-compact {
       display: grid;
@@ -532,6 +555,9 @@
     }
     @media (min-width: 760px) {
       .pv-pyramid-compact { grid-template-columns: 1fr 1fr; }
+    }
+    @media (min-width: 1000px) and (max-width: 1399px) {
+      .charging-layout .pv-pyramid-compact { grid-template-columns: 1fr; }
     }
     .pv-pyramid-col {
       padding: 12px 14px;
@@ -698,6 +724,7 @@
       <a href="#overview" data-page="overview">Przegląd</a>
       <a href="#history" data-page="history">Historia</a>
       <a href="#forecast" data-page="forecast">Prognoza</a>
+      <a href="#charging" data-page="charging">Ładowanie</a>
       <a href="#pv-correction" data-page="pv-correction">Korekta PV</a>
       <a href="#load-correction" data-page="load-correction">Korekta load</a>
       <a href="#kpi" data-page="kpi">KPI</a>
@@ -740,49 +767,6 @@
         </p>
         <div id="planTimelineContent"></div>
       </div>
-      <div class="pv-pyramid-block card" id="pvPyramidBlock" style="display:none;">
-        <h3>Tania energia PV (RCE &lt;59 gr)</h3>
-        <p class="muted setting-lead" style="font-size:12px; margin:0 0 8px;">
-          Ile <strong>taniego PV</strong> zostało dziś i ile będzie jutro (p10 / p50 / p90).
-          <strong>Po load</strong> — nadwyżka po domu: p10 = PV p10 − load p75 (bezpieczny budżet na ładowanie),
-          p50 = oczekiwana, p90 = optymistyczna.
-        </p>
-        <div class="pv-pyramid-compact">
-          <div class="pv-pyramid-col" id="pvPyramidTodayCol">
-            <h4>Dziś — zostało</h4>
-            <div class="pv-pyramid-nums" id="pvPyramidTodayNums"></div>
-            <table class="pv-pyramid">
-              <thead>
-                <tr>
-                  <th>Próg</th>
-                  <th class="grp-pv">kWh</th>
-                  <th class="grp-pv pv-bar-wrap">udział</th>
-                </tr>
-              </thead>
-              <tbody id="pvPyramidRowsToday"></tbody>
-            </table>
-          </div>
-          <div class="pv-pyramid-col" id="pvPyramidTomorrowCol">
-            <h4>Jutro</h4>
-            <div class="pv-pyramid-nums" id="pvPyramidTomorrowNums"></div>
-            <table class="pv-pyramid">
-              <thead>
-                <tr>
-                  <th>Próg</th>
-                  <th class="grp-pv">kWh</th>
-                  <th class="grp-pv pv-bar-wrap">udział</th>
-                </tr>
-              </thead>
-              <tbody id="pvPyramidRowsTomorrow"></tbody>
-            </table>
-          </div>
-        </div>
-        <div class="muted" id="pvPyramidMeta" style="font-size:11px; margin-top:10px;"></div>
-        <div class="muted" id="pvPyramidWarnings" style="font-size:11px; margin-top:4px;"></div>
-        <p class="muted" style="font-size:11px; margin:8px 0 0;">
-          Próg 59 gr ≈ taryfa dzienna G12. Zielone paski — warstwy RCE; ≥59 gr — droższy eksport.
-        </p>
-      </div>
     </section>
 
     <section id="page-history" class="page">
@@ -817,44 +801,13 @@
       <div class="muted" id="forecastCompareNote" style="font-size:11px; max-width:960px; margin-top:6px; line-height:1.35;"></div>
       <div class="muted" id="loadNowcast" style="margin-top:4px;"></div>
       <div class="muted" id="forecastTwcNote" style="font-size:11px; margin-top:4px; display:none;"></div>
-      <div class="ev-charging-panel" id="evChargingPanel">
-        <h3 style="margin:0 0 4px; font-size:15px;">Planowane ładowanie EV</h3>
-        <div id="evChargingHero" class="grid4" style="margin-top:8px;"></div>
-        <div class="grid-ev">
-          <div>
-            <label for="evDeliveredKwh">Już załadowane [kWh]</label>
-            <input type="number" id="evDeliveredKwh" min="0" step="0.1" value="0" readonly tabindex="-1" />
-          </div>
-          <div>
-            <label for="evRemainingKwh">Jeszcze do załadowania [kWh]</label>
-            <input type="number" id="evRemainingKwh" min="0" step="0.5" placeholder="np. 10" />
-          </div>
-          <div>
-            <label for="evPreferredHour">Start (godz., opcj.)</label>
-            <input type="number" id="evPreferredHour" min="0" max="23" step="1" placeholder="np. 10" />
-          </div>
-          <div>
-            <label for="evMaxPowerKw">Moc ładowarki [kW]</label>
-            <input type="number" id="evMaxPowerKw" min="1" max="22" step="0.5" value="3" />
-            <div class="field-hint">3 kW na co dzień; 11 kW tylko w taniej taryfie</div>
-          </div>
-          <div style="display:flex; gap:6px; flex-wrap:wrap;">
-            <button type="button" id="evChargingSave">Zapisz plan</button>
-            <button type="button" id="evChargingClear">Wyczyść</button>
-          </div>
-        </div>
-        <div class="muted" id="evChargingTotalHint" style="font-size:11px; margin-top:6px;"></div>
-        <div class="muted" id="evChargingSlots" style="font-size:11px; margin-top:8px;"></div>
-        <div class="ev-charging-warnings" id="evChargingWarnings"></div>
-        <div class="muted" id="evChargingStatus" style="font-size:11px; margin-top:4px;"></div>
-      </div>
 
       <div class="forecast-day-charts" id="forecastDayCharts">
         <div class="forecast-day-chart-block">
           <h3>PV — dzień (<span id="forecastDayChartsDate">—</span>)</h3>
           <p class="chart-lead">Pasmo p10–p90 vs p50 / plan; biała/kontrastowa linia = actual w zakończonych godzinach.</p>
           <div class="forecast-day-chart-wrap">
-            <svg class="forecast-day-chart" id="forecastPvDayChart" viewBox="0 0 720 200" preserveAspectRatio="xMidYMid meet"></svg>
+            <svg class="forecast-day-chart tall" id="forecastPvDayChart" viewBox="0 0 720 260" preserveAspectRatio="xMidYMid meet"></svg>
           </div>
           <div class="forecast-day-legend">
             <span><i class="pv-band"></i>p10–p90</span>
@@ -867,7 +820,7 @@
           <h3>Load+EV względem PV</h3>
           <p class="chart-lead">Stos od −PV: EV → load p25 → (p50−p25) → (p75−p50). Powyżej zera = konsumpcja przekracza PV.</p>
           <div class="forecast-day-chart-wrap">
-            <svg class="forecast-day-chart tall" id="forecastLoadResidualChart" viewBox="0 0 720 240" preserveAspectRatio="xMidYMid meet"></svg>
+            <svg class="forecast-day-chart tall" id="forecastLoadResidualChart" viewBox="0 0 720 280" preserveAspectRatio="xMidYMid meet"></svg>
           </div>
           <div class="forecast-day-legend">
             <span><i class="ev"></i>EV</span>
@@ -877,11 +830,11 @@
             <span><i class="now"></i>teraz</span>
           </div>
         </div>
-        <div class="forecast-day-chart-block">
+        <div class="forecast-day-chart-block wide">
           <h3>Bilans + SOC</h3>
           <p class="chart-lead">PV i import w górę; load, EV i eksport w dół; linia SOC na prawej osi (%).</p>
           <div class="forecast-day-chart-wrap">
-            <svg class="forecast-day-chart tall" id="forecastBalanceSocChart" viewBox="0 0 720 240" preserveAspectRatio="xMidYMid meet"></svg>
+            <svg class="forecast-day-chart xl" id="forecastBalanceSocChart" viewBox="0 0 960 320" preserveAspectRatio="xMidYMid meet"></svg>
           </div>
           <div class="forecast-day-legend">
             <span><i class="pv"></i>PV</span>
@@ -934,6 +887,94 @@
       </table>
     </section>
 
+    <section id="page-charging" class="page">
+      <div class="page-hdr">
+        <h2>Ładowanie samochodu</h2>
+        <span class="muted" id="chargingStatus"></span>
+      </div>
+      <p class="muted setting-lead">
+        Tania nadwyżka PV (po domu) i deklaracja EV w jednym miejscu.
+        Planer widzi <code>load_plan = load_base + EV</code>.
+      </p>
+      <div class="charging-budget-compare" id="chargingBudgetCompare"></div>
+      <p class="muted charging-budget-note" id="chargingBudgetNote"></p>
+      <div class="charging-layout">
+        <div class="ev-charging-panel" id="evChargingPanel">
+          <h3 style="margin:0 0 4px; font-size:15px;">Ile chcesz załadować</h3>
+          <div class="grid-ev">
+            <div>
+              <label for="evDeliveredKwh">Już załadowane [kWh]</label>
+              <input type="number" id="evDeliveredKwh" min="0" step="0.1" value="0" readonly tabindex="-1" />
+            </div>
+            <div>
+              <label for="evRemainingKwh">Jeszcze do załadowania [kWh]</label>
+              <input type="number" id="evRemainingKwh" min="0" step="0.5" placeholder="np. 10" />
+            </div>
+            <div>
+              <label for="evPreferredHour">Start (godz., opcj.)</label>
+              <input type="number" id="evPreferredHour" min="0" max="23" step="1" placeholder="np. 10" />
+            </div>
+            <div>
+              <label for="evMaxPowerKw">Moc ładowarki [kW]</label>
+              <input type="number" id="evMaxPowerKw" min="1" max="22" step="0.5" value="3" />
+              <div class="field-hint">3 kW na co dzień; 11 kW tylko w taniej taryfie</div>
+            </div>
+            <div style="display:flex; gap:6px; flex-wrap:wrap;">
+              <button type="button" id="evChargingSave">Zapisz plan</button>
+              <button type="button" id="evChargingClear">Wyczyść</button>
+            </div>
+          </div>
+          <div class="muted" id="evChargingTotalHint" style="font-size:11px; margin-top:6px;"></div>
+          <div class="muted" id="evChargingSlots" style="font-size:11px; margin-top:8px;"></div>
+          <div class="ev-charging-warnings" id="evChargingWarnings"></div>
+          <div class="muted" id="evChargingStatus" style="font-size:11px; margin-top:4px;"></div>
+        </div>
+        <div class="pv-pyramid-block card" id="pvPyramidBlock" style="display:none;">
+          <h3>Tania energia PV (RCE &lt;59 gr)</h3>
+          <p class="muted setting-lead" style="font-size:12px; margin:0 0 8px;">
+            Ile <strong>taniego PV</strong> zostało dziś i ile będzie jutro (p10 / p50 / p90).
+            <strong>Po load</strong> — nadwyżka po domu: p10 = PV p10 − load p75 (bezpieczny budżet na ładowanie),
+            p50 = oczekiwana, p90 = optymistyczna.
+          </p>
+          <div class="pv-pyramid-compact">
+            <div class="pv-pyramid-col" id="pvPyramidTodayCol">
+              <h4>Dziś — zostało</h4>
+              <div class="pv-pyramid-nums" id="pvPyramidTodayNums"></div>
+              <table class="pv-pyramid">
+                <thead>
+                  <tr>
+                    <th>Próg</th>
+                    <th class="grp-pv">kWh</th>
+                    <th class="grp-pv pv-bar-wrap">udział</th>
+                  </tr>
+                </thead>
+                <tbody id="pvPyramidRowsToday"></tbody>
+              </table>
+            </div>
+            <div class="pv-pyramid-col" id="pvPyramidTomorrowCol">
+              <h4>Jutro</h4>
+              <div class="pv-pyramid-nums" id="pvPyramidTomorrowNums"></div>
+              <table class="pv-pyramid">
+                <thead>
+                  <tr>
+                    <th>Próg</th>
+                    <th class="grp-pv">kWh</th>
+                    <th class="grp-pv pv-bar-wrap">udział</th>
+                  </tr>
+                </thead>
+                <tbody id="pvPyramidRowsTomorrow"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="muted" id="pvPyramidMeta" style="font-size:11px; margin-top:10px;"></div>
+          <div class="muted" id="pvPyramidWarnings" style="font-size:11px; margin-top:4px;"></div>
+          <p class="muted" style="font-size:11px; margin:8px 0 0;">
+            Próg 59 gr ≈ taryfa dzienna G12. Zielone paski — warstwy RCE; ≥59 gr — droższy eksport.
+          </p>
+        </div>
+      </div>
+    </section>
+
     <section id="page-pv-correction" class="page">
       <div class="page-hdr">
         <h2>Korekta PV (k_intra)</h2>
@@ -943,12 +984,13 @@
         Telemetria bieżącej godziny vs prognoza Solcast p50. Planer używa skorygowanej wartości
         (<strong>k_intra</strong> + opcjonalnie <strong>rate blend</strong> + <strong>dynamiczny clip</strong>)
         oraz <strong>zwężonych pasm p10/p90 reszty slotu</strong> (scenario MILP).
+        Wykres: ta godzina + następna; k na h+1 tylko przez horyzont 60 min od teraz (mix).
       </p>
       <div class="pv-correction-block card" id="pvCorrectionBlock">
         <div class="pv-correction-metrics" id="pvCorrectionMetrics"></div>
         <div class="pv-correction-cols">
           <div>
-            <h3 style="margin:0 0 8px; font-size:1rem;">Kumulacja w bieżącej godzinie</h3>
+            <h3 style="margin:0 0 8px; font-size:1rem;">Kumulacja: ta godzina + następna</h3>
             <div class="pv-correction-chart-wrap">
               <svg class="pv-correction-chart" id="pvCorrectionChart" viewBox="0 0 600 220" preserveAspectRatio="none"></svg>
               <div class="pv-correction-legend">
@@ -1035,12 +1077,13 @@
         (<strong>k_intra</strong> + opcjonalnie <strong>rate blend</strong>)
         oraz <strong>zwężonych pasm p25/p75 reszty slotu</strong> (scenario MILP) — żeby mid-hour
         nie zerował <code>load_rem</code>, gdy dom nadal ciągnie.
+        Wykres: ta godzina + następna; k na h+1 tylko przez horyzont 60 min od teraz (mix, bez EV).
       </p>
       <div class="pv-correction-block card" id="loadCorrectionBlock">
         <div class="pv-correction-metrics" id="loadCorrectionMetrics"></div>
         <div class="pv-correction-cols">
           <div>
-            <h3 style="margin:0 0 8px; font-size:1rem;">Kumulacja w bieżącej godzinie</h3>
+            <h3 style="margin:0 0 8px; font-size:1rem;">Kumulacja: ta godzina + następna</h3>
             <div class="pv-correction-chart-wrap">
               <svg class="pv-correction-chart" id="loadCorrectionChart" viewBox="0 0 600 220" preserveAspectRatio="none"></svg>
               <div class="pv-correction-legend">

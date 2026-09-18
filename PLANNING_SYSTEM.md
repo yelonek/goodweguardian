@@ -114,7 +114,7 @@ Brak osobnego `anchor_net_kwh` — **Ockham:** jedno pole, różna interpretacja
 | `export_pv_surplus`, `import_grid` | Prognoza końca h + audyt; egzekucja **nie** chase po tym polu |
 | `export_profit`, `charge_grid` | Audyt; granice = SOC (`soc_floor_pct` / `target_soc_pct`) |
 
-**Mid-hour:** energie PV/load w MILP to **pełna godzina** (so_far + zwężona reszta); `hour_fraction` ogranicza tylko moc baterii. `net_so_far` (`N₀`) wchodzi do bilansu tak, że `imp`/`exp` oznaczają rozliczenie **końca godziny** (sieć ≈ η=1 w godzinie). `target_net_kwh` = net końca h; intencja trybu z `net_end − N₀`. MILP może „cofnąć” bilans na reszcie, jeśli ekonomia to uzasadnia.
+**Mid-hour:** energie PV/load w MILP to **pełna godzina** (so_far + zwężona reszta); `hour_fraction` ogranicza tylko moc baterii (`ch`/`dis`). `net_so_far` (`N₀`) wchodzi do bilansu tak, że `imp`/`exp` oznaczają rozliczenie **końca godziny**. Zielony cap: `exp ≤ N₀⁺ + PV_reszta + dis_g` — już sprzedane kWh **nie** zjadają budżetu mocy reszty h (regresja 2026-08-29 20:30). `target_net_kwh` = net końca h; intencja trybu z `net_end − N₀`.
 
 „Pilnować” w `neutral` ≠ gonić co minutę — reguły Flappy (§13.5).
 
@@ -136,7 +136,7 @@ Brak osobnego `anchor_net_kwh` — **Ockham:** jedno pole, różna interpretacja
 
 Utrzymuj **`target_net_kwh`** z planu (aktualizacja przy wejściu planu), nie domyślne zero. O `:40` przy `target = +2` → **nie** ładuj na siłę do zera.
 
-1. **Load &gt; PV, bilans ≥ target** → **nic** (pozwól bilansowi spaść), **chyba że** okno końca h, bilans **&gt; 0** (eksport już na liczniku) i SOC ma miejsce → CHARGE soak. Self-consumption z baterii **nie** zjada wyeksportowanych kWh — bez CHARGE zostają na stole.
+1. **Load &gt; PV, bilans ≥ target** → **nic** (pozwól bilansowi spaść), **chyba że** okno końca h i **drobny** ogonek eksportu (≤ 0,5 kWh) przy wolnym SOC → CHARGE soak. Self-consumption z baterii **nie** zjada wyeksportowanych kWh. **Nie** odkupuj całogodzinnego zrzutu (`actual ≫ target`) importem z sieci — to sprzedana energia, nie uwięziony ogonek.
 2. **Bilans &lt; target** → najpierw **PV** (1% discharge gdy PV ≥ load).
 3. **Bilans &lt; 0, PV nie nadrobi** → korekta deficytu baterią, limit **`min(P_bat, P_inverter − PV_w)`**; **nie** gdy plan `battery_delta &gt; 0` (godzina ładowania — nie zrzucaj magazynu za stale PV).
 4. **Bilans &gt; target, PV &gt; load** → ładuj z PV (soak).

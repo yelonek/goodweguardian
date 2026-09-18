@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 from pydantic import BaseModel, Field, field_validator
 
 from energy_pricing import pricing_day_breakdown
-from guardian_config import TELEMETRY_TZ, TESLA_WC_MAX_KW
+from guardian_config import EV_CHARGING_DEFAULT_POWER_KW, TELEMETRY_TZ
 from load_forecast import forecast_load_hours
 from pv_forecast import fetch_hourly_pv_forecast
 from pv_pyramid import CHEAP_THRESHOLD_PLN, export_kwh_for_slot
@@ -35,7 +35,7 @@ class EvChargingDeclaration(BaseModel):
     date: str
     target_kwh: float = Field(ge=0)
     preferred_start_hour: int | None = Field(default=None, ge=0, le=23)
-    max_power_kw: float = Field(default=TESLA_WC_MAX_KW, gt=0)
+    max_power_kw: float = Field(default=EV_CHARGING_DEFAULT_POWER_KW, gt=0)
     manual_slots: dict[int, float] | None = None
     updated_at: str | None = None
 
@@ -107,6 +107,32 @@ def _delivered_ev_state(
     current_h_delivered = float(by_hour.get(now.hour, 0.0))
     total = sum(s.kwh for s in past_slots) + current_h_delivered
     return total, past_slots, current_h_delivered
+
+
+def current_delivered_ev_kwh(
+    local_date: date | None = None,
+    *,
+    now: datetime | None = None,
+) -> float:
+    """Łącznie kWh EV z TWC dziś (zakończone godziny + bieżąca)."""
+    now_local = (now or _local_now()).replace(tzinfo=None)
+    d = local_date or now_local.date()
+    total, _, _ = _delivered_ev_state(d, now=now_local)
+    return total
+
+
+def resolve_ev_put_target_kwh(
+    *,
+    remaining_kwh: float | None,
+    target_kwh: float | None,
+    delivered_kwh: float,
+) -> float:
+    """Cel dnia z PUT: remaining (UI) ma pierwszeństwo nad target_kwh (API)."""
+    if remaining_kwh is not None:
+        return max(0.0, float(delivered_kwh) + float(remaining_kwh))
+    if target_kwh is not None:
+        return max(0.0, float(target_kwh))
+    raise ValueError("Podaj remaining_kwh albo target_kwh")
 
 
 def _hour_power_cap(
@@ -385,13 +411,6 @@ def allocate_ev_schedule(
 
     budget = compute_cheap_budget(slot_rows, now=now_local)
     warnings: list[str] = []
-    if delivered > 1e-3 and remaining_kwh < declaration.target_kwh - 1e-6:
-        past_h = ", ".join(f"{s.hour:02d}" for s in past_slots[:4])
-        suffix = f" (godz. {past_h})" if past_h else ""
-        warnings.append(
-            f"Już naładowano {delivered:.2f} kWh{suffix} — "
-            f"pozostało {remaining_kwh:.2f} kWh do zaplanowania."
-        )
 
     recommended = _greedy_allocate(
         slot_rows,
@@ -475,23 +494,28 @@ def build_ev_recommendation(
     now_local = (now or _local_now()).replace(tzinfo=None)
     d = local_date or now_local.date()
     d_iso = d.isoformat()
-    power = max_power_kw if max_power_kw is not None else TESLA_WC_MAX_KW
+    power = max_power_kw if max_power_kw is not None else EV_CHARGING_DEFAULT_POWER_KW
     slot_list = slots_for_local_date(d, now=now_local)
     rows = build_horizon_slot_rows(slot_list)
     budget = compute_cheap_budget(rows, now=now_local)
     tgt = target_kwh if target_kwh is not None else budget.recommendable_kwh
     decl = EvChargingDeclaration(date=d_iso, target_kwh=max(0.0, tgt), max_power_kw=power)
+    delivered, past_slots, current_h_delivered = _delivered_ev_state(d, now=now_local)
     recommended = _greedy_allocate(
         rows,
         remaining_kwh=decl.target_kwh,
         max_power_kw=power,
         local_date=d_iso,
         now=now_local,
+        current_hour_delivered=current_h_delivered,
     )
     return EvChargingPlan(
         date=d_iso,
         declaration=None,
         slots=[],
+        past_slots=past_slots,
+        delivered_kwh=round(delivered, 4),
+        remaining_kwh=0.0,
         cheap_budget=budget,
         warnings=[],
         recommended_slots=recommended,
