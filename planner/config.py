@@ -13,6 +13,8 @@ PLANNER_REVIEWS_DIR = PLANNER_DIR / "reviews"
 PLANNER_AUDITS_DIR = PLANNER_DIR / "audits"
 PLANNER_PV_FEATURES_DIR = PLANNER_DIR / "pv_features"
 PLANNER_LATEST_PLAN_PATH = PLANNER_PLANS_DIR / "plan_latest.json"
+PLANNER_SHADOW_PLAN_PATH = PLANNER_PLANS_DIR / "plan_shadow_latest.json"
+PLANNER_SHADOW_COMPARISON_PATH = PLANNER_PLANS_DIR / "comparison_latest.json"
 PLANNER_OUTPUT_PATH = STATE_DIR / "planner_output.json"
 
 # Wartości strojenia z jednolitego systemu ustawień (settings.json via get_settings()).
@@ -32,10 +34,16 @@ PLANNER_LOAD_LOOKBACK_DAYS = _s.planner_load_lookback_days
 
 # Wieloscenariuszowy MILP (siatka 5×5); ``off`` = deterministyczny p50.
 _SCENARIO_OPTIMIZER_RAW = "1" if _s.planner_scenario_optimizer else "off"
+_OPTIMIZER_MODE_RAW = _s.planner_optimizer_mode
 
 
 def planner_scenario_optimizer_enabled() -> bool:
     return _SCENARIO_OPTIMIZER_RAW not in ("0", "off", "false", "no", "deterministic")
+
+
+def planner_optimizer_mode() -> str:
+    mode = str(_OPTIMIZER_MODE_RAW).strip().lower()
+    return mode if mode in {"legacy", "shadow", "stochastic_mpc"} else "shadow"
 
 # Maks. moc ładowania/rozładowania magazynu w godzinie [kWh]
 def max_battery_kwh_per_hour() -> float:

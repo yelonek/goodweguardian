@@ -21,6 +21,7 @@ from planner.night_grid_policy import (
 )
 from planner.optimizer import optimize_horizon
 from planner.policy_output import build_policy_artifact, map_hour_to_exec_mode
+from planner.scenario_optimizer import optimize_horizon_scenarios
 
 BP = BatteryParams(
     capacity_kwh=10.77,
@@ -238,10 +239,10 @@ def test_milp_leftover_green_may_export_after_night_window(
     assert res.hours[2].target_net_kwh > 1.0
 
 
-def test_milp_night_grid_fill_does_not_feed_morning_dump(
+def test_milp_night_grid_fill_may_feed_morning_dump_after_latch_window(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """SOC ~11%, tani 4–5, drogi RCE 6–7 — nie napełniaj magazynu z sieci pod poranny zrzut."""
+    """Nocny zakup może zasilić eksport od 6:00; zapadka blokuje tylko nocne jojo."""
     import planner.optimizer as opt_mod
 
     monkeypatch.setattr(opt_mod, "planner_scenario_optimizer_enabled", lambda: False)
@@ -255,12 +256,26 @@ def test_milp_night_grid_fill_does_not_feed_morning_dump(
     morning_export = max(0.0, res.hours[2].target_net_kwh) + max(
         0.0, res.hours[3].target_net_kwh
     )
-    assert morning_export < 2.0
     night_charge = max(0.0, res.hours[0].battery_delta_kwh) + max(
         0.0, res.hours[1].battery_delta_kwh
     )
-    assert night_charge < 4.0
-    assert max(h.soc_end_pct for h in res.hours[:2]) < 80.0
+    assert night_charge > 4.0
+    assert morning_export > 4.0
+
+
+def test_stochastic_mpc_night_charge_may_export_from_six() -> None:
+    hours = [
+        _hin(4, imp=0.59, exp=0.10),
+        _hin(5, imp=0.59, exp=0.10),
+        _hin(6, imp=1.11, exp=1.70),
+        _hin(7, imp=1.11, exp=1.80),
+    ]
+    res = optimize_horizon_scenarios(hours, soc_start_pct=11.0, params=BP)
+
+    night_charge = sum(float(h.planned_charge_kwh or 0.0) for h in res.hours[:2])
+    morning_export = sum(max(0.0, h.target_net_kwh) for h in res.hours[2:])
+    assert night_charge > 4.0
+    assert morning_export > 4.0
 
 
 def test_shared_milp_also_blocks_night_flipflop(monkeypatch: pytest.MonkeyPatch) -> None:

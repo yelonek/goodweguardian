@@ -16,21 +16,19 @@ from planner.battery import (
     max_power_for_hour,
     soc_kwh,
 )
-from planner.config import PLANNER_BATTERY_CYCLE_COST_PLN, planner_scenario_optimizer_enabled
+from planner.config import (
+    PLANNER_BATTERY_CYCLE_COST_PLN,
+    planner_optimizer_mode,
+    planner_scenario_optimizer_enabled,
+)
 from planner.hour_remainder import (
     balance_rhs_kwh,
-    meter_export_so_far_kwh,
-    pv_remainder_kwh,
     remaining_battery_delta_kwh,
 )
 from planner.models import HourInputs, HourPlan, ScenariosDetail
 from planner.night_grid_policy import (
-    add_green_stock_constraints,
     add_night_latch_constraints,
-    green_stock_n_vars,
-    green_var_indexers,
     night_latch_layout,
-    resolve_green0_kwh,
 )
 
 log = logging.getLogger("planner")
@@ -101,8 +99,7 @@ def _solve_milp(
     z_idx = layout["z_idx"]
     _windows, night_pos = night_latch_layout(hours_in)
     n_night = len(night_pos)
-    n_green = green_stock_n_vars(n_h)
-    n_vars = n_vars_core + 2 * n_night + n_green
+    n_vars = n_vars_core + 2 * n_night
     big_m = _big_m(hours_in, params)
 
     def y_ch_idx(h: int) -> int:
@@ -110,10 +107,6 @@ def _solve_milp(
 
     def latch_idx(h: int) -> int:
         return n_vars_core + n_night + night_pos[h]
-
-    green_index, ch_pv_index, dis_g_index = green_var_indexers(
-        n_vars_core + 2 * n_night, n_h
-    )
 
     c = np.zeros(n_vars)
     for h, hin in enumerate(hours_in):
@@ -127,7 +120,6 @@ def _solve_milp(
     soc0_kwh = soc_kwh(soc_start_pct, params)
     soc_floor = effective_soc_floor_kwh(soc_start_pct, params)
     soc_max = soc_kwh(params.soc_max_pct, params)
-    green0 = resolve_green0_kwh(green_stock_kwh, soc0_kwh)
     eta1 = params.eta_one_way
 
     lb = np.zeros(n_vars)
@@ -163,30 +155,6 @@ def _solve_milp(
 
     ineq_rows: list[np.ndarray] = []
     ineq_rhs: list[float] = []
-    add_green_stock_constraints(
-        eq_rows,
-        eq_rhs,
-        ineq_rows,
-        ineq_rhs,
-        n_vars=n_vars,
-        n_hours=n_h,
-        eta1=eta1,
-        green0_kwh=green0,
-        soc_max_kwh=soc_max,
-        soc_index=lambda h: h,
-        ch_index=lambda h: hour_idx(h, layout["ch"]),
-        dis_index=lambda h: hour_idx(h, layout["dis"]),
-        exp_index=lambda h: hour_idx(h, layout["exp"]),
-        green_index=green_index,
-        ch_pv_index=ch_pv_index,
-        dis_g_index=dis_g_index,
-        pv_kwh_of=lambda h: pv_remainder_kwh(hours_in[h]),
-        pmax_of=lambda h: max_power_for_hour(hours_in[h], params),
-        lb=lb,
-        ub=ub,
-        export_already_kwh_of=lambda h: meter_export_so_far_kwh(hours_in[h]),
-    )
-
     a_eq = np.vstack(eq_rows)
     eq_constraint = LinearConstraint(a_eq, eq_rhs, eq_rhs)
 
@@ -283,9 +251,17 @@ def optimize_horizon(
         return OptimizeResult(hours=[], total_cashflow_pln=0.0, soc_trajectory_pct=[soc_start_pct])
 
     if planner_scenario_optimizer_enabled():
-        from planner.scenario_optimizer import optimize_horizon_scenarios
+        from planner.scenario_optimizer import (
+            optimize_horizon_scenarios,
+            optimize_horizon_scenarios_legacy,
+        )
 
-        return optimize_horizon_scenarios(
+        optimize = (
+            optimize_horizon_scenarios
+            if planner_optimizer_mode() == "stochastic_mpc"
+            else optimize_horizon_scenarios_legacy
+        )
+        return optimize(
             hours_in,
             soc_start_pct=soc_start_pct,
             params=bp,
@@ -337,6 +313,8 @@ def optimize_horizon(
                 soc_start_pct=soc_start,
                 soc_end_pct=soc_end,
                 battery_delta_kwh=bd,
+                planned_charge_kwh=ch,
+                planned_discharge_kwh=dis,
             )
         )
         traj.append(soc_end)
@@ -381,6 +359,8 @@ def _fallback_neutral(
                 soc_start_pct=soc,
                 soc_end_pct=soc_new,
                 battery_delta_kwh=bd,
+                planned_charge_kwh=max(0.0, bd),
+                planned_discharge_kwh=max(0.0, -bd),
             )
         )
         soc = soc_new

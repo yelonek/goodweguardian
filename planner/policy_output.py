@@ -46,6 +46,7 @@ EXEC_MODE_LABELS_PL: dict[ExecMode, str] = {
     "export_pv_surplus": "eksport PV",
     "neutral": "neutralny",
     "import_grid": "import z sieci",
+    "charge_pv": "ładuj z PV",
     "charge_grid": "ładowanie z sieci",
 }
 
@@ -63,6 +64,7 @@ _EXEC_TO_LEGACY_POLICY: dict[ExecMode, PlannerPolicyName] = {
     "export_pv_surplus": "hold_export",
     "neutral": "hold_neutral",
     "import_grid": "hold_import",
+    "charge_pv": "charge",
     "charge_grid": "charge",
 }
 
@@ -102,6 +104,12 @@ def _pv_surplus_rem_kwh(hin: HourInputs | None) -> float:
     pv_rem = float(hin.pv_kwh) - pv_so
     load_rem = float(hin.load_kwh) - load_so
     return pv_rem - load_rem
+
+
+def _pv_rem_kwh(hin: HourInputs | None) -> float:
+    if hin is None:
+        return 0.0
+    return max(0.0, float(hin.pv_kwh) - float(hin.pv_so_far_kwh or 0.0))
 
 
 def _soc_gap_ac_kwh(gap_pct: float) -> float:
@@ -158,8 +166,9 @@ def map_hour_to_exec_mode(
 ) -> HourPolicyRow:
     """Mapowanie wizji SOC (``soc_end_pct``) na jeden ``exec_mode`` + parametry.
 
-    Intencja wynika z ``gap = soc* − soc0``. ``import_grid`` / ``charge_grid`` tylko
-    gdy plan chce import (``net* < 0`` i pozostały net < 0) — nigdy przy net≈0 / eksporcie.
+    Intencja wynika z ``gap = soc* − soc0``. ``charge_grid`` tylko przy zgodzie na sieć
+    (``allow_grid_charge`` / budżet). Soak PV bez importu → ``charge_pv``, nie Flappy.
+    ``import_grid`` gdy plan chce import domu, bez ładowania magazynu z sieci.
     ``night_export_blocked``: zapadka nocna — nie emituj ``export_profit`` / ``export_pv_surplus``.
     """
     soc0 = float(hp.soc_start_pct)
@@ -180,6 +189,61 @@ def map_hour_to_exec_mode(
     soc_floor_pct: float | None = None
     target_soc_pct: float | None = None
     allow_grid = False
+
+    explicit_flows = (
+        hp.planned_charge_kwh is not None or hp.planned_discharge_kwh is not None
+    )
+    if explicit_flows:
+        charge = max(0.0, float(hp.planned_charge_kwh or 0.0))
+        discharge = max(0.0, float(hp.planned_discharge_kwh or 0.0))
+        rem_net = _remaining_net_intent_kwh(hp, hin)
+        grid_budget = max(0.0, charge - _pv_rem_kwh(hin))
+        allow_grid = grid_budget > NET_NEUTRAL_EPS_KWH
+        max_export = max(0.0, rem_net)
+
+        if charge > BATTERY_DELTA_EPS_KWH:
+            exec_mode = "charge_grid" if allow_grid else "charge_pv"
+            charge_pct = _pct_from_battery_delta(charge, hin)
+            target_soc_pct = soc_star
+        elif discharge > BATTERY_DELTA_EPS_KWH and net > NET_NEUTRAL_EPS_KWH:
+            exec_mode = "export_profit"
+            discharge_pct = _pct_from_battery_delta(discharge, hin)
+            soc_floor_pct = max(float(PLANNER_SOC_MIN_PCT), soc_star)
+        elif rem_net > NET_NEUTRAL_EPS_KWH and surplus > NET_NEUTRAL_EPS_KWH:
+            exec_mode = "export_pv_surplus"
+        elif rem_net < -NET_NEUTRAL_EPS_KWH:
+            exec_mode = "import_grid"
+        else:
+            exec_mode = "neutral"
+
+        if night_export_blocked and exec_mode in ("export_profit", "export_pv_surplus"):
+            exec_mode = "import_grid" if rem_net < -NET_NEUTRAL_EPS_KWH else "neutral"
+            discharge_pct = None
+            soc_floor_pct = None
+
+        return HourPolicyRow(
+            date=hp.date,
+            hour=hp.hour,
+            exec_mode=exec_mode,
+            policy=_EXEC_TO_LEGACY_POLICY.get(exec_mode),
+            params=HourPolicyParams(
+                target_net_kwh=net,
+                target_net_remainder_kwh=rem_net,
+                battery_delta_kwh=bd,
+                planned_charge_kwh=charge,
+                planned_discharge_kwh=discharge,
+                soc_end_pct=soc_star,
+                pv_plan_kwh=pv,
+                load_plan_kwh=load,
+                allow_grid_charge=allow_grid,
+                grid_charge_budget_kwh=grid_budget,
+                max_additional_export_kwh=max_export,
+                discharge_pct=discharge_pct,
+                charge_pct=charge_pct,
+                soc_floor_pct=soc_floor_pct,
+                target_soc_pct=target_soc_pct,
+            ),
+        )
 
     # import_grid ma sens tylko gdy bateria nie spada (CHARGE 1% ładowałoby baterię z sieci
     # gdyby bd < 0 — to odwrotność intencji). Skrót dla wszystkich gałęzi poniżej.

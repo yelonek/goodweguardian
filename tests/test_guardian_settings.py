@@ -23,6 +23,7 @@ def tmp_settings(monkeypatch: pytest.MonkeyPatch, tmp_path):
 def test_defaults_when_no_file(tmp_settings) -> None:
     eff = gs.get_settings()
     assert eff.model_dump() == gs.GuardianSettings().model_dump()
+    assert eff.planner_optimizer_mode == "shadow"
     assert all(v == "default" for v in gs.sources().values())
     assert gs.is_onboarding_completed() is False
 
@@ -62,6 +63,13 @@ def test_update_validates_range(tmp_settings) -> None:
         gs.update_overrides({"soc_night_reserve_pct": 150})
     # nic się nie zapisało
     assert gs.current_overrides() == {}
+
+
+def test_optimizer_mode_accepts_only_safe_enum(tmp_settings) -> None:
+    gs.update_overrides({"planner_optimizer_mode": "stochastic_mpc"})
+    assert gs.get_settings().planner_optimizer_mode == "stochastic_mpc"
+    with pytest.raises(ValidationError):
+        gs.update_overrides({"planner_optimizer_mode": "unknown"})
 
 
 def test_update_and_null_removes(tmp_settings) -> None:

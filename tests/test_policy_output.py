@@ -27,6 +27,8 @@ def _hp(
     bd: float = 0.0,
     hour: int = 12,
     export_cashflow: float = 0.4,
+    planned_charge: float | None = None,
+    planned_discharge: float | None = None,
 ) -> HourPlan:
     return HourPlan(
         date="2026-06-10",
@@ -36,6 +38,8 @@ def _hp(
         soc_start_pct=soc0,
         soc_end_pct=soc_end,
         battery_delta_kwh=bd,
+        planned_charge_kwh=planned_charge,
+        planned_discharge_kwh=planned_discharge,
     )
 
 
@@ -165,6 +169,43 @@ def test_rising_soc_cheap_import_without_pv_is_charge_grid() -> None:
     assert row.params.allow_grid_charge is True
     assert row.params.target_soc_pct == 60.0
     assert row.params.charge_pct is not None
+
+
+def test_explicit_charge_authorizes_only_forecast_pv_shortfall() -> None:
+    hin = _hin(pv=1.5, load=0.5, import_pln=1.10)
+    row = map_hour_to_exec_mode(
+        _hp(
+            soc0=20.0,
+            soc_end=60.0,
+            net=-3.0,
+            bd=4.0,
+            planned_charge=4.0,
+            planned_discharge=0.0,
+        ),
+        hin,
+    )
+    assert row.exec_mode == "charge_grid"
+    assert row.params.allow_grid_charge is True
+    assert row.params.grid_charge_budget_kwh == pytest.approx(2.5)
+    assert row.params.planned_charge_kwh == pytest.approx(4.0)
+
+
+def test_explicit_charge_from_sufficient_pv_has_no_grid_budget() -> None:
+    hin = _hin(pv=5.0, load=2.0, import_pln=1.10)
+    row = map_hour_to_exec_mode(
+        _hp(
+            soc0=20.0,
+            soc_end=50.0,
+            net=1.0,
+            bd=3.0,
+            planned_charge=3.0,
+            planned_discharge=0.0,
+        ),
+        hin,
+    )
+    assert row.exec_mode == "charge_pv"
+    assert row.params.allow_grid_charge is False
+    assert row.params.grid_charge_budget_kwh == 0.0
 
 
 def test_mid_hour_rising_soc_net_zero_is_neutral_not_charge_grid() -> None:
@@ -325,6 +366,8 @@ def test_discharge_h01_positive_net_is_export_profit() -> None:
 def test_exec_mode_labels_pl() -> None:
     assert exec_mode_label_pl("export_pv_surplus") == "eksport PV"
     assert exec_mode_label_pl("import_grid") == "import z sieci"
+    assert exec_mode_label_pl("charge_pv") == "ładuj z PV"
+    assert exec_mode_label_pl("charge_grid") == "ładowanie z sieci"
 
 
 def test_build_and_save_policy_artifact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

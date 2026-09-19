@@ -1,0 +1,29 @@
+---
+description: Prosument rozlicza NET godziny — import i eksport w tej samej h to jeden bilans, nie dwa rachunki
+alwaysApply: true
+---
+
+# Bilansowanie godzinowe
+
+Ten dom ma **bilansowanie godzinowe**. Jedna godzina zegarowa = jeden `net`. Nie ma osobnej sprzedaży i osobnego zakupu wewnątrz tej samej godziny.
+
+## Rozliczenie
+
+- `net > 0` → cała nadwyżka po **RCE** (SELL).
+- `net < 0` → cały niedobór po **G12** (import).
+- W tej samej godzinie najpierw eksport, potem ładowanie z sieci **nie kosztuje G12**, dopóki godziny nie przekroczysz na import. Zmniejszasz tylko sprzedane kWh. Koszt okazji = **RCE tej godziny**, nie stawka importu.
+
+`cashflow_pln_for_hour` już tak liczy. Nie tłumacz soak / clawback jako „odkup po drogiej taryfie”, jeśli godzina zostaje netto eksportem.
+
+## Źle (2026-09-16 12:xx)
+
+Eksport ~0,97 kWh po RCE 0,48, potem soak z sieci do `target_net=+0,23`.
+Źle: „odkupiliśmy po 1,11”.
+Dobrze: godzina i tak była netto eksportem; soak schował kWh kosztem **0,48** (niewystawione RCE), nie G12. To taniej niż kupno o 13 po 0,59 — o ile nie wpadniesz w `net < 0`.
+
+## Przy planowaniu i egzekucji
+
+- Wewnątrz godziny: ładuj z PV / „cofnij” eksport na liczniku = magazynujesz po RCE.
+- G12 płacisz dopiero, gdy **zamknięta godzina** ma `net < 0`.
+- Problem 12:00–12:40 to nieschowany PV (Off przez 40 min), nie to, że :40 soak „kupuje drogo”.
+- Nie mieszaj chwilowej mocy na liczniku (kW import przy PV) z kosztem godziny.

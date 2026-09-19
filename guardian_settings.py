@@ -24,7 +24,7 @@ import logging
 import os
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -180,8 +180,15 @@ class GuardianSettings(BaseModel):
     planner_scenario_optimizer: bool = Field(
         True, json_schema_extra=_meta("planner"),
         description=(
-            "Wieloscenariuszowy MILP: jedna bateria, max E[CF] po siatce 5×5 "
-            "(kwantyle 10/30/50/70/90, wagi 1/25). Wyłączony = deterministyczny p50."
+            "Wieloscenariuszowy MILP po siatce 5×5. Wyłączony = deterministyczny p50."
+        ),
+    )
+    planner_optimizer_mode: Literal["legacy", "shadow", "stochastic_mpc"] = Field(
+        "shadow",
+        json_schema_extra=_meta("planner"),
+        description=(
+            "legacy steruje dawnym shared-battery; shadow steruje legacy i zapisuje "
+            "porównanie MPC; stochastic_mpc przełącza sterowanie na nowy solver."
         ),
     )
     pv_weather_correction_enabled: bool = Field(
