@@ -1,0 +1,21 @@
+---
+description: Nie zmieniaj kodu ani sterowania produkcją bez wyraźnego potwierdzenia
+alwaysApply: true
+---
+
+# Potwierdzenie przed kodem i sterowaniem
+
+Ten dom jest na żywym Guardianie. „Stój”, „cofnij”, „przestań”, „nie rób tego” oznacza **zatrzymaj pracę agenta** (edycje, deploy, przebudowę obrazu). Nie oznacza wyłączenia planera, watchdoga ani sterowania inwerterem.
+
+## Zawsze
+
+- Zanim zmienisz kod, testy, Dockerfile albo zrobisz `docker compose up --build`: **opisz zmianę i poczekaj na wyraźne tak**. Diagnoza z logów / state / dashboardu jest OK bez pytania.
+- Nie zapisuj `planner_override.json`, `guardian_control_override.json` ani analogicznych flag, chyba że user wprost każe włączyć albo wyłączyć egzekucję / sterowanie.
+- Jeśli user każe natychmiast przestać w trakcie deployu: stop. Powiedz jednym zdaniem, co już weszło na produkcję. Nie „gas gas” planera w ramach stopu.
+- Po zatrzymaniu nie zostawiaj ukrytego stanu (override false, połowa deployu) bez jasnego komunikatu, co jest wyłączone i że samo nie wróci.
+
+## Przykład z 2026-09-03
+
+User: „co stój!” po nocnym deployu, który zaczął `export_profit +37%`.
+Źle: `planner_execution_enabled: false` i cisza, że planer nie wróci do rana.
+Dobrze: przerwać dalsze zmiany kodu; jeśli slot już pisze, spytać „gasić tylko ten slot, czy zostawić planera”.
