@@ -372,7 +372,7 @@ Implementacja może być prosta na start (reguły + progi), później DSPy / ma�
 |-----------|--------|---------------------|
 | **Mediana p50** z próbek tej samej godziny | jeden outlier (np. EV w 1 sobotę) **słabo** podbija medianę vs średnia | nie odróżnia EV od grzejnika 2–3×/tydz. zimą; **brak sezonowości** (zimowy p75 w lecie) |
 | **Split weekday / weekend** (`≥5` próbek) | inny profil sob–nied vs pn–pt | nie wie o „tanio + PV” |
-| **p25 / p75** | pas niepewności load w siatce 5×5 | nie klasyfikuje odbiorów shiftable |
+| **p25 / p75** | pas niepewności (backtest coverage) | planer bierze **tylko p50** (`planner/inputs.py`) |
 | **Nowcast** | skala względem bieżącego LOAD | nie dzieli base/shiftable |
 | **Fallback** `global` / `no_history` | konserwatywne zero | właśnie źródło „p25 = 0” |
 
@@ -390,15 +390,15 @@ Skrócenie lookback **nie priorytet**; sensowniejsze docelowo: klasyfikator shif
 
 **Problem (historyczny):** deterministyczny p50; potem shared `ch/dis` zabijał soak PV w południe; osobne trajektorie + publish p50 głodziły świt; binarny eco-slot MILP (`9d93e95`) — rollback `f12c348`.
 
-### Model wdrożony: stochastic MPC z recourse
+### Model docelowy (wdrożony): tracking-SP + mapowanie względem SOC
 
-- **Non-anticipativity:** wspólna jest wyłącznie decyzja bieżącego slotu.
-- **Recourse:** przyszłe `soc`, `charge`, `discharge`, `import`, `export` są per scenariusz.
-- **Cel:** `min E(import_cost − export_revenue + wear)`, bez kary tracking i wartości terminalnej.
-- **Egzekucja:** jawne przepływy bieżącego kroku, zgoda/budżet sieci i limit eksportu.
-- Legacy shared `ch/dis` jest kontrolą trybu shadow; deterministyczny p50 jest fallbackiem po błędzie.
+- **First-stage:** wspólna wizja `soc*[h]` (`DailyPlan.soc_trajectory_pct`, `HourPlan.soc_end_pct`).
+- **Recourse per scenariusz:** `ch_s, dis_s, imp_s, exp_s` (+ exclusivity imp/exp).
+- **Cel:** `max Σ_s π_s·CF_s − λ·Σ_s π_s·|SOC_s−SOC*|` (`planner_soc_tracking_lambda`).
+- **Egzekucja:** `map_hour_to_exec_mode` z **gap SOC** (jeden bieg / h) — nie `(net, bd)` jako intencja.
+- Legacy shared `ch/dis`: `planner_soc_tracking=false` (fallback).
 
-Tracking-SP opisany wcześniej nie został faktycznie zaimplementowany i nie jest modelem sterującym.
+**Status:** wdrożone w `planner/scenario_optimizer.py` + `planner/policy_output.py`. Rollback tag: `v0.2.1`. **Nie** wracać do binarnego eco-slot MILP.
 
 ---
 

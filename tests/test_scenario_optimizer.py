@@ -12,146 +12,6 @@ from planner.scenario_optimizer import optimize_horizon_scenarios
 from planner.scenarios import QUANTILES, scenario_name
 
 
-def _certain_hour(
-    hour: int,
-    *,
-    pv: float,
-    load: float = 0.0,
-    imp: float = 1.11,
-    exp: float = 0.0,
-    date: str = "2026-09-18",
-) -> HourInputs:
-    """Godzina bez niepewności — wszystkie 25 światów ma te same PV/load."""
-    return HourInputs(
-        date=date,
-        hour=hour,
-        load_kwh=load,
-        load_kwh_p25=load,
-        load_kwh_p75=load,
-        pv_kwh=pv,
-        pv_kwh_p10=pv,
-        pv_kwh_p90=pv,
-        import_pln_per_kwh=imp,
-        export_pln_per_kwh=exp,
-    )
-
-
-def test_mpc_waits_for_cheaper_energy_when_future_can_fill_battery() -> None:
-    """0,40 teraz przegrywa z 0,30/0,20/0/0, jeśli później wystarczy PV i mocy."""
-    bp = BatteryParams(
-        capacity_kwh=10.0,
-        soc_min_pct=10.0,
-        soc_max_pct=100.0,
-        max_power_kwh_per_h=5.0,
-    )
-    hours = [
-        _certain_hour(10, pv=3.0, exp=0.40),
-        _certain_hour(11, pv=3.0, exp=0.30),
-        _certain_hour(12, pv=3.0, exp=0.20),
-        _certain_hour(13, pv=5.0, exp=0.0),
-        _certain_hour(14, pv=5.0, exp=0.0),
-        _certain_hour(19, pv=0.0, exp=2.50),
-        _certain_hour(20, pv=0.0, exp=2.50),
-    ]
-
-    res = optimize_horizon_scenarios(hours, soc_start_pct=10.0, params=bp)
-
-    assert res.hours[0].target_net_kwh > 2.5
-    assert res.hours[0].planned_charge_kwh < 0.1
-    assert sum(h.planned_charge_kwh for h in res.hours[3:5]) > 5.0
-
-
-def test_mpc_charges_only_required_amount_before_cheaper_but_insufficient_energy() -> None:
-    """Jeśli tańsze przyszłe sloty nie wystarczą, bieżący slot pokrywa tylko niedobór."""
-    bp = BatteryParams(
-        capacity_kwh=10.0,
-        soc_min_pct=10.0,
-        soc_max_pct=100.0,
-        max_power_kwh_per_h=5.0,
-    )
-    hours = [
-        _certain_hour(10, pv=5.0, exp=0.40),
-        _certain_hour(11, pv=3.0, exp=0.20),
-        _certain_hour(12, pv=3.0, exp=0.0),
-        _certain_hour(19, pv=0.0, exp=2.50),
-        _certain_hour(20, pv=0.0, exp=2.50),
-    ]
-
-    res = optimize_horizon_scenarios(hours, soc_start_pct=10.0, params=bp)
-
-    assert 0.5 < res.hours[0].planned_charge_kwh < 5.0
-    assert res.hours[0].target_net_kwh > 0.0
-
-
-def test_mpc_stores_pv_at_049_instead_of_replacing_it_with_grid_at_059() -> None:
-    bp = BatteryParams(
-        capacity_kwh=5.0,
-        soc_min_pct=10.0,
-        soc_max_pct=100.0,
-        max_power_kwh_per_h=5.0,
-    )
-    hours = [
-        _certain_hour(12, pv=5.0, exp=0.49),
-        _certain_hour(13, pv=0.0, imp=0.59, exp=0.10),
-        _certain_hour(19, pv=0.0, imp=1.11, exp=2.50),
-    ]
-
-    res = optimize_horizon_scenarios(hours, soc_start_pct=10.0, params=bp)
-
-    assert res.hours[0].planned_charge_kwh > 4.0
-    assert res.hours[1].planned_charge_kwh < 0.1
-
-
-def test_mpc_allows_profitable_daytime_grid_arbitrage() -> None:
-    bp = BatteryParams(
-        capacity_kwh=5.0,
-        soc_min_pct=10.0,
-        soc_max_pct=100.0,
-        max_power_kwh_per_h=5.0,
-    )
-    profitable = [
-        _certain_hour(15, pv=0.0, imp=1.10, exp=0.10),
-        _certain_hour(19, pv=0.0, imp=1.11, exp=2.50),
-    ]
-    unprofitable = [
-        _certain_hour(15, pv=0.0, imp=1.10, exp=0.10),
-        _certain_hour(19, pv=0.0, imp=1.11, exp=1.15),
-    ]
-
-    good = optimize_horizon_scenarios(profitable, soc_start_pct=10.0, params=bp)
-    bad = optimize_horizon_scenarios(unprofitable, soc_start_pct=10.0, params=bp)
-
-    assert good.hours[0].planned_charge_kwh > 1.0
-    assert good.hours[1].planned_discharge_kwh > 1.0
-    assert bad.hours[0].planned_charge_kwh < 0.1
-
-
-def test_stronger_current_pv_increases_soak_not_planned_export() -> None:
-    """Nowcast PV nie może pogorszyć decyzji przez samo przesunięcie świata w siatce."""
-    bp = BatteryParams(
-        capacity_kwh=10.0,
-        soc_min_pct=10.0,
-        soc_max_pct=100.0,
-        max_power_kwh_per_h=5.0,
-    )
-
-    def solve(pv_now: float):
-        return optimize_horizon_scenarios(
-            [
-                _certain_hour(12, pv=pv_now, load=1.0, exp=0.49),
-                _certain_hour(19, pv=0.0, load=5.0, imp=1.11, exp=0.20),
-            ],
-            soc_start_pct=10.0,
-            params=bp,
-        )
-
-    weak = solve(2.0)
-    strong = solve(4.0)
-
-    assert strong.hours[0].planned_charge_kwh > weak.hours[0].planned_charge_kwh
-    assert strong.hours[0].target_net_kwh <= weak.hours[0].target_net_kwh + 0.05
-
-
 def _evening_export_morning_risk_hours() -> list[HourInputs]:
     """Wieczorny szczyt RCE + drogi poranek bez PV w niskich kwantylach."""
     return [
@@ -250,26 +110,25 @@ def test_scenario_exports_at_high_rce() -> None:
     res = optimize_horizon_scenarios(hours, soc_start_pct=50.0, params=bp)
     assert res.scenario_meta is not None
     assert res.scenario_meta.get("fallback") != "deterministic_p50"
-    assert res.scenario_meta.get("model") == "stochastic_mpc_recourse"
+    assert res.scenario_meta.get("model") == "shared_battery_grid_recourse"
     assert res.hours[0].target_net_kwh > 0.5
 
 
-def test_optimize_horizon_uses_stochastic_mpc_when_scenarios_enabled(
+def test_optimize_horizon_uses_shared_when_scenarios_enabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import planner.config as cfg
 
     monkeypatch.setattr(cfg, "_SCENARIO_OPTIMIZER_RAW", "1")
-    monkeypatch.setattr(cfg, "_OPTIMIZER_MODE_RAW", "stochastic_mpc")
     bp = BatteryParams(capacity_kwh=10.0, soc_min_pct=10.0, soc_max_pct=100.0, max_power_kwh_per_h=5.0)
     hours = _evening_export_morning_risk_hours()
     res = optimize_horizon(hours, soc_start_pct=61.0, params=bp)
     assert res.hours
     assert res.scenario_meta is not None
-    assert res.scenario_meta.get("model") == "stochastic_mpc_recourse"
+    assert res.scenario_meta.get("model") == "shared_battery_grid_recourse"
 
 
-def test_stochastic_plan_differs_from_det_p50_when_p10_would_import(
+def test_shared_plan_differs_from_det_p50_when_p10_would_import(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Tani zrzut + p10 z drogim importem: plan = shared, nie overlay det p50.
@@ -315,19 +174,18 @@ def test_stochastic_plan_differs_from_det_p50_when_p10_would_import(
     p50 = optimize_horizon(hours, soc_start_pct=40.0, params=bp)
 
     monkeypatch.setattr(cfg, "_SCENARIO_OPTIMIZER_RAW", "1")
-    monkeypatch.setattr(cfg, "_OPTIMIZER_MODE_RAW", "stochastic_mpc")
-    stochastic = optimize_horizon(hours, soc_start_pct=40.0, params=bp)
+    shared = optimize_horizon(hours, soc_start_pct=40.0, params=bp)
 
-    assert stochastic.scenario_meta is not None
-    assert stochastic.scenario_meta.get("model") == "stochastic_mpc_recourse"
-    assert stochastic.scenario_meta.get("fallback") != "deterministic_p50"
-    assert len(stochastic.soc_trajectory_pct) == len(p50.soc_trajectory_pct)
+    assert shared.scenario_meta is not None
+    assert shared.scenario_meta.get("model") == "shared_battery_grid_recourse"
+    assert shared.scenario_meta.get("fallback") != "deterministic_p50"
+    assert len(shared.soc_trajectory_pct) == len(p50.soc_trajectory_pct)
     diverged = any(
         abs(a - b) > 2.0
-        for a, b in zip(stochastic.soc_trajectory_pct, p50.soc_trajectory_pct, strict=True)
+        for a, b in zip(shared.soc_trajectory_pct, p50.soc_trajectory_pct, strict=True)
     )
     assert diverged, (
-        f"stochastic SOC {stochastic.soc_trajectory_pct} nie może być kopią det p50 "
+        f"shared SOC {shared.soc_trajectory_pct} nie może być kopią det p50 "
         f"{p50.soc_trajectory_pct}"
     )
 
@@ -405,7 +263,7 @@ def test_midday_pv_soak_raises_soc_not_export_then_grid(
     ]
     res = optimize_horizon_scenarios(hours, soc_start_pct=10.0, params=bp)
     assert res.scenario_meta is not None
-    assert res.scenario_meta.get("model") == "stochastic_mpc_recourse"
+    assert res.scenario_meta.get("model") == "shared_battery_grid_recourse"
 
     by_h = {hp.hour: hp for hp in res.hours}
     midday_charge = (
@@ -419,8 +277,8 @@ def test_midday_pv_soak_raises_soc_not_export_then_grid(
         hours[2],
         cheap_import_threshold_pln=0.61,
     )
-    assert row12.exec_mode == "charge_pv"
-    assert row12.params.allow_grid_charge is False
+    assert row12.exec_mode == "neutral"
+    assert row12.exec_mode != "export_pv_surplus"
 
 
 def test_cheap_pv_then_expensive_import_soaks_not_export_then_grid() -> None:
@@ -462,7 +320,7 @@ def test_cheap_pv_then_expensive_import_soaks_not_export_then_grid() -> None:
     assert by_h[12].soc_end_pct >= 45.0
     midday_export = sum(max(0.0, by_h[h].target_net_kwh) for h in (10, 11, 12))
     midday_charge = sum(max(0.0, by_h[h].battery_delta_kwh) for h in (10, 11, 12))
-    assert midday_charge > 4.5
+    assert midday_charge > midday_export
     evening_discharge = sum(-min(0.0, by_h[h].battery_delta_kwh) for h in (18, 19, 20))
     assert evening_discharge > 1.5
 
@@ -514,25 +372,23 @@ def test_scenario_milp_no_grid_charge_when_pv_surplus() -> None:
         assert h14.target_net_kwh >= -0.05
 
 
-def test_stochastic_mpc_converges_with_25_series() -> None:
+def test_shared_5x5_converges_with_25_series() -> None:
     bp = BatteryParams(capacity_kwh=10.0, soc_min_pct=10.0, soc_max_pct=100.0, max_power_kwh_per_h=5.0)
     hours = _evening_export_morning_risk_hours()
     res = optimize_horizon_scenarios(hours, soc_start_pct=61.0, params=bp)
     assert res.scenario_meta is not None
-    assert res.scenario_meta.get("model") == "stochastic_mpc_recourse"
+    assert res.scenario_meta.get("model") == "shared_battery_grid_recourse"
     assert res.scenario_meta.get("fallback") != "deterministic_p50"
     detail = res.scenarios_detail
     assert detail is not None
-    assert detail.model == "stochastic_mpc_recourse"
+    assert detail.model == "shared_battery_grid_recourse"
     expected_keys = {scenario_name(qpv, qld) for qpv in QUANTILES for qld in QUANTILES}
     assert set(detail.scenarios.keys()) == expected_keys
     assert abs(sum(s.weight for s in detail.scenarios.values()) - 1.0) < 1e-9
     assert len(detail.soc_star_pct) == len(hours) + 1
     assert detail.soc_star_pct == pytest.approx(res.soc_trajectory_pct)
     socs = [s.soc_pct for s in detail.scenarios.values()]
-    # Pierwsza wykonywana decyzja jest wspólna; przyszłość może reagować na świat.
-    assert all(s[1] == pytest.approx(socs[0][1]) for s in socs)
-    assert any(s[2:] != pytest.approx(socs[0][2:]) for s in socs[1:])
+    assert all(s == socs[0] for s in socs)
     for name, series in detail.scenarios.items():
         assert len(series.soc_pct) == len(hours) + 1, name
         assert len(series.net_kwh) == len(hours), name

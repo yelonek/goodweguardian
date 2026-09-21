@@ -50,9 +50,6 @@ class HourPlan(BaseModel):
     soc_start_pct: float
     soc_end_pct: float
     battery_delta_kwh: float
-    # Jawne przepływy solvera. ``battery_delta_kwh`` zostaje kompatybilnym net ch−dis.
-    planned_charge_kwh: float | None = None
-    planned_discharge_kwh: float | None = None
 
 
 class ScenarioSeriesDetail(BaseModel):
@@ -63,12 +60,10 @@ class ScenarioSeriesDetail(BaseModel):
     soc_pct: list[float]
     net_kwh: list[float]
     cashflow_hour_pln: list[float]
-    charge_kwh: list[float] = Field(default_factory=list)
-    discharge_kwh: list[float] = Field(default_factory=list)
 
 
 class ScenariosDetail(BaseModel):
-    """25 światów 5×5 + oczekiwana trajektoria SOC."""
+    """25 światów 5×5 + wspólna trajektoria SOC (shared EV)."""
 
     model: str
     expected_cashflow_pln: float
@@ -96,7 +91,7 @@ class DailyPlan(BaseModel):
     optimizer: str
     inputs_snapshot: dict[str, Any]
     hours: list[HourPlan]
-    # Szeregi adaptacyjnych światów 5×5; None przy deterministycznym planie.
+    # Szeregi 5×5 (shared EV); None przy deterministycznym / starym planie.
     scenarios_detail: ScenariosDetail | None = None
 
 
@@ -178,7 +173,6 @@ ExecMode = Literal[
     "export_pv_surplus",
     "neutral",
     "import_grid",
-    "charge_pv",
     "charge_grid",
 ]
 
@@ -191,12 +185,7 @@ class HourPolicyParams(BaseModel):
     soc_end_pct: float
     pv_plan_kwh: float | None = None
     load_plan_kwh: float | None = None
-    target_net_remainder_kwh: float | None = None
-    planned_charge_kwh: float = 0.0
-    planned_discharge_kwh: float = 0.0
     allow_grid_charge: bool = False
-    grid_charge_budget_kwh: float = 0.0
-    max_additional_export_kwh: float | None = None
     discharge_pct: int | None = None
     charge_pct: int | None = None
     soc_floor_pct: float | None = None

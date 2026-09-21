@@ -347,7 +347,6 @@ const PLAN_MODE_SHORT = {
   export_profit: "EXP",
   neutral: "0",
   import_grid: "IMP",
-  charge_pv: "PV+",
   charge_grid: "ŁAD",
 };
 
@@ -356,7 +355,6 @@ const PLAN_MODE_LEGEND = [
   ["mode-export_profit", "eksport zarobkowy"],
   ["mode-neutral", "neutralny"],
   ["mode-import_grid", "import z sieci"],
-  ["mode-charge_pv", "ładuj z PV"],
   ["mode-charge_grid", "ładowanie z sieci"],
 ];
 
@@ -601,19 +599,9 @@ function renderScenarioSecondarySvg(detail, mode) {
   const series = {};
   let n = 0;
   for (const name of names) {
-    let raw;
-    if (mode === "net") {
-      raw = sc[name].net_kwh || [];
-    } else if (mode === "battery") {
-      const charge = sc[name].charge_kwh || [];
-      const discharge = sc[name].discharge_kwh || [];
-      raw = Array.from(
-        { length: Math.max(charge.length, discharge.length) },
-        (_, i) => Number(charge[i] || 0) - Number(discharge[i] || 0),
-      );
-    } else {
-      raw = _cumSum(sc[name].cashflow_hour_pln || []);
-    }
+    const raw = mode === "net"
+      ? (sc[name].net_kwh || [])
+      : _cumSum(sc[name].cashflow_hour_pln || []);
     series[name] = raw.map(Number);
     n = Math.max(n, series[name].length);
   }
@@ -626,7 +614,7 @@ function renderScenarioSecondarySvg(detail, mode) {
   const pad = { l: 48, r: 22, t: 18, b: 28 };
   const { toX, toY, html: axes } = svgDayChartAxes({
     w, h, pad, minY, maxY, nHours: n, showZero: true,
-    yUnit: mode === "cum" ? "PLN" : "kWh", xUnit: "h",
+    yUnit: mode === "net" ? "kWh" : "PLN", xUnit: "h",
     xTickItems: _slotXTicks(detail.slots || [], n),
   });
   const xs = Array.from({ length: n }, (_, i) => i);
@@ -659,10 +647,6 @@ function renderScenariosPanel(detail) {
   const cfMax = cfs.length ? Math.max(...cfs) : null;
   const mid = detail.scenarios.pv50_ld50;
   const midCf = mid != null ? Number(mid.cashflow_pln || 0) : null;
-  const adaptive = String(detail.model || "").includes("stochastic_mpc");
-  const hasBatteryFlow = names.some((name) =>
-    (detail.scenarios[name].charge_kwh || []).length > 0
-  );
 
   const kpiCards = [
     `<div class="plan-sc-kpi star"><div class="k">E[CF]</div><div class="v">${eCf} PLN</div>` +
@@ -685,7 +669,7 @@ function renderScenariosPanel(detail) {
 
   const legend =
     `<div class="plan-sc-legend">` +
-    `<span><i class="star"></i>${adaptive ? "oczekiwany SOC" : "SOC shared"}</span>` +
+    `<span><i class="star"></i>SOC shared</span>` +
     `<span><i class="pv10"></i>PV q10</span>` +
     `<span><i class="pv50"></i>PV q50</span>` +
     `<span><i class="pv90"></i>PV q90</span>` +
@@ -694,21 +678,14 @@ function renderScenariosPanel(detail) {
 
   const note =
     `<p class="muted" style="font-size:11px;margin:0 0 8px;">` +
-    (adaptive
-      ? `Stochastic MPC max E[CF]: wspólna decyzja teraz, adaptacyjne przepływy przyszłe.`
-      : `Legacy shared-battery max E[CF] — sterowanie bazowe w trybie shadow.`) +
+    `Jedna bateria (shared) max E[CF]. Wszystkie ${names.length} serii net/CF; SOC wspólny.` +
     `</p>`;
 
-  const mode = !hasBatteryFlow && _planScSecondaryMode === "battery"
-    ? "cum"
-    : _planScSecondaryMode;
+  const mode = _planScSecondaryMode;
   const toggle =
     `<div class="plan-sc-toggle" id="planScToggle">` +
     `<button type="button" data-mode="cum" class="${mode === "cum" ? "active" : ""}">kumulatywny CF</button>` +
     `<button type="button" data-mode="net" class="${mode === "net" ? "active" : ""}">net godz. (exp−imp)</button>` +
-    (hasBatteryFlow
-      ? `<button type="button" data-mode="battery" class="${mode === "battery" ? "active" : ""}">bateria (charge−discharge)</button>`
-      : "") +
     `</div>`;
 
   return (
@@ -2734,12 +2711,6 @@ function settingsEqual(a, b) {
 
 function settingInputHtml(name, sch, value) {
   const type = sch.type;
-  if (Array.isArray(sch.enum)) {
-    const options = sch.enum.map((v) =>
-      `<option value="${escapeHtml(String(v))}" ${v === value ? "selected" : ""}>${escapeHtml(String(v))}</option>`
-    ).join("");
-    return `<select class="t-input-wide" data-setting="${name}" data-type="string">${options}</select>`;
-  }
   if (type === "boolean") {
     return `<div class="t-row"><input data-setting="${name}" data-type="boolean" type="checkbox" ${value ? "checked" : ""} /></div>`;
   }
@@ -2804,8 +2775,6 @@ function collectSettingsOverrides(container, payload) {
       val = el.checked;
     } else if (type === "array") {
       val = el.value.split(",").map((x) => x.trim()).filter((x) => x !== "").map((x) => parseInt(x, 10));
-    } else if (type === "string") {
-      val = el.value;
     } else if (type === "integer") {
       if (el.value === "") return;
       val = parseInt(el.value, 10);

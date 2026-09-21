@@ -16,11 +16,11 @@ Planer **co 10 min** → `state/planner_output.json` (**policy** + parametry). G
 
 3. **Dane do optimizera:** `pv_plan[h]` jak w pkt 6; `load_plan[h]` jak wyżej. Jedna optymalizacja **max Σ_h cashflow_h**; **rolling** co cykl.
 
-4. **Wyjście:** **policy + parametry**. Planer publikuje jawną decyzję bieżącego kroku (`planned_charge_kwh`, `planned_discharge_kwh`, target SOC/net, zgodę i budżet sieci). Dla przyszłości publikuje oczekiwaną trajektorię i pasma światów; te wiersze zostaną przeliczone przed wykonaniem.
+4. **Wyjście:** **policy + parametry**. Optimizer buduje **wizję SOC** (`soc_trajectory_pct` / `soc_end_pct` per h). **policy_output** mapuje **gap SOC** → jeden `exec_mode` (nie jednoczesne `ch∧exp`). `target_net_kwh` / `battery_delta_kwh` = audyt / Flappy. Guardian **nie** goni `target_net_kwh` co minutę — wykonuje **strategię** (§13).
 
 5. **Bateria w solverze:** `soc_kwh`, limity z Ustawień (`planner_soc_*`, `battery_capacity_kwh`), **jedno η** round-trip (`η_rt`). W bilansie SOC: `+√η_rt · ch − dis / √η_rt` (symetrycznie), żeby cykl AC→AC odzyskiwał dokładnie `η_rt`, a nie `η_rt²`.
 
-   **Stochastic MPC:** stan początkowy i decyzja `h=0` są wspólne (non-anticipativity). Dla `h>0` każdy scenariusz ma własne `soc`, `charge`, `discharge`, `import` i `export`, bo planer uruchomi się ponownie przed wykonaniem tych godzin. Cel: `min E(import_cost − export_revenue + wear)`, bez CVaR, kary tracking i wartości końcowej baterii. Stary shared-battery MILP działa tylko jako kontrola shadow.
+   **Tracking-SP (domyślnie):** wspólna first-stage trajektoria `soc*[h]`; per scenariusz recourse `ch_s, dis_s, imp_s, exp_s`; cel `max Σ π_s·CF_s − λ·Σ π_s·|SOC_s−SOC*|`. Settingi: `planner_soc_tracking`, `planner_soc_tracking_lambda`. Wyłączenie trackingu = legacy shared `ch/dis` (niezalecane). **Nie** wracać do binarnego eco-slot MILP (`f12c348`).
 
 6. **Korekta PV (`k_intra`):**
    - **ε = 0,1 kWh/h** — próg znaczącej prognozy w ułamku godziny.
@@ -41,7 +41,7 @@ Planer **co 10 min** → `state/planner_output.json` (**policy** + parametry). G
 
 9. **Wdrożenie (kolejność):** kontrakt danych (ceny, telemetria, KPI) → symulator offline (`pv_plan`, `load_plan`, `e_bat` → Σ PLN + testy) → cykl planera co 10 min + zapis JSON → Guardian: router policy → strategia (§13) → UI (sloty, sugestie).
 
-10. **Nocny anty-flipflop (twarda polityka, bez pokrętła):** w oknie zegarowym **22–5** (nie strefa G12 — bez 13–14), po pierwszym istotnym ładowaniu magazynu (`charge > 0,05 kWh`, przy nocnym znikomym PV oznacza zakup z sieci) **zakaz eksportu do sieci** aż do końca tego okna. Wieczorny zrzut, potem nocny zakup — dozwolone. Od **6:00** energia kupiona z sieci może zostać sprzedana, jeżeli pełny horyzont wykazuje zysk po η i wear. Carry-in z telemetrii podtrzymuje zapadkę po wcześniejszym nocnym ładowaniu. `green_stock` pozostaje wyłącznie diagnostyką i nie ogranicza solve.
+10. **Nocny anty-flipflop + zielony zapas (twarda polityka, bez pokrętła):** w oknie zegarowym **22–5** (nie strefa G12 — bez 13–14), po pierwszym ładunku magazynu z sieci (`ch > 0,05 kWh`) **zakaz eksportu do sieci** aż do końca tego okna. Wieczorny zrzut PV, potem nocny zakup — dozwolone. **Poranny zrzut (od 6:00) tylko z zielonego zapasu** (SOC pochodzenia PV: wczorajsza nadwyżka + dzisiejsze PV do baterii). Energia kupiona z sieci w nocy idzie na dom, nie wraca do sieci. Rozładowanie na dom (`exp = 0`) — dozwolone. Carry-in z telemetrii: jeśli w skończonych godzinach bieżącego okna SOC już wzrósł przy znikomym PV, reszta nocy też bez eksportu, a `green0 = SOC − nocny ładunek z sieci`. Mapper nie emituje `export_profit` / `export_pv_surplus` przy zapiętej zapadce.
 
 ---
 
@@ -70,9 +70,9 @@ Brak pliku policy, `valid_until` w przeszłości lub `degraded` bez wiersza na b
 
 Przełącznik egzekucji planu (dashboard / override) wyłączony → ten sam fallback.
 
-### 13.3 Biegi eco-slotu (`exec_mode`)
+### 13.3 Pięć biegów eco-slotu (`exec_mode`)
 
-Prawdziwy wachlarz zachowań GoodWe to **sześć biegów** sterowania (nie mylić z samym znakiem netu na liczniku):
+Prawdziwy wachlarz zachowań GoodWe to **pięć biegów** sterowania (nie mylić z samym znakiem netu na liczniku):
 
 | Bieg | Eco-slot | `exec_mode` |
 |------|----------|-------------|
@@ -80,19 +80,17 @@ Prawdziwy wachlarz zachowań GoodWe to **sześć biegów** sterowania (nie myli�
 | 2 | **DISCHARGE 1%** | `export_pv_surplus` |
 | 3 | **neutral** (brak stałego %; logika Flappy) | `neutral` |
 | 4 | **CHARGE 1%** | `import_grid` |
-| 5 | **CHARGE 2–100%, tylko PV** | `charge_pv` |
-| 6 | **CHARGE 2–100%, z sieci** | `charge_grid` |
+| 5 | **CHARGE 2–100%** | `charge_grid` |
 
-Planer wybiera **`exec_mode`** z jawnych przepływów pełnego solve: `planned_charge_kwh` → ładowanie (`charge_pv` albo `charge_grid`), `planned_discharge_kwh` → rozładowanie, a zerowa zmiana SOC → przepuszczenie PV/import/neutral według net. Nie stosuje progu „tania taryfa” do nadpisywania decyzji ekonomicznej.
+Planer wybiera **`exec_mode`** z **wizji SOC** (`soc_end_pct` vs `soc_start_pct`): rosnący SOC → soak / `charge_grid` (tani import); malejący → `export_profit`; płaski → `export_pv_surplus` / `import_grid` / `neutral`. **Hold przy SOC ≥ 95% i PV < load** → `import_grid` (nie `neutral` — Off zjada baterię). Guardian utrzymia bieg; **nie** goni `target_net_kwh` agresywnym chase (§13.4).
 
 | `exec_mode` | PL | Eco-slot | Parametry | Sens |
 |-------------|-----|----------|-----------|------|
 | `export_profit` | eksport zarobkowy | DISCHARGE **2–100%** | `discharge_pct`, `soc_floor_pct` | Sprzedaż z baterii (wysokie RCE); nie schodzić poniżej podłogi SOC |
-| `export_pv_surplus` | eksport nadwyżek PV | **DISCHARGE 1%** lub soak po limicie | `max_additional_export_kwh` | PV → sieć tylko do limitu wybranego przez solve |
+| `export_pv_surplus` | eksport nadwyżek PV | **DISCHARGE 1%** | podłoga bilansu **0** | PV → sieć; bateria tylko przy bilansie &lt; 0 |
 | `neutral` | neutralny | Flappy (§13.5) | `target_net_kwh` | Minimalna ingerencja baterii; pilnuj `target` regułami Flappy |
 | `import_grid` | import z sieci | **CHARGE 1%**, cel slotu **SOC 10%** (stałe) | — | Dom z sieci; bateria **tylko z PV** (DC); bez ładowania magazynu z sieci |
-| `charge_pv` | ładuj z PV | CHARGE **2–100%** | `planned_charge_kwh`, `target_soc_pct` | Soak nadwyżki `PV − load`; **zakaz** importu do magazynu |
-| `charge_grid` | ładowanie z sieci | CHARGE **2–100%** | `planned_charge_kwh`, `target_soc_pct`, zgoda/budżet sieci | Najpierw live PV; sieć tylko do budżetu |
+| `charge_grid` | ładowanie z sieci | CHARGE **2–100%** | `charge_pct`, `target_soc_pct` | Doładowanie magazynu **z sieci** (+ PV); cel SOC z planu |
 
 **Obrony SOC** — warstwa nadrzędna przed `exec_mode`, z wyjątkami:
 
@@ -113,10 +111,10 @@ Brak osobnego `anchor_net_kwh` — **Ockham:** jedno pole, różna interpretacja
 | Tryb | Rola `target_net_kwh` |
 |------|------------------------|
 | `neutral` | **Setpoint Flappy** — bilans do utrzymania; planer ustawia przy wejściu planu (co 10 min), np. `actual` lub skorygowana wartość |
-| `export_pv_surplus`, `export_profit` | Limit końcowego eksportu; nadmiar live PV nie zwiększa go automatycznie |
-| `import_grid`, `charge_pv`, `charge_grid` | Audyt końca h; charge dodatkowo ogranicza SOC (`charge_grid` też budżet sieci) |
+| `export_pv_surplus`, `import_grid` | Prognoza końca h + audyt; egzekucja **nie** chase po tym polu |
+| `export_profit`, `charge_grid` | Audyt; granice = SOC (`soc_floor_pct` / `target_soc_pct`) |
 
-**Mid-hour:** energie PV/load w MILP to **pełna godzina** (so_far + zwężona reszta); `hour_fraction` ogranicza tylko moc baterii (`charge`/`discharge`). `net_so_far` (`N₀`) wchodzi do bilansu tak, że `import`/`export` oznaczają rozliczenie **końca godziny**. `target_net_remainder_kwh = target_net_kwh − N₀`.
+**Mid-hour:** energie PV/load w MILP to **pełna godzina** (so_far + zwężona reszta); `hour_fraction` ogranicza tylko moc baterii (`ch`/`dis`). `net_so_far` (`N₀`) wchodzi do bilansu tak, że `imp`/`exp` oznaczają rozliczenie **końca godziny**. Zielony cap: `exp ≤ N₀⁺ + PV_reszta + dis_g` — już sprzedane kWh **nie** zjadają budżetu mocy reszty h (regresja 2026-08-29 20:30). `target_net_kwh` = net końca h; intencja trybu z `net_end − N₀`.
 
 „Pilnować” w `neutral` ≠ gonić co minutę — reguły Flappy (§13.5).
 
@@ -130,8 +128,8 @@ Brak osobnego `anchor_net_kwh` — **Ockham:** jedno pole, różna interpretacja
 
 #### `export_pv_surplus` — eksport nadwyżek PV
 
-- **`DISCHARGE 1%`** przepuszcza PV, dopóki bilans nie osiągnie planowanego limitu.
-- Po osiągnięciu limitu dodatkowa nadwyżka live PV jest soakowana; już sprzedanych kWh nie odkupujemy.
+- Cała godzina **`DISCHARGE 1%`** — PV do sieci, **nie** ładuj baterii z nadwyżki (brak soak w tym trybie).
+- Oczekiwany dodatni bilans na koniec h; **nie** gonimy planowanego `target_net`.
 - Bateria **tylko** przy bilansie godzinowym **&lt; 0** (load zjadł PV); podłoga **0**, nie target planu.
 
 #### `neutral` — Flappy Bird względem `target_net_kwh`
@@ -150,18 +148,11 @@ Utrzymuj **`target_net_kwh`** z planu (aktualizacja przy wejściu planu), nie do
 - **Sieć → dom** (tanio). **Bateria tylko z PV** (DC→DC, „co łaska”).
 - **Nie** rozładowuj baterii; import na liczniku jest **zgodny z intencją**.
 - Chcesz **ładować magazyn z sieci** → planer wybiera **`charge_grid`**, nie `import_grid`.
-- Chcesz **schować PV w magazynie bez importu** → **`charge_pv`**, nie `charge_grid` i nie Flappy.
-
-#### `charge_pv` — CHARGE 2–100% tylko z nadwyżki PV
-
-- Aktywne **`CHARGE`** do `planned_charge_kwh` / **`target_soc_pct`**.
-- Cap mocy = live `max(0, PV − load)`. Bez nadwyżki — brak slotu, zero importu „przy okazji”.
-- SOC ≥ cel → Off. **Zakaz** `DISCHARGE` i **zakaz** budżetu sieci.
 
 #### `charge_grid` — CHARGE 2–100%
 
-- Aktywne **`CHARGE`** do planowanego `planned_charge_kwh` i **`target_soc_pct`**.
-- Guardian najpierw wykorzystuje live PV. `allow_grid_charge` zezwala na brakującą część tylko do `grid_charge_budget_kwh`.
+- Aktywne **`CHARGE`** (`charge_pct`) do **`target_soc_pct`** z planu (cel slotu SOC — tu planer ustawia Y%).
+- Import **do baterii** dozwolony (`allow_grid_charge`); PV jako dodatek.
 - SOC ≥ cel → zejdź na **1%** lub neutral. **Zakaz** `DISCHARGE`.
 
 ### 13.6 Rola parametrów w `planner_output.json`
@@ -171,15 +162,13 @@ Utrzymuj **`target_net_kwh`** z planu (aktualizacja przy wejściu planu), nie do
 | `exec_mode` | bieg eco-slotu (§13.3) | router → strategia |
 | `target_net_kwh` | `neutral`: setpoint Flappy; inne: audyt / prognoza końca h | patrz §13.4 |
 | `soc_floor_pct` | `export_profit` | podłoga SOC przy rozładowaniu |
-| `target_soc_pct` | `charge_pv`, `charge_grid` | cel slotu SOC (Y%) |
+| `target_soc_pct` | tylko `charge_grid` | cel slotu SOC (Y%) |
 | `discharge_pct` | `export_profit` | 2–100% |
-| `charge_pct` | `charge_pv`, `charge_grid` | 2–100% |
+| `charge_pct` | `charge_grid` | 2–100% |
 | — | `import_grid` | Guardian: stałe **CHARGE 1%** + **SOC 10%** (poza JSON planera) |
-| `planned_charge_kwh`, `planned_discharge_kwh` | wykonalna decyzja z pełnego horyzontu | pacing bieżącego kroku |
-| `allow_grid_charge`, `grid_charge_budget_kwh` | ekonomiczna zgoda i maks. uzupełnienie | cap aktywnego charge z sieci |
-| `max_additional_export_kwh` | limit eksportu od chwili solve | soak live PV po osiągnięciu limitu |
-| `battery_delta_kwh`, `pv_plan_kwh`, `load_plan_kwh` | audyt / kompatybilność | dashboard |
-| `soc_end_pct` | oczekiwany SOC (dla h=0 dokładny wspólny wynik) | cel charge; audyt |
+| `allow_grid_charge` | `charge_grid` | import do baterii; w `import_grid` **nie dotyczy** (brak ładowania z sieci) |
+| `battery_delta_kwh`, `pv_plan_kwh`, `load_plan_kwh` | audyt / dashboard (Δ z scenariusza bazowego) | dashboard |
+| `soc_end_pct` | **wizja SOC*** (primary) | `charge_grid` fallback cel; audyt |
 
 ### 13.7 Czego świadomie nie robimy
 
@@ -200,7 +189,7 @@ Po godzinie: reconcile `target_net_kwh` vs fakty; w trakcie h liczy się zgodno�
 1. Kontrakt JSON: `exec_mode` + `target_net_kwh` / `soc_floor_pct` / `target_soc_pct` (`charge_grid`) / `charge_pct` / `discharge_pct`; `import_grid` bez parametrów SOC w JSON.
 2. Mapowanie **gap SOC** → `exec_mode` (nie `(net, bd)` jako intencja).
 3. Guardian: router; strategie `export_pv_surplus`, `neutral`, `import_grid` (stałe 1% + SOC 10%).
-4. `export_profit`, `charge_pv`, `charge_grid`.
+4. `export_profit`, `charge_grid`.
 5. Wyłączenie `balance_remaining_kwh = actual − target` jako domyślnej egzekucji.
 
 ---

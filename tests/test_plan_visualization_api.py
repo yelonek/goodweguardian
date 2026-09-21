@@ -52,7 +52,7 @@ def plan_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> TestClient:
         soc_start_pct=50.0,
         soc_trajectory_pct=[50.0 + h * 0.5 for h in range(13)],
         expected_total_cashflow_pln=12.5,
-        optimizer="stochastic_mpc_v1",
+        optimizer="lp_battery_scenarios_v1",
         inputs_snapshot={},
         hours=[
             HourPlan(
@@ -67,7 +67,7 @@ def plan_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> TestClient:
             for h in range(8, 20)
         ],
         scenarios_detail=ScenariosDetail(
-            model="stochastic_mpc_recourse",
+            model="shared_battery_grid_recourse",
             expected_cashflow_pln=12.5,
             soc_star_pct=[50.0 + i for i in range(13)],
             slots=[{"date": today_iso, "hour": h} for h in range(8, 20)],
@@ -78,8 +78,6 @@ def plan_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> TestClient:
                     soc_pct=[50.0 + i for i in range(13)],
                     net_kwh=[0.1 + qpv / 100.0] * 12,
                     cashflow_hour_pln=[(8.0 + qpv / 10.0) / 12] * 12,
-                    charge_kwh=[0.2] * 12,
-                    discharge_kwh=[0.1] * 12,
                 )
                 for qpv in QUANTILES
                 for qld in QUANTILES
@@ -151,16 +149,14 @@ def test_plan_visualization_24_hours_per_day(plan_client: TestClient) -> None:
 
     detail = body["scenarios_detail"]
     assert detail is not None
-    assert detail["model"] == "stochastic_mpc_recourse"
+    assert detail["model"] == "shared_battery_grid_recourse"
     assert len(detail["soc_star_pct"]) == 13
     assert len(detail["scenarios"]) == 25
     assert "pv50_ld50" in detail["scenarios"]
     assert "pv10_ld90" in detail["scenarios"]
     assert len(detail["scenarios"]["pv50_ld50"]["soc_pct"]) == 13
     assert len(detail["scenarios"]["pv50_ld50"]["net_kwh"]) == 12
-    assert len(detail["scenarios"]["pv50_ld50"]["charge_kwh"]) == 12
-    assert len(detail["scenarios"]["pv50_ld50"]["discharge_kwh"]) == 12
-    assert body["meta"]["optimizer"] == "stochastic_mpc_v1"
+    assert body["meta"]["optimizer"] == "lp_battery_scenarios_v1"
 
 
 def test_plan_visualization_unavailable_without_plan(monkeypatch: pytest.MonkeyPatch) -> None:

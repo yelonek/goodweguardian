@@ -9,11 +9,7 @@ from datetime import UTC, date, datetime
 from guardian_config import TELEMETRY_TZ
 from planner.audit import append_audit, new_event
 from planner.battery import BatteryParams
-from planner.config import (
-    ensure_planner_dirs,
-    planner_optimizer_mode,
-    planner_scenario_optimizer_enabled,
-)
+from planner.config import ensure_planner_dirs, planner_scenario_optimizer_enabled
 from planner.day_audit import build_day_audit, save_day_audit
 from planner.hour_plan_export import normalize_hour_plans_for_policy
 from planner.inputs import build_hour_inputs_for_slots, latest_soc_from_telemetry
@@ -27,7 +23,6 @@ from planner.optimizer import optimize_horizon
 from planner.plan_store import save_plan
 from planner.policy_output import build_policy_artifact, save_policy_artifact
 from planner.pricing_horizon import local_now_naive, priced_horizon_slots, slot_to_local_iso
-from planner.shadow_compare import compare_plans, save_shadow_artifacts
 
 log = logging.getLogger("planner")
 
@@ -64,27 +59,20 @@ def build_rolling_plan(
     snapshot["night_charge_carry_in"] = carry_in
     snapshot["night_grid_stored_kwh"] = round(night_grid_stored, 3)
     snapshot["green_stock_kwh"] = round(green0, 3)
-    # Pełny, walidowalny wsad pozwala odtworzyć oba solve bez API pogodowych/cenowych.
-    snapshot["hour_inputs"] = [h.model_dump(mode="json") for h in hour_inputs]
-    mode = planner_optimizer_mode()
     opt = optimize_horizon(
         hour_inputs,
         soc_start_pct=soc,
         night_charge_carry_in=carry_in,
-        # Baseline shadow musi pozostać bit-for-bit dawną polityką. Nowy MPC
-        # nie przyjmuje green_stock jako ograniczenia.
-        green_stock_kwh=green0 if mode in {"legacy", "shadow"} else None,
+        green_stock_kwh=green0,
     )
     export_hours = normalize_hour_plans_for_policy(
         hour_inputs, opt.hours, now=now_local
     )
-    optimizer_name = "lp_battery_v1"
-    if planner_scenario_optimizer_enabled():
-        optimizer_name = (
-            "stochastic_mpc_v1"
-            if mode == "stochastic_mpc"
-            else "shared_battery_legacy_v1"
-        )
+    optimizer_name = (
+        "lp_battery_scenarios_v1"
+        if planner_scenario_optimizer_enabled()
+        else "lp_battery_v1"
+    )
     fb = (opt.scenario_meta or {}).get("fallback")
     if fb:
         optimizer_name = f"fallback_{fb}"
@@ -108,39 +96,6 @@ def build_rolling_plan(
         scenarios_detail=opt.scenarios_detail,
     )
     save_plan(plan)
-    if planner_scenario_optimizer_enabled() and mode == "shadow":
-        from planner.scenario_optimizer import optimize_horizon_scenarios
-
-        candidate_opt = optimize_horizon_scenarios(
-            hour_inputs,
-            soc_start_pct=soc,
-            night_charge_carry_in=carry_in,
-        )
-        candidate = DailyPlan(
-            plan_id=f"{plan_id}-shadow",
-            local_date=anchor_date,
-            generated_at=generated.isoformat(),
-            timezone=TELEMETRY_TZ,
-            horizon_start=slot_to_local_iso(slots[0]),
-            horizon_end=slot_to_local_iso(slots[-1]),
-            soc_start_pct=soc,
-            soc_trajectory_pct=list(candidate_opt.soc_trajectory_pct),
-            expected_total_cashflow_pln=candidate_opt.total_cashflow_pln,
-            optimizer="stochastic_mpc_shadow_v1",
-            inputs_snapshot=snapshot,
-            hours=normalize_hour_plans_for_policy(
-                hour_inputs, candidate_opt.hours, now=now_local
-            ),
-            scenarios_detail=candidate_opt.scenarios_detail,
-        )
-        comparison = compare_plans(plan, candidate, hour_inputs)
-        save_shadow_artifacts(candidate, comparison)
-        log.info(
-            "shadow MPC %s: ΔE[PLN]=%+.2f first=%s",
-            candidate.plan_id[:8],
-            comparison["delta"]["expected_cashflow_pln"],
-            comparison["candidate"]["first_decision"],
-        )
     pv_meta = snapshot.get("pv_forecast_meta") or {}
     degraded = bool(pv_meta.get("error"))
     policy_art = build_policy_artifact(

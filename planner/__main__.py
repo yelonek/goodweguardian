@@ -1,9 +1,8 @@
-"""CLI planera: ``uv run -m planner plan|compare|audit|archive-enrich``."""
+"""CLI planera: ``uv run python -m planner plan|audit|archive-enrich [--date YYYY-MM-DD]``."""
 
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import sys
 from datetime import date
@@ -15,10 +14,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Audytowalny planer energii (PLN)")
     parser.add_argument(
         "command",
-        choices=["plan", "compare", "audit", "archive-enrich"],
+        choices=["plan", "audit", "archive-enrich"],
         help=(
             "plan=rolling plan (co ~10 min); "
-            "compare=ostatni artefakt legacy vs stochastic MPC; "
             "audit=dzienny audyt fakty vs perfect foresight; "
             "archive-enrich=dopisz actual PV do archiwum cech"
         ),
@@ -67,16 +65,6 @@ def main(argv: list[str] | None = None) -> int:
         result = enrich_actuals_for_date(args.date or date.today())
         print(result)
         return 0 if result.get("ok") else 1
-
-    if args.command == "compare":
-        from planner.shadow_compare import load_comparison
-
-        comparison = load_comparison()
-        if comparison is None:
-            print("Brak artefaktu shadow comparison. Uruchom planer w trybie shadow.")
-            return 1
-        print(json.dumps(comparison, indent=2, ensure_ascii=False))
-        return 0
 
     text = audit_day(local_date=args.date)
     print(text)
