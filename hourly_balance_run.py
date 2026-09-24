@@ -154,6 +154,73 @@ def _days_today_only(now: datetime) -> list[int]:
     return [(w + 1) % 7]
 
 
+# Tryby, w których jedno okno do :59 wystarcza. Reszta (Flappy, soak, obrona SOC)
+# zostaje przy krótkim oknie WATCHDOG_MAX_SLOT_MIN.
+STEADY_SLOT_REASONS = frozenset(
+    {
+        "charge_grid",
+        "import_grid",
+        "export_pv_surplus",
+        "export_profit_pace",
+        "export_profit_soc_floor",
+    }
+)
+
+_GOODWE_DAY_NAMES = ("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")
+
+
+def _slot_covers_today(slot: object, now: datetime) -> bool:
+    """Czy bity dnia (albo pole ``days``) obejmują dziś."""
+    today = _days_today_only(now)[0]
+    day_bits = getattr(slot, "day_bits", None)
+    if isinstance(day_bits, int):
+        if day_bits == -1:
+            return True
+        return bool(day_bits & (1 << today))
+    days = getattr(slot, "days", None)
+    if isinstance(days, list):
+        return today in days
+    if isinstance(days, str):
+        text = days.strip()
+        if text == "Mon-Sun":
+            return True
+        if not text:
+            return False
+        name = _GOODWE_DAY_NAMES[today]
+        return name in {part.strip() for part in text.split(",")}
+    return False
+
+
+def steady_slot_already_set(
+    *,
+    reason: str,
+    power_pct: int,
+    slot_soc_pct: int,
+    slot: object | None,
+    now: datetime,
+) -> bool:
+    """True = nie zapisuj. Procent i próg SOC muszą być identyczne co do punktu.
+
+    Brak strefy martwej: różnica o 1 punkt procentu albo SOC wymusza zapis.
+    Koniec musi być :59 tej godziny. Flappy i inne powody zawsze zwracają False.
+    """
+    if reason not in STEADY_SLOT_REASONS:
+        return False
+    if not _slot_active(slot, now):
+        return False
+    if int(getattr(slot, "end_h", -1)) != now.hour or int(getattr(slot, "end_m", -1)) != 59:
+        return False
+    if not _slot_covers_today(slot, now):
+        return False
+    soc = getattr(slot, "soc", None)
+    if soc is None or int(soc) != int(slot_soc_pct):
+        return False
+    current_pct = _current_ecoslot_pct(slot)
+    if current_pct is None or int(current_pct) != int(power_pct):
+        return False
+    return True
+
+
 def _seconds_until_next_minute_start() -> float:
     """Sekundy do początku następnej minuty (krótki margines po :00)."""
     now = _local_now()
@@ -521,22 +588,42 @@ async def run_one_cycle() -> None:
                 log_ecoslot_failure(slot_id, e)
         return
 
-    # Ustawienie slotu: od teraz do min(end bieżącej godziny, now + duration)
+    if steady_slot_already_set(
+        reason=decision.reason,
+        power_pct=decision.power_pct,
+        slot_soc_pct=decision.slot_soc_pct,
+        slot=current_slot,
+        now=now,
+    ):
+        # interwen=True zostaje w logu dashboardu: nadal chcemy ten slot, tylko go nie przepisujemy.
+        logging.getLogger("guardian").info(
+            "slot_hold slot=%s reason=%s power=%+d soc=%d end=%02d:59",
+            slot_id,
+            decision.reason,
+            decision.power_pct,
+            decision.slot_soc_pct,
+            now.hour,
+        )
+        return
+
+    # Ustawienie slotu: od teraz do końca okna.
     start_h, start_m = now.hour, now.minute
     end_h = now.hour
-    # Bezpieczniej przy nieliniowościach: nie ustawiaj długich okien.
-    # Pętla i tak wykonuje się co minutę, więc dłuższe interwencje będą przedłużane kolejnymi cyklami,
-    # a krótkie okna ograniczają przestrzelenie gdy realna moc ≠ model.
-    if decision.reason in (
-        "soc_full_defense_hold",
-        "soc_full_defense_carryover",
-    ):
-        MAX_SLOT_MIN = max(1, int(s.soc_full_defense_max_slot_min))
+    if decision.reason in STEADY_SLOT_REASONS:
+        # Jedno okno do :59. Kolejny zapis dopiero przy zmianie procentu lub progu SOC.
+        end_m = 59
     else:
-        MAX_SLOT_MIN = max(1, int(WATCHDOG_MAX_SLOT_MIN))
-    duration_min = max(1, int(math.ceil((decision.duration_s or 0.0) / 60.0)))
-    duration_min = min(MAX_SLOT_MIN, duration_min)
-    end_m = min(59, start_m + duration_min)
+        # Flappy, soak, obrona pełnego SOC: krótkie okno, pętla przedłuża co minutę.
+        if decision.reason in (
+            "soc_full_defense_hold",
+            "soc_full_defense_carryover",
+        ):
+            MAX_SLOT_MIN = max(1, int(s.soc_full_defense_max_slot_min))
+        else:
+            MAX_SLOT_MIN = max(1, int(WATCHDOG_MAX_SLOT_MIN))
+        duration_min = max(1, int(math.ceil((decision.duration_s or 0.0) / 60.0)))
+        duration_min = min(MAX_SLOT_MIN, duration_min)
+        end_m = min(59, start_m + duration_min)
 
     days = _days_today_only(now)
     try:
