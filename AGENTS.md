@@ -1,3 +1,7 @@
+## Language
+
+Write user-facing replies in Polish. Keep code, identifiers, and commit messages in the repo's existing language.
+
 ## Agent skills
 
 ### Issue tracker

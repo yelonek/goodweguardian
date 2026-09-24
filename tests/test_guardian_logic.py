@@ -167,7 +167,7 @@ class TestWatchdogPolicy:
         assert d.mode == "charge"
         assert d.reason == "end_hour_battery_soak"
 
-    def test_end_hour_does_not_clawback_large_export(
+    def test_end_hour_soaks_large_export_down_to_floor(
         self, default_inputs: BalanceInputs
     ) -> None:
         default_inputs.remaining_kwh = 2.22
@@ -178,8 +178,9 @@ class TestWatchdogPolicy:
             default_inputs,
             cfg=WatchdogConfig(end_hour_window_s=1200, end_hour_max_remaining_kwh=0.05),
         )
-        assert d.mode != "charge"
-        assert d.reason == "neutral_keep_exported_kwh"
+        assert d.write_slot is True
+        assert d.mode == "charge"
+        assert d.reason == "end_hour_battery_soak"
 
     def test_end_hour_skips_buffer_build_below_soak_target(
         self, default_inputs: BalanceInputs

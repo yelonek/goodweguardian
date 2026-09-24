@@ -94,6 +94,19 @@ def test_kpi_for_day_ignores_incomplete_hour(monkeypatch: pytest.MonkeyPatch) ->
     assert kpi["totals"]["avg_export_pln_per_kwh"] is None
 
 
+def test_kpi_for_day_floors_negative_rce_to_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(gd, "_read_telemetry_day", lambda _d: [{}])
+    monkeypatch.setattr(gd, "pricing_day_breakdown", lambda _d: _pricing_flat(-0.2, 1.11))
+
+    def fake_net(*, day):
+        return _net_hours({12: {"net_kwh": 0.97, "complete": True}})
+
+    monkeypatch.setattr(gd, "_hourly_counter_net_kwh", fake_net)
+    kpi = gd._kpi_for_day(date(2026, 8, 1))
+    assert kpi["totals"]["deposit_add_pln_day"] == pytest.approx(0.0)
+    assert kpi["hours"][12]["deposit_add_pln"] == pytest.approx(0.0)
+
+
 def test_kpi_for_day_no_export_avg_none(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(gd, "_read_telemetry_day", lambda _d: [{}])
     monkeypatch.setattr(gd, "pricing_day_breakdown", lambda _d: _pricing_flat(0.5))

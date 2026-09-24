@@ -266,11 +266,8 @@ def test_neutral_end_hour_soaks_stranded_export_when_load_above_pv() -> None:
     assert d.reason == "end_hour_battery_soak"
 
 
-def test_neutral_end_hour_does_not_clawback_sold_export() -> None:
-    """Regresja 2026-08-29 19:41: +2.22 kWh po export_profit, fallback target=0 → nie CHARGE −74%.
-
-    Soak końca h może ściągnąć drobny ogonek, nie odkupywać całogodzinnego zrzutu z sieci.
-    """
+def test_neutral_end_hour_soaks_large_gap_down_to_plan() -> None:
+    """Licznik +2,22 kWh przy celu 0: CHARGE do podłogi soaku, bez sztucznego limitu 0,5 kWh."""
     cfg = WatchdogConfig(
         end_hour_window_s=1200,
         end_hour_max_remaining_kwh=0.05,
@@ -287,13 +284,13 @@ def test_neutral_end_hour_does_not_clawback_sold_export() -> None:
         _row("neutral", target_net_kwh=0.0, battery_delta_kwh=2.29),
         cfg=cfg,
     )
-    assert d.mode != "charge"
-    assert d.reason == "neutral_keep_exported_kwh"
-    assert d.write_slot is False
+    assert d.write_slot is True
+    assert d.mode == "charge"
+    assert d.reason == "end_hour_battery_soak"
 
 
-def test_neutral_end_hour_does_not_clawback_sold_export_with_pv_surplus() -> None:
-    """Regresja 2026-08-28 07:41: +2.23 kWh, PV>load, target=0 → nie soak z sieci."""
+def test_neutral_end_hour_soaks_large_gap_with_pv_surplus() -> None:
+    """Licznik +2,23 kWh, PV>load, cel 0: też CHARGE do podłogi, nie zostawiamy plusa."""
     cfg = WatchdogConfig(
         end_hour_window_s=1200,
         end_hour_max_remaining_kwh=0.05,
@@ -310,8 +307,9 @@ def test_neutral_end_hour_does_not_clawback_sold_export_with_pv_surplus() -> Non
         _row("neutral", target_net_kwh=0.0, battery_delta_kwh=2.29),
         cfg=cfg,
     )
-    assert d.mode != "charge"
-    assert d.reason == "neutral_keep_exported_kwh"
+    assert d.write_slot is True
+    assert d.mode == "charge"
+    assert d.reason == "end_hour_battery_soak"
 
 
 def test_neutral_end_hour_does_not_soak_into_planned_import() -> None:

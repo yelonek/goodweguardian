@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 import guardian_config as guardian_cfg
 
-from economics import avg_export_pln_per_kwh
+from economics import avg_export_pln_per_kwh, settle_seller_hour
 from energy_pricing import pricing_day_breakdown
 from ev_charging_plan import (
     EvChargingDeclaration,
@@ -525,14 +525,19 @@ def _kpi_for_day(local_date: date) -> dict[str, Any]:
         deposit_h = None
         bill_h = None
         if complete and net_kwh is not None:
-            if net_kwh > 0:
-                surplus_kwh = net_kwh
-                deposit_h = surplus_kwh * rce
+            settled = settle_seller_hour(
+                float(net_kwh),
+                rce_pln_per_kwh=rce,
+                import_pln_per_kwh=eff,
+            )
+            if settled.prices_at_rce:
+                surplus_kwh = float(net_kwh)
+                deposit_h = settled.bill_pln
                 deposit_day_pln += deposit_h
                 net_export_kwh_pos += surplus_kwh
-            elif net_kwh < 0:
-                deficit_kwh = -net_kwh
-                bill_h = deficit_kwh * eff
+            elif settled.prices_at_g12:
+                deficit_kwh = -float(net_kwh)
+                bill_h = -settled.bill_pln
                 bill_day_pln += bill_h
                 net_import_kwh_pos += deficit_kwh
         hours.append(
@@ -567,7 +572,7 @@ def _kpi_for_day(local_date: date) -> dict[str, Any]:
         "pricing_source": pricing.get("source"),
         "method": {
             "energy_balance": "Między pełnymi godzinami: pierwszy pomiar w H i pierwszy w H+1 na licznikach E_imp/E_exp.",
-            "deposit": "Gdy net_kWh > 0: nadwyżka × RCE godzinowe → wpływ do depozytu.",
+            "deposit": "Gdy net_kWh > 0: nadwyżka × max(RCE, 0) → wpływ do depozytu.",
             "bill": "Gdy net_kWh < 0: nadwyżka importu × (dystrybucja + energia stała wg strefy G12 w tej godzinie).",
         },
         "warnings": boundary_warnings,

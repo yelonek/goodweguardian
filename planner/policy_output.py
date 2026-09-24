@@ -6,6 +6,7 @@ import json
 import logging
 from datetime import UTC, datetime, timedelta
 
+from economics import settle_seller_hour
 from planner.battery import BatteryParams, max_power_for_hour
 from planner.config import (
     PLANNER_OUTPUT_PATH,
@@ -119,16 +120,23 @@ def _is_cheap_import(import_pln: float, cheap_import_threshold_pln: float | None
 
 
 def _remaining_net_intent_kwh(hp: HourPlan, hin: HourInputs | None) -> float:
-    """Ile net jeszcze planujemy w tej godzinie (import < 0, eksport > 0).
+    """Reszta godziny (import < 0, eksport > 0).
 
-    Preferuje ``target_net_remainder_kwh`` (net* − N₀). Bez tego: ``net − net_so_far``.
+    Najpierw reszta zapisana przy planie. Inaczej ``settle_seller_hour``.
     """
     if hp.target_net_remainder_kwh is not None:
         return float(hp.target_net_remainder_kwh)
-    net = float(hp.target_net_kwh)
-    if hin is not None and hin.net_so_far_kwh is not None:
-        return net - float(hin.net_so_far_kwh)
-    return net
+    current = 0.0 if hin is None or hin.net_so_far_kwh is None else float(hin.net_so_far_kwh)
+    rce = 0.0 if hin is None else float(hin.export_pln_per_kwh)
+    imp = 0.0 if hin is None else float(hin.import_pln_per_kwh)
+    remainder = settle_seller_hour(
+        float(hp.target_net_kwh),
+        current_balance_kwh=current,
+        rce_pln_per_kwh=rce,
+        import_pln_per_kwh=imp,
+    ).remainder_kwh
+    assert remainder is not None
+    return remainder
 
 
 def _wants_net_import(hp: HourPlan, hin: HourInputs | None) -> bool:
