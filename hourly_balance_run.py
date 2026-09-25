@@ -19,6 +19,7 @@ from ecoslot_service import (
     other_eco_slot_active,
     read_all_eco_settings_raw,
     save_ecoslots_snapshot,
+    slot_time_in_window,
 )
 from guardian_config import (
     BALANCE_POWER_THRESHOLD_KW,
@@ -108,21 +109,6 @@ def _get_optional_float(data: dict, key: str) -> float | None:
         return None
 
 
-def _slot_time_in_window(slot: object | None, now: datetime) -> bool:
-    """Czy bieżący czas mieści się w [start, end] slotu (bez sprawdzania on_off)."""
-    if slot is None:
-        return False
-    sh = getattr(slot, "start_h", 0)
-    sm = getattr(slot, "start_m", 0)
-    eh = getattr(slot, "end_h", 0)
-    em = getattr(slot, "end_m", 0)
-    h, m = now.hour, now.minute
-    start_min = sh * 60 + sm
-    end_min = eh * 60 + em
-    now_min = h * 60 + m
-    return start_min <= now_min <= end_min
-
-
 def _slot_active(slot: object | None, now: datetime) -> bool:
     """Slot jest aktywny gdy on_off != 0 i bieżący czas w [start, end]."""
     if slot is None:
@@ -130,7 +116,7 @@ def _slot_active(slot: object | None, now: datetime) -> bool:
     on_off = getattr(slot, "on_off", 0)
     if on_off == 0:
         return False
-    return _slot_time_in_window(slot, now)
+    return slot_time_in_window(slot, now)
 
 
 def _current_ecoslot_pct(slot: object | None) -> int | None:

@@ -26,7 +26,7 @@ def _local_now() -> datetime:
     return datetime.now(ZoneInfo(TELEMETRY_TZ)).replace(tzinfo=None)
 
 
-def _slot_time_in_window(slot: object | None, now: datetime) -> bool:
+def slot_time_in_window(slot: object | None, now: datetime) -> bool:
     if slot is None:
         return False
     sh = getattr(slot, "start_h", 0)
@@ -111,7 +111,7 @@ def slot_to_payload(slot: object | None, *, now: datetime) -> dict[str, Any]:
     return {
         "present": True,
         "enabled": enabled,
-        "active_now": enabled and _slot_time_in_window(slot, now),
+        "active_now": enabled and slot_time_in_window(slot, now),
         "start_h": int(getattr(slot, "start_h", 0)),
         "start_m": int(getattr(slot, "start_m", 0)),
         "end_h": int(getattr(slot, "end_h", 0)),
@@ -139,7 +139,7 @@ def other_eco_slot_active(
         slot = slots_raw.get(sid)
         if slot is None:
             continue
-        if _slot_enabled(slot) and _slot_time_in_window(slot, now):
+        if _slot_enabled(slot) and slot_time_in_window(slot, now):
             return True
     return False
 
