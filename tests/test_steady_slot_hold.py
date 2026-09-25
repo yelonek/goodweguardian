@@ -3,7 +3,7 @@
 from datetime import datetime
 from types import SimpleNamespace
 
-from hourly_balance_run import _days_today_only, steady_slot_already_set
+from hourly_balance_run import _days_today_only, slot4_write_action, steady_slot_already_set
 
 
 def _now() -> datetime:
@@ -91,6 +91,48 @@ def test_flappy_never_skips() -> None:
         slot=_slot(),
         now=now,
     )
+
+
+def test_slot4_write_action_hold_when_slot_already_matches() -> None:
+    now = _now()
+    assert slot4_write_action(
+        control_ok=True,
+        write_slot=True,
+        slot_active=True,
+        reason="charge_grid",
+        power_pct=-100,
+        slot_soc_pct=50,
+        slot=_slot(),
+        now=now,
+    ) == "hold"
+
+
+def test_slot4_write_action_none_when_control_off() -> None:
+    now = _now()
+    assert slot4_write_action(
+        control_ok=False,
+        write_slot=True,
+        slot_active=True,
+        reason="charge_grid",
+        power_pct=-100,
+        slot_soc_pct=50,
+        slot=_slot(),
+        now=now,
+    ) == "none"
+
+
+def test_slot4_write_action_sent_to_disable_active_slot() -> None:
+    now = _now()
+    assert slot4_write_action(
+        control_ok=True,
+        write_slot=False,
+        slot_active=True,
+        reason="within_band",
+        power_pct=0,
+        slot_soc_pct=100,
+        slot=_slot(),
+        now=now,
+    ) == "sent"
 
 
 def test_short_window_forces_write() -> None:

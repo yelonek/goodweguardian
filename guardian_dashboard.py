@@ -307,18 +307,56 @@ def _parse_dashboard_line(line: str) -> DashboardRow | None:
         fields["cmd_pct"] = None
         fields["cmd_duration_s"] = None
 
+    fields["slot4_write"] = grab(r"slot4=(sent|hold|none|fail)", str)
+
     return DashboardRow(ts=ts, raw=line, fields=fields)
 
 
-def read_history(limit: int) -> list[DashboardRow]:
-    lines = _tail_lines(LOG_PATH, max_lines=max(2000, limit * 3))
+def _infer_slot4_write(fields: dict[str, Any]) -> str:
+    """Starsze linie bez ``slot4=``: zapis idzie, chyba że sterowanie jest wyłączone albo nie ma czego wysłać.
+
+    ``hold`` dopina osobna linia ``slot_hold`` w :func:`_attach_slot4_followups`.
+    """
+    reason = str(fields.get("reason") or "")
+    if "control_off" in reason:
+        return "none"
+    if fields.get("intervene") is True:
+        return "sent"
+    if fields.get("slot_bal") is True:
+        return "sent"
+    return "none"
+
+
+def _attach_slot4_followups(lines: list[str]) -> list[DashboardRow]:
+    """Łączy linię dashboardu z późniejszym ``slot_hold`` albo ``ecoslot write failed`` tej samej minuty."""
     rows: list[DashboardRow] = []
-    for line in reversed(lines):
-        r = _parse_dashboard_line(line)
-        if r:
-            rows.append(r)
-            if len(rows) >= limit:
-                break
+    open_row: DashboardRow | None = None
+    for line in lines:
+        row = _parse_dashboard_line(line)
+        if row is not None:
+            if open_row is not None:
+                rows.append(open_row)
+            if row.fields.get("slot4_write") is None:
+                row.fields["slot4_write"] = _infer_slot4_write(row.fields)
+            open_row = row
+            continue
+        if open_row is None:
+            continue
+        if "slot_hold slot=" in line:
+            open_row.fields["slot4_write"] = "hold"
+        elif "ecoslot write failed" in line:
+            open_row.fields["slot4_write"] = "fail"
+    if open_row is not None:
+        rows.append(open_row)
+    return rows
+
+
+def read_history(limit: int) -> list[DashboardRow]:
+    lines = _tail_lines(LOG_PATH, max_lines=max(2000, limit * 4))
+    rows = _attach_slot4_followups(lines)
+    if len(rows) > limit:
+        rows = rows[-limit:]
+    rows.reverse()
     return rows  # newest first
 
 

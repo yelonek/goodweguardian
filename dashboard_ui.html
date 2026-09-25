@@ -371,6 +371,9 @@
     th, td { border-bottom: 1px solid rgba(127,127,127,0.25); padding: 6px 8px; text-align: left; vertical-align: top; }
     th { position: sticky; top: 52px; background: Canvas; backdrop-filter: blur(6px); }
     .muted { opacity: 0.7; }
+    .slot4-sent { color: #c4a35a; }
+    .slot4-hold { color: #7dcea0; }
+    .slot4-fail { color: #e07a7a; }
     .page-hdr { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
     .page-hdr h2 { margin: 0; font-size: 1.15rem; }
     table.forecast td, table.forecast th { text-align: right; font-variant-numeric: tabular-nums; }
@@ -786,6 +789,7 @@
             <th>p_bat_w</th>
             <th>reason</th>
             <th>cmd</th>
+            <th title="Czy w tej minucie poszedł zapis eco slotu 4 na inwerter. Pominięty = slot już stał, wywołania nie było.">slot 4</th>
           </tr>
         </thead>
         <tbody id="hist"></tbody>

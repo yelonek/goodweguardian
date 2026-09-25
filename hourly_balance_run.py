@@ -221,6 +221,33 @@ def steady_slot_already_set(
     return True
 
 
+def slot4_write_action(
+    *,
+    control_ok: bool,
+    write_slot: bool,
+    slot_active: bool,
+    reason: str,
+    power_pct: int,
+    slot_soc_pct: int,
+    slot: object | None,
+    now: datetime,
+) -> str:
+    """sent = set_ecoslot idzie na inwerter, hold = slot już stoi, none = brak zapisu."""
+    if not control_ok:
+        return "none"
+    if not write_slot:
+        return "sent" if slot_active else "none"
+    if steady_slot_already_set(
+        reason=reason,
+        power_pct=power_pct,
+        slot_soc_pct=slot_soc_pct,
+        slot=slot,
+        now=now,
+    ):
+        return "hold"
+    return "sent"
+
+
 def _seconds_until_next_minute_start() -> float:
     """Sekundy do początku następnej minuty (krótki margines po :00)."""
     now = _local_now()
@@ -454,6 +481,16 @@ async def run_one_cycle() -> None:
     if not control_ok:
         reason_for_log = f"{reason_for_log} [control_off:{control_source}]"
     cmd_active = control_ok and decision.write_slot
+    slot4_write = slot4_write_action(
+        control_ok=control_ok,
+        write_slot=decision.write_slot,
+        slot_active=slot_active,
+        reason=decision.reason,
+        power_pct=decision.power_pct,
+        slot_soc_pct=decision.slot_soc_pct,
+        slot=current_slot,
+        now=now,
+    )
 
     log_dashboard(
         now=now,
@@ -476,6 +513,7 @@ async def run_one_cycle() -> None:
         commanded_enabled=cmd_active,
         commanded_pct=(decision.power_pct if cmd_active else 0),
         commanded_duration_s=(decision.duration_s if cmd_active else 0.0),
+        slot4_write=slot4_write,
     )
 
     log_intervention(
@@ -588,13 +626,7 @@ async def run_one_cycle() -> None:
                 log_ecoslot_failure(slot_id, e)
         return
 
-    if steady_slot_already_set(
-        reason=decision.reason,
-        power_pct=decision.power_pct,
-        slot_soc_pct=decision.slot_soc_pct,
-        slot=current_slot,
-        now=now,
-    ):
+    if slot4_write == "hold":
         # interwen=True zostaje w logu dashboardu: nadal chcemy ten slot, tylko go nie przepisujemy.
         logging.getLogger("guardian").info(
             "slot_hold slot=%s reason=%s power=%+d soc=%d end=%02d:59",

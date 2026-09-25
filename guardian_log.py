@@ -69,6 +69,7 @@ def log_dashboard(
     commanded_enabled: bool | None = None,
     commanded_pct: int | None = None,
     commanded_duration_s: float | None = None,
+    slot4_write: str | None = None,
 ) -> None:
     """Jedna linia „pulpit”: balans godz., moc bilansowania, sieć/PV/dom, bateria, slot, próg."""
     log = logging.getLogger("guardian")
@@ -78,6 +79,8 @@ def log_dashboard(
         extra += f" | cmd={'On' if commanded_enabled else 'Off'} {commanded_pct:+d}%"
         if commanded_duration_s is not None:
             extra += f" {commanded_duration_s:.0f}s"
+    if slot4_write:
+        extra += f" | slot4={slot4_write}"
     log.info(
         "dashboard | %s | balans_godz=%+.3f kWh (Δexp−Δimp; Δimp=%.3f Δexp=%.3f) | moc_bilans=%+.3f kW | "
         "sieć=%+.2f kW | PV=%.2f kW | dom=%.0f W | SOC=%.0f%% | P_bat=%+.0f W | "

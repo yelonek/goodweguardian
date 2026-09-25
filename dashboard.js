@@ -846,6 +846,13 @@ function renderPvPyramid(p) {
     ? `Uwagi: ${warns.slice(0, 4).join(" · ")}` : "";
 }
 
+function formatSlot4Write(slot4) {
+  if (slot4 === "sent") return `<span class="slot4-sent" title="zapis eco slotu 4 poszedł na inwerter">zapis</span>`;
+  if (slot4 === "hold") return `<span class="slot4-hold" title="slot już stał, zapisu nie było">pominięty</span>`;
+  if (slot4 === "fail") return `<span class="slot4-fail" title="zapis slotu 4 się nie udał">błąd</span>`;
+  return `<span class="muted" title="w tej minucie nie było zapisu slotu 4">—</span>`;
+}
+
 async function loadHistory(force) {
   if (!force && pageLoaded.history) return;
   const st = document.getElementById("historyStatus");
@@ -853,17 +860,24 @@ async function loadHistory(force) {
   else if (force) st.textContent = "odświeżanie…";
   try {
     const hist = await fetchJson("/api/history?limit=200", 15000);
-    document.getElementById("hist").innerHTML = (hist.rows || []).map((r) => {
+    const rows = hist.rows || [];
+    const slot4Counts = { sent: 0, hold: 0, none: 0, fail: 0 };
+    document.getElementById("hist").innerHTML = rows.map((r) => {
       const f = r.fields || {};
       const cmd = (f.cmd_enabled === null) ? "—" : `${f.cmd_enabled ? "On" : "Off"} ${fmt(f.cmd_pct)}% ${fmt(f.cmd_duration_s)}s`;
       const closing = f.closing_prev_hour_kwh;
       const balCell = (closing !== null && closing !== undefined)
         ? `<td title="bilans końcowy poprzedniej godziny (∑)">${fmt(closing)} <span class="muted">∑</span></td>`
         : `<td>${fmt(f.remaining_kwh)}</td>`;
-      return `<tr><td>${fmt(f.ts)}</td>${balCell}<td>${fmt(f.grid_kw)}</td><td>${fmt(f.pv_kw)}</td><td>${fmt(f.house_w)}</td><td>${fmt(f.soc_pct)}</td><td>${fmt(f.p_bat_w)}</td><td class="muted">${fmt(f.reason)}</td><td class="muted">${cmd}</td></tr>`;
+      const slot4 = f.slot4_write;
+      if (slot4Counts[slot4] !== undefined) slot4Counts[slot4] += 1;
+      const slot4Cell = formatSlot4Write(slot4);
+      return `<tr><td>${fmt(f.ts)}</td>${balCell}<td>${fmt(f.grid_kw)}</td><td>${fmt(f.pv_kw)}</td><td>${fmt(f.house_w)}</td><td>${fmt(f.soc_pct)}</td><td>${fmt(f.p_bat_w)}</td><td class="muted">${fmt(f.reason)}</td><td class="muted">${cmd}</td><td>${slot4Cell}</td></tr>`;
     }).join("");
     pageLoaded.history = true;
-    st.textContent = "OK";
+    const saved = slot4Counts.hold;
+    const wrote = slot4Counts.sent + slot4Counts.fail;
+    st.textContent = `ostatnie ${rows.length} min · zapis ${wrote} · pominięty ${saved}`;
     setUpdated(true);
   } catch (e) {
     st.textContent = String(e);
