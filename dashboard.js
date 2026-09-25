@@ -1552,24 +1552,17 @@ function renderForecastBlock(forecast) {
     else if (n < -eps) cls = "delta-neg";
     return `<td class="${cls}">${(n >= 0 ? "+" : "") + n.toFixed(d)}</td>`;
   };
-  const pvPlannerCell = (r, solcastKey, plannerKey) => {
-    const sol = r[solcastKey];
-    const plan = r[plannerKey];
-    if (r.pv_planner_active && plan != null) {
-      const fracPct = r.pv_planner_hour_fraction != null
-        ? (Number(r.pv_planner_hour_fraction) * 100).toFixed(0)
-        : "?";
-      const a = r.pv_planner_a_so_far_kwh != null ? Number(r.pv_planner_a_so_far_kwh).toFixed(3) : "—";
-      const alpha = r.pv_planner_alpha != null ? Number(r.pv_planner_alpha).toFixed(2) : "—";
+  const planOrForecastCell = (r, planKey, rawKey, rawLabel) => {
+    const plan = r[planKey];
+    const raw = r[rawKey];
+    if (plan != null) {
       const title = [
-        `Solcast pełna h: ${sol != null ? Number(sol).toFixed(3) : "—"} kWh`,
-        `Planer reszta (${fracPct}% slotu): ${Number(plan).toFixed(3)} kWh`,
-        `A_so_far=${a} kWh · α=${alpha}`,
-        r.pv_planner_k_intra != null ? `k_intra=${Number(r.pv_planner_k_intra).toFixed(3)}` : "",
-      ].filter(Boolean).join("\n");
+        `Plan: ${Number(plan).toFixed(3)} kWh`,
+        `${rawLabel}: ${raw != null ? Number(raw).toFixed(3) : "—"} kWh`,
+      ].join("\n");
       return `<td class="pv-planner-val" title="${escapeHtml(title)}">${Number(plan).toFixed(3)}</td>`;
     }
-    return fcell(sol, 3);
+    return fcell(raw, 3);
   };
   const cheapNetBarClass = (r) => {
     if (r.sell_pln_kwh == null || Number(r.sell_pln_kwh) >= RCE_CHEAP_THRESHOLD_PLN) return null;
@@ -1585,17 +1578,17 @@ function renderForecastBlock(forecast) {
     const cls = [];
     if (prevDate && r.date !== prevDate) cls.push("day-break");
     if (r.date === nowDate && r.hour === nowHour) cls.push("now");
-    if (r.pv_planner_active) cls.push("pv-planner-slot");
+    if (r.planner_pv_kwh != null || r.planner_load_kwh != null) cls.push("pv-planner-slot");
     if (r.date < nowDate || (r.date === nowDate && r.hour < nowHour)) cls.push("past");
     const netBar = cheapNetBarClass(r);
     if (netBar) cls.push(netBar);
     prevDate = r.date;
     const trClass = cls.length ? ` class="${cls.join(" ")}"` : "";
     return `<tr${trClass}><td>${r.date.slice(5)}</td><td>${String(r.hour).padStart(2, "0")}:00</td>
-      ${fcell(r.load_kwh_p25, 3)}${fcell(r.load_kwh_p50, 3)}${fcell(r.load_kwh_p75, 3)}${fcell(r.load_kwh_actual, 3)}${fcellDelta(r.load_kwh_delta_p50, 3, 0.03)}
+      ${fcell(r.load_kwh_p25, 3)}${planOrForecastCell(r, "planner_load_kwh", "load_kwh_p50", "Prognoza p50")}${fcell(r.load_kwh_p75, 3)}${fcell(r.load_kwh_actual, 3)}${fcellDelta(r.load_kwh_delta_p50, 3, 0.03)}
       ${evCell(r.ev_kwh_actual)}${domCell(r.load_base_kwh_actual)}
       ${evPlanCell(r.ev_planned_kwh)}${evPlanCell(r.load_plan_kwh)}
-      ${pvPlannerCell(r, "pv_kwh_p10", "pv_planner_remainder_p10_kwh")}${pvPlannerCell(r, "pv_kwh", "pv_planner_remainder_p50_kwh")}${pvPlannerCell(r, "pv_kwh_p90", "pv_planner_remainder_p90_kwh")}${fcell(r.pv_kwh_actual, 3)}${fcellDelta(r.pv_kwh_delta_mean, 3, 0.05)}
+      ${fcell(r.pv_kwh_p10, 3)}${planOrForecastCell(r, "planner_pv_kwh", "pv_kwh", "Solcast")}${fcell(r.pv_kwh_p90, 3)}${fcell(r.pv_kwh_actual, 3)}${fcellDelta(r.pv_kwh_delta_mean, 3, 0.05)}
       ${policyCell(r)}${boolCell(r.policy_allow_grid_charge)}${fcell(r.policy_battery_delta_kwh, 3)}
       ${fcell(r.soc_pct, 1)}${fcell(r.net_kwh, 3)}
       ${fcell(r.buy_pln_kwh, 4)}${fcell(r.sell_pln_kwh, 4)}</tr>`;

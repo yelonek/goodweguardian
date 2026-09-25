@@ -81,6 +81,8 @@ def test_combined_forecast_includes_policy(monkeypatch: pytest.MonkeyPatch, tmp_
     row = next(r for r in with_policy if r["policy"] == "hold_export")
     assert row["policy_label"] == "eksport PV"
     assert row["policy_battery_delta_kwh"] == pytest.approx(0.0)
+    assert row["planner_pv_kwh"] == pytest.approx(2.0)
+    assert row["planner_load_kwh"] == pytest.approx(1.0)
 
 
 def test_combined_forecast_current_hour_uses_planned_net_kwh(

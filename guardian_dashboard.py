@@ -86,7 +86,6 @@ from planner.pv_weather_correction import (
     build_pv_weather_dashboard,
 )
 from planner.pv_planner_display import (
-    build_pv_correction_meta_for_slot,
     planner_pv_milp_snapshot,
 )
 from planner.load_correction import (
@@ -1220,18 +1219,6 @@ def _combined_forecast_payload() -> dict[str, Any]:
     ev_plan = active_plan()
     ev_by_slot = ev_schedule_map(ev_plan, include_past=True)
 
-    now_d_iso = now.date().isoformat()
-    now_h = now.hour
-    pv_planner_meta: dict[str, Any] | None = None
-    pv_row_now = pv_by_dh.get((now_d_iso, now_h))
-    if pv_row_now:
-        pv_planner_meta = build_pv_correction_meta_for_slot(
-            now=now,
-            date_iso=now_d_iso,
-            hour=now_h,
-            pv_row=pv_row_now,
-        )
-
     rows: list[dict[str, Any]] = []
     start_dt = datetime.combine(today, datetime.min.time())
     for offset in range(48):
@@ -1354,22 +1341,13 @@ def _combined_forecast_payload() -> dict[str, Any]:
                 "policy_allow_grid_charge": (
                     policy_row.params.allow_grid_charge if policy_row else None
                 ),
+                "planner_pv_kwh": (
+                    policy_row.params.pv_plan_kwh if policy_row else None
+                ),
+                "planner_load_kwh": (
+                    policy_row.params.load_plan_kwh if policy_row else None
+                ),
             }
-        if (
-            not hour_complete
-            and d_iso == now_d_iso
-            and h == now_h
-            and pv_row is not None
-        ):
-            milp_pv = planner_pv_milp_snapshot(
-                now=now,
-                date_iso=d_iso,
-                hour=h,
-                pv_row=pv_row,
-                pv_correction_meta=pv_planner_meta,
-            )
-            if milp_pv:
-                row_dict.update(milp_pv)
         rows.append(row_dict)
 
     plan_exec, plan_exec_src = effective_planner_execution_enabled()
