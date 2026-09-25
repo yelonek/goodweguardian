@@ -8,7 +8,6 @@ Jeden przebieg: `uv run python hourly_balance_run.py --once` (np. z harmonogramu
 import argparse
 import asyncio
 import logging
-import math
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -39,7 +38,6 @@ from guardian_execution import decide_plan_execution
 from guardian_logic import (
     BalanceInputs,
     WatchdogConfig,
-    WATCHDOG_MAX_SLOT_MIN,
     decide_watchdog,
     power_needed_kw,
 )
@@ -154,18 +152,6 @@ def _days_today_only(now: datetime) -> list[int]:
     return [(w + 1) % 7]
 
 
-# Tryby, w których jedno okno do :59 wystarcza. Reszta (Flappy, soak, obrona SOC)
-# zostaje przy krótkim oknie WATCHDOG_MAX_SLOT_MIN.
-STEADY_SLOT_REASONS = frozenset(
-    {
-        "charge_grid",
-        "import_grid",
-        "export_pv_surplus",
-        "export_profit_pace",
-        "export_profit_soc_floor",
-    }
-)
-
 _GOODWE_DAY_NAMES = ("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")
 
 
@@ -193,7 +179,6 @@ def _slot_covers_today(slot: object, now: datetime) -> bool:
 
 def steady_slot_already_set(
     *,
-    reason: str,
     power_pct: int,
     slot_soc_pct: int,
     slot: object | None,
@@ -202,10 +187,8 @@ def steady_slot_already_set(
     """True = nie zapisuj. Procent i próg SOC muszą być identyczne co do punktu.
 
     Brak strefy martwej: różnica o 1 punkt procentu albo SOC wymusza zapis.
-    Koniec musi być :59 tej godziny. Flappy i inne powody zawsze zwracają False.
+    Koniec musi być :59 tej godziny. Powód decyzji nie ma znaczenia.
     """
-    if reason not in STEADY_SLOT_REASONS:
-        return False
     if not _slot_active(slot, now):
         return False
     if int(getattr(slot, "end_h", -1)) != now.hour or int(getattr(slot, "end_m", -1)) != 59:
@@ -226,7 +209,6 @@ def slot4_write_action(
     control_ok: bool,
     write_slot: bool,
     slot_active: bool,
-    reason: str,
     power_pct: int,
     slot_soc_pct: int,
     slot: object | None,
@@ -238,7 +220,6 @@ def slot4_write_action(
     if not write_slot:
         return "sent" if slot_active else "none"
     if steady_slot_already_set(
-        reason=reason,
         power_pct=power_pct,
         slot_soc_pct=slot_soc_pct,
         slot=slot,
@@ -485,7 +466,6 @@ async def run_one_cycle() -> None:
         control_ok=control_ok,
         write_slot=decision.write_slot,
         slot_active=slot_active,
-        reason=decision.reason,
         power_pct=decision.power_pct,
         slot_soc_pct=decision.slot_soc_pct,
         slot=current_slot,
@@ -638,24 +618,10 @@ async def run_one_cycle() -> None:
         )
         return
 
-    # Ustawienie slotu: od teraz do końca okna.
+    # Jedno okno do :59. Kolejny zapis dopiero przy zmianie procentu lub progu SOC.
     start_h, start_m = now.hour, now.minute
     end_h = now.hour
-    if decision.reason in STEADY_SLOT_REASONS:
-        # Jedno okno do :59. Kolejny zapis dopiero przy zmianie procentu lub progu SOC.
-        end_m = 59
-    else:
-        # Flappy, soak, obrona pełnego SOC: krótkie okno, pętla przedłuża co minutę.
-        if decision.reason in (
-            "soc_full_defense_hold",
-            "soc_full_defense_carryover",
-        ):
-            MAX_SLOT_MIN = max(1, int(s.soc_full_defense_max_slot_min))
-        else:
-            MAX_SLOT_MIN = max(1, int(WATCHDOG_MAX_SLOT_MIN))
-        duration_min = max(1, int(math.ceil((decision.duration_s or 0.0) / 60.0)))
-        duration_min = min(MAX_SLOT_MIN, duration_min)
-        end_m = min(59, start_m + duration_min)
+    end_m = 59
 
     days = _days_today_only(now)
     try:

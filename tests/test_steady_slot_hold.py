@@ -1,4 +1,4 @@
-"""Pomijanie zapisu eco slotu, gdy tryb stabilny już stoi do :59."""
+"""Pomijanie zapisu eco slotu, gdy ten sam procent i próg SOC już stoją do :59."""
 
 from datetime import datetime
 from types import SimpleNamespace
@@ -30,7 +30,6 @@ def _slot(**overrides: object) -> SimpleNamespace:
 def test_skip_when_power_soc_and_end_match() -> None:
     now = _now()
     assert steady_slot_already_set(
-        reason="charge_grid",
         power_pct=-100,
         slot_soc_pct=50,
         slot=_slot(),
@@ -41,7 +40,6 @@ def test_skip_when_power_soc_and_end_match() -> None:
 def test_export_profit_one_point_writes() -> None:
     now = _now()
     assert not steady_slot_already_set(
-        reason="export_profit_pace",
         power_pct=81,
         slot_soc_pct=100,
         slot=_slot(power=80, soc=100),
@@ -52,7 +50,6 @@ def test_export_profit_one_point_writes() -> None:
 def test_export_profit_identical_percent_skips() -> None:
     now = _now()
     assert steady_slot_already_set(
-        reason="export_profit_pace",
         power_pct=80,
         slot_soc_pct=100,
         slot=_slot(power=80, soc=100),
@@ -63,7 +60,6 @@ def test_export_profit_identical_percent_skips() -> None:
 def test_charge_grid_one_point_writes() -> None:
     now = _now()
     assert not steady_slot_already_set(
-        reason="charge_grid",
         power_pct=-99,
         slot_soc_pct=50,
         slot=_slot(power=-100),
@@ -74,7 +70,6 @@ def test_charge_grid_one_point_writes() -> None:
 def test_soc_one_point_writes() -> None:
     now = _now()
     assert not steady_slot_already_set(
-        reason="charge_grid",
         power_pct=-100,
         slot_soc_pct=51,
         slot=_slot(soc=50),
@@ -82,10 +77,9 @@ def test_soc_one_point_writes() -> None:
     )
 
 
-def test_flappy_never_skips() -> None:
+def test_soak_skips_when_power_soc_and_end_match() -> None:
     now = _now()
-    assert not steady_slot_already_set(
-        reason="end_hour_battery_soak",
+    assert steady_slot_already_set(
         power_pct=-100,
         slot_soc_pct=50,
         slot=_slot(),
@@ -99,7 +93,6 @@ def test_slot4_write_action_hold_when_slot_already_matches() -> None:
         control_ok=True,
         write_slot=True,
         slot_active=True,
-        reason="charge_grid",
         power_pct=-100,
         slot_soc_pct=50,
         slot=_slot(),
@@ -113,7 +106,6 @@ def test_slot4_write_action_none_when_control_off() -> None:
         control_ok=False,
         write_slot=True,
         slot_active=True,
-        reason="charge_grid",
         power_pct=-100,
         slot_soc_pct=50,
         slot=_slot(),
@@ -127,7 +119,6 @@ def test_slot4_write_action_sent_to_disable_active_slot() -> None:
         control_ok=True,
         write_slot=False,
         slot_active=True,
-        reason="within_band",
         power_pct=0,
         slot_soc_pct=100,
         slot=_slot(),
@@ -138,7 +129,6 @@ def test_slot4_write_action_sent_to_disable_active_slot() -> None:
 def test_short_window_forces_write() -> None:
     now = _now()
     assert not steady_slot_already_set(
-        reason="import_grid",
         power_pct=-1,
         slot_soc_pct=10,
         slot=_slot(power=-1, soc=10, end_m=45),

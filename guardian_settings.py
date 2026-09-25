@@ -88,10 +88,6 @@ class GuardianSettings(BaseModel):
         5, ge=1, le=30, json_schema_extra=_meta("soc_full", "min"),
         description="Pierwsze N minut nowej godziny z tarczą SOC jak po aktywności w poprzedniej.",
     )
-    soc_full_defense_max_slot_min: int = Field(
-        15, ge=1, le=59, json_schema_extra=_meta("soc_full", "min"),
-        description="Maksymalna długość okna dla obrony pełnego SOC.",
-    )
 
     # --- Obrona SOC niska (liniowy sufit mocy rozładowania) ---
     soc_low_cap_soc_high_pct: float = Field(

@@ -21,9 +21,6 @@ _EXEC_SKIP_SOC_FULL: frozenset[ExecMode] = frozenset({"export_profit"})
 # Hold CHARGE −1% przy pełnej baterii / rezerwie nocnej (kontrakt, nie strojenie).
 SOC_HOLD_CHARGE_PCT = -1
 
-# Domyślna długość zwykłego eco-slotu [min] (nie strojenie UI).
-WATCHDOG_MAX_SLOT_MIN = 5
-
 
 @dataclass
 class BalanceInputs:
