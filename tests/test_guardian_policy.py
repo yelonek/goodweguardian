@@ -11,7 +11,7 @@ from planner.policy_output import build_policy_artifact, save_policy_artifact
 
 def test_active_policy_row_valid(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import planner.policy_output as po_mod
-    from planner.guardian_policy import active_policy_row
+    from planner.active_policy import active_policy_row
 
     out = tmp_path / "planner_output.json"
     monkeypatch.setattr(po_mod, "PLANNER_OUTPUT_PATH", out)
@@ -56,7 +56,7 @@ def test_active_policy_row_valid(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 
 def test_active_policy_row_expired(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import planner.policy_output as po_mod
-    from planner.guardian_policy import active_policy_row
+    from planner.active_policy import active_policy_row
 
     out = tmp_path / "planner_output.json"
     monkeypatch.setattr(po_mod, "PLANNER_OUTPUT_PATH", out)

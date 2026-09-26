@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from guardian_logic import (
+from decision import (
     BalanceInputs,
     WatchdogConfig,
     battery_discharge_cap_w,

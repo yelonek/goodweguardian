@@ -2,12 +2,18 @@
 
 import pytest
 
-from guardian_logic import (
+from decision import (
     BalanceInputs,
     WatchdogConfig,
-    decide_watchdog,
+    decide_watchdog as _decide_watchdog,
     power_needed_kw,
 )
+from goodwe_adapter import eco_slot_command
+
+
+def decide_watchdog(inp: BalanceInputs, **kwargs: object):
+    """Test patrzy na slot Eco po adapterze GoodWe, nie na waty nastawy."""
+    return eco_slot_command(_decide_watchdog(inp, **kwargs), inp.watts_per_percent)
 
 
 class TestPowerNeededKw:
@@ -479,7 +485,7 @@ class TestWatchdogPolicy:
         default_inputs.remaining_kwh = -0.20
         default_inputs.pv_w = 100.0
         default_inputs.consumption_w = 1000.0
-        default_inputs.other_eco_slot_active = True
+        default_inputs.external_schedule_active = True
         d = decide_watchdog(default_inputs, cfg=WatchdogConfig())
         assert d.write_slot is False
         assert d.reason == "other_eco_slot_active"

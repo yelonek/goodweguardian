@@ -1,11 +1,10 @@
-"""Odczyt aktywnego wiersza policy dla Guardiana."""
+"""Odczyt aktywnego wiersza polityki godziny."""
 
 from __future__ import annotations
 
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
-from planner.config import PLANNER_POLICY_VALID_MINUTES
 from planner.models import HourPolicyRow, PlannerPolicyArtifact
 from planner.policy_output import load_policy_artifact, policy_rows_by_slot
 
@@ -22,7 +21,7 @@ def active_policy_row(
     tz: str = "Europe/Warsaw",
 ) -> tuple[HourPolicyRow, PlannerPolicyArtifact] | None:
     """
-    Wiersz policy dla (data, godzina), jeśli artefakt istnieje i jest ważny.
+    Wiersz polityki dla (data, godzina), jeśli artefakt istnieje i jest ważny.
 
     ``valid_until`` porównywane z ``now`` w strefie artefaktu.
     """
@@ -44,7 +43,7 @@ def active_policy_row(
             computed = computed.astimezone(ZoneInfo(art.timezone or tz)).replace(
                 tzinfo=None
             )
-        # Artefakt bez ważnego valid_until — domyślnie PLANNER_POLICY_VALID_MINUTES od computed
+        # Artefakt bez ważnego valid_until — próg ważności jest już w valid_until.
         if art.valid_until and ref > valid_until:
             return None
     except (TypeError, ValueError):

@@ -1,17 +1,21 @@
 """
-Logika guardiana: Flappy Bird — bilans godzinowy, obrony SOC, limit inwertera.
+Mózg bilansu: Flappy Bird, obrony SOC, limit inwertera.
 
 Konwencja znaku (ujednolicona z mocą sieci):
   − remaining_kWh = ΔE_export − ΔE_import w bieżącej godzinie [kWh].
   − Dodatnie: przewaga energii oddanej do sieci; ujemne: przewaga pobranej z sieci.
   − moc sieci (grid): dodatnie = do sieci (eksport), ujemne = z sieci (import).
 Cel domyślny (fallback bez planera): bilans ~0 na koniec godziny (Flappy Bird).
-Egzekucja planu: ``guardian_execution`` + tryb ``exec_mode`` (§13 PLANNING_SYSTEM.md).
+Egzekucja planu: ``decision.execution`` + tryb ``exec_mode`` (§13 PLANNING_SYSTEM.md).
 Moc baterii: dodatnia = rozładowanie, ujemna = ładowanie.
+
+Arytmetyka progów zostaje w procentach. Publiczna nastawa jest w watach
+(``setpoint_from_pct``).
 """
 
 from dataclasses import dataclass, replace
 
+from decision.setpoint import Setpoint
 from economics import settle_seller_hour
 from planner.models import ExecMode
 
@@ -34,7 +38,7 @@ class BalanceInputs:
     p_inverter_w: float
     p_battery_w: float
     watts_per_percent: float = 70.0
-    other_eco_slot_active: bool = False
+    external_schedule_active: bool = False
 
 
 @dataclass
@@ -64,7 +68,7 @@ class WatchdogConfig:
 
 @dataclass
 class WatchdogDecision:
-    """Decyzja watchdog: czy ustawić slot, czy wrócić do neutral."""
+    """Krok procentowy wewnątrz mózgu. Na zewnątrz wychodzi ``Setpoint``."""
 
     write_slot: bool
     enabled: bool
@@ -73,6 +77,18 @@ class WatchdogDecision:
     mode: str
     reason: str
     slot_soc_pct: int = 100
+
+
+def setpoint_from_pct(decision: WatchdogDecision, watts_per_percent: float) -> Setpoint:
+    """Procent kroku wewnętrznego razy przelicznik, bez drugiego zaokrąglenia watów."""
+    return Setpoint(
+        power_w=float(decision.power_pct) * float(watts_per_percent),
+        soc_limit_pct=int(decision.slot_soc_pct),
+        release=not decision.write_slot,
+        reason=decision.reason,
+        mode=decision.mode,
+        duration_s=float(decision.duration_s),
+    )
 
 
 def power_needed_kw(remaining_kwh: float, time_to_end_s: float) -> float:
@@ -380,7 +396,7 @@ def decide_soc_defenses(
     """
     del plan_battery_delta_kwh  # zachowane w sygnaturze dla kompatybilności callerów
 
-    if inp.other_eco_slot_active:
+    if inp.external_schedule_active:
         return _neutral_decision("other_eco_slot_active")
 
     if (
@@ -543,8 +559,8 @@ def decide_watchdog(
     minute_of_hour: int | None = None,
     hour_of_day: int | None = None,
     soc_full_defense_carryover: bool = False,
-) -> WatchdogDecision:
-    """Fallback bez planera: Flappy ~0 na liczniku."""
+) -> Setpoint:
+    """Fallback bez planera: Flappy ~0 na liczniku. Zwraca nastawę w watach."""
 
     soc = decide_soc_defenses(
         inp,
@@ -554,7 +570,7 @@ def decide_watchdog(
         soc_full_defense_carryover=soc_full_defense_carryover,
     )
     if soc is not None:
-        return clamp_discharge_to_soc_cap(soc, inp, cfg)
+        return setpoint_from_pct(clamp_discharge_to_soc_cap(soc, inp, cfg), inp.watts_per_percent)
 
     if float(inp.remaining_kwh) < 0.0:
         decision = _deficit_recovery_decision(inp, cfg)
@@ -588,4 +604,6 @@ def decide_watchdog(
                 else:
                     decision = _neutral_decision("flappy_neutral")
 
-    return clamp_discharge_to_soc_cap(decision, inp, cfg)
+    return setpoint_from_pct(
+        clamp_discharge_to_soc_cap(decision, inp, cfg), inp.watts_per_percent
+    )

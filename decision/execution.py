@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from guardian_settings import get_settings
-from guardian_logic import (
+from decision.logic import (
     BalanceInputs,
     WatchdogConfig,
     WatchdogDecision,
@@ -17,7 +16,10 @@ from guardian_logic import (
     compute_export_profit_pace_w,
     decide_flappy_relative,
     decide_soc_defenses,
+    setpoint_from_pct,
 )
+from decision.setpoint import Setpoint
+from guardian_settings import get_settings
 from planner.models import ExecMode, HourPolicyParams, HourPolicyRow
 
 # Kontrakt §13 — nie strojenie UI.
@@ -169,11 +171,12 @@ def decide_plan_execution(
     minute_of_hour: int | None = None,
     hour_of_day: int | None = None,
     soc_full_defense_carryover: bool = False,
-) -> WatchdogDecision:
+) -> Setpoint:
     """
     Router ``exec_mode`` → strategia. ``inp.remaining_kwh`` = bilans licznika od :00.
 
     Obrony SOC przed trybem planera — z wyjątkami per ``exec_mode`` (§13).
+    Zwraca nastawę w watach.
     """
     soc = decide_soc_defenses(
         inp,
@@ -185,14 +188,21 @@ def decide_plan_execution(
         plan_battery_delta_kwh=float(policy_row.params.battery_delta_kwh),
     )
     if soc is not None:
-        return clamp_discharge_to_soc_cap(soc, inp, cfg)
+        return setpoint_from_pct(
+            clamp_discharge_to_soc_cap(soc, inp, cfg), inp.watts_per_percent
+        )
 
     mode: ExecMode = policy_row.exec_mode
     handler = _EXEC_HANDLERS.get(mode)
     if handler is None:
-        return clamp_discharge_to_soc_cap(
-            _neutral_decision(f"unknown_exec_mode:{mode}"), inp, cfg
+        return setpoint_from_pct(
+            clamp_discharge_to_soc_cap(
+                _neutral_decision(f"unknown_exec_mode:{mode}"), inp, cfg
+            ),
+            inp.watts_per_percent,
         )
 
     decision = handler(inp, policy_row, cfg)
-    return clamp_discharge_to_soc_cap(decision, inp, cfg)
+    return setpoint_from_pct(
+        clamp_discharge_to_soc_cap(decision, inp, cfg), inp.watts_per_percent
+    )

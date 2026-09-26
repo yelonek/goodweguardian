@@ -1,7 +1,13 @@
 """Guardian: egzekucja exec_mode (bez chase actual−target)."""
 
-from guardian_execution import decide_plan_execution
-from guardian_logic import BalanceInputs, WatchdogConfig
+from decision import BalanceInputs, WatchdogConfig, decide_plan_execution as _decide_plan_execution
+from goodwe_adapter import eco_slot_command
+
+
+def decide_plan_execution(inp: BalanceInputs, policy_row: object, **kwargs: object):
+    return eco_slot_command(
+        _decide_plan_execution(inp, policy_row, **kwargs), inp.watts_per_percent
+    )
 from planner.models import HourPolicyParams, HourPolicyRow
 
 

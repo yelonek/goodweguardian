@@ -13,7 +13,6 @@ from zoneinfo import ZoneInfo
 
 import goodwe
 
-from ecoslot_config import set_ecoslot
 from ecoslot_service import (
     build_ecoslots_payload,
     other_eco_slot_active,
@@ -34,18 +33,18 @@ from guardian_config import (
 from guardian_settings import get_settings
 from guardian_control import effective_control_enabled
 from planner_control import effective_planner_execution_enabled
-from planner.guardian_policy import active_policy_row
-from guardian_execution import decide_plan_execution
-from guardian_logic import (
+from decision import (
     BalanceInputs,
     WatchdogConfig,
+    decide_plan_execution,
     decide_watchdog,
     power_needed_kw,
 )
+from goodwe_adapter import apply_goodwe_setpoint, eco_slot_command
+from planner.active_policy import active_policy_row
 from guardian_log import (
     balancing_power_kw_signed,
     log_dashboard,
-    log_ecoslot_failure,
     log_inputs,
     log_intervention,
     setup_logging,
@@ -380,7 +379,7 @@ async def run_one_cycle() -> None:
         p_inverter_w=P_INVERTER_W,
         p_battery_w=P_BATTERY_W,
         watts_per_percent=WATTS_PER_PERCENT,
-        other_eco_slot_active=other_eco_active,
+        external_schedule_active=other_eco_active,
     )
 
     wd_cfg = WatchdogConfig(
@@ -420,6 +419,7 @@ async def run_one_cycle() -> None:
             hour_of_day=now.hour,
             soc_full_defense_carryover=soc_full_carryover,
         )
+    command = eco_slot_command(decision, WATTS_PER_PERCENT)
 
     soc_full_carryover = _next_soc_full_carryover_flag(
         soc_full_carryover,
@@ -447,13 +447,13 @@ async def run_one_cycle() -> None:
         reason_for_log = f"{reason_for_log} [plan_exec:{plan_exec_source} no_policy]"
     if not control_ok:
         reason_for_log = f"{reason_for_log} [control_off:{control_source}]"
-    cmd_active = control_ok and decision.write_slot
+    cmd_active = control_ok and command.write_slot
     slot4_write = slot4_write_action(
         control_ok=control_ok,
-        write_slot=decision.write_slot,
+        write_slot=command.write_slot,
         slot_active=slot_active,
-        power_pct=decision.power_pct,
-        slot_soc_pct=decision.slot_soc_pct,
+        power_pct=command.power_pct,
+        slot_soc_pct=command.slot_soc_pct,
         slot=current_slot,
         now=now,
     )
@@ -473,12 +473,12 @@ async def run_one_cycle() -> None:
         slot_active=slot_active,
         other_eco_active=other_eco_active,
         ecoslot_pct=current_pct,
-        intervene=decision.write_slot,
+        intervene=command.write_slot,
         reason=reason_for_log,
         threshold_kw=BALANCE_POWER_THRESHOLD_KW,
         commanded_enabled=cmd_active,
-        commanded_pct=(decision.power_pct if cmd_active else 0),
-        commanded_duration_s=(decision.duration_s if cmd_active else 0.0),
+        commanded_pct=(command.power_pct if cmd_active else 0),
+        commanded_duration_s=(command.duration_s if cmd_active else 0.0),
         slot4_write=slot4_write,
     )
 
@@ -486,12 +486,10 @@ async def run_one_cycle() -> None:
         now=now,
         remaining_kwh=remaining_kwh,
         power_needed_kw=power_kw,
-        intervene=decision.write_slot,
-        battery_power_w=(decision.power_pct * WATTS_PER_PERCENT)
-        if decision.write_slot
-        else None,
-        battery_power_pct=decision.power_pct if decision.write_slot else None,
-        duration_s=decision.duration_s if decision.write_slot else None,
+        intervene=command.write_slot,
+        battery_power_w=decision.power_w if command.write_slot else None,
+        battery_power_pct=command.power_pct if command.write_slot else None,
+        duration_s=command.duration_s if command.write_slot else None,
         reason=decision.reason,
     )
 
@@ -526,7 +524,7 @@ async def run_one_cycle() -> None:
                     slot_balancing_active=slot_active,
                     other_eco_active=other_eco_active,
                     ecoslot_pct=current_pct,
-                    watchdog_write_slot=decision.write_slot,
+                    watchdog_write_slot=command.write_slot,
                     watchdog_reason=decision.reason,
                     guardian_control_enabled=control_ok,
                     control_source=control_source,
@@ -536,8 +534,8 @@ async def run_one_cycle() -> None:
                     exec_mode=exec_mode,
                     plan_id=plan_id,
                     cmd_enabled=cmd_active,
-                    cmd_pct=decision.power_pct if cmd_active else 0,
-                    cmd_duration_s=float(decision.duration_s if cmd_active else 0.0),
+                    cmd_pct=command.power_pct if cmd_active else 0,
+                    cmd_duration_s=float(command.duration_s if cmd_active else 0.0),
                     E_twc_kwh=E_twc_kwh,
                     delta_twc_kwh=delta_twc_kwh,
                 )
@@ -573,58 +571,15 @@ async def run_one_cycle() -> None:
     if not control_ok:
         return
 
-    if not decision.write_slot:
-        # Powrót do normy: jeśli slot balansujący aktywny, wyłącz go, żeby GoodWe działało samodzielnie.
-        if slot_active:
-            try:
-                await set_ecoslot(
-                    inverter,
-                    slot_id,
-                    start_h=now.hour,
-                    start_m=now.minute,
-                    end_h=now.hour,
-                    end_m=min(59, now.minute + 1),
-                    power=0,
-                    days=_days_today_only(now),
-                    enabled=False,
-                )
-            except Exception as e:
-                log_ecoslot_failure(slot_id, e)
-        return
-
-    if slot4_write == "hold":
-        # interwen=True zostaje w logu dashboardu: nadal chcemy ten slot, tylko go nie przepisujemy.
-        logging.getLogger("guardian").info(
-            "slot_hold slot=%s reason=%s power=%+d soc=%d end=%02d:59",
-            slot_id,
-            decision.reason,
-            decision.power_pct,
-            decision.slot_soc_pct,
-            now.hour,
-        )
-        return
-
-    # Jedno okno do :59. Kolejny zapis dopiero przy zmianie procentu lub progu SOC.
-    start_h, start_m = now.hour, now.minute
-    end_h = now.hour
-    end_m = 59
-
-    days = _days_today_only(now)
-    try:
-        await set_ecoslot(
-            inverter,
-            slot_id,
-            start_h=start_h,
-            start_m=start_m,
-            end_h=end_h,
-            end_m=end_m,
-            power=decision.power_pct,
-            days=days,
-            soc=decision.slot_soc_pct,
-            enabled=True,
-        )
-    except Exception as e:
-        log_ecoslot_failure(slot_id, e)
+    await apply_goodwe_setpoint(
+        inverter,
+        command=command,
+        slot_id=slot_id,
+        slot_active=slot_active,
+        slot4_write=slot4_write,
+        now=now,
+        days=_days_today_only(now),
+    )
 
 
 async def run_loop_forever() -> None:

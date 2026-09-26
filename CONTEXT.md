@@ -37,3 +37,21 @@ _Avoid_: import, odkup
 **Soak**:
 Schowanie energii w magazynie przez zmniejszenie netu godziny. Dopóki bilans godzinowy zostaje dodatni, utracone korzyści to RCE tej godziny (po ucięciu ujemnej ceny do 0).
 _Avoid_: odkup po G12, clawback jako kupno po taryfie importu
+
+### Sterowanie
+
+**Planer**:
+Ustala politykę godziny. Nie zapisuje na falownik.
+_Avoid_: Guardian, DeyeDefender, nastawa
+
+**Nastawa**:
+Moc baterii w watach, limit SOC i czy oddać falownik jego własnemu programowi.
+_Avoid_: procent slotu, EcoSlot, power_pct
+
+**Guardian**:
+Adapter, który nastawę zapisuje na falowniku GoodWe.
+_Avoid_: cały program, planer, DeyeDefender
+
+**DeyeDefender**:
+Adapter, który tę samą nastawę zapisuje na falowniku Deye.
+_Avoid_: drugi planer, Guardian

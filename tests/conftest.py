@@ -15,7 +15,7 @@ os.environ.setdefault(
     str(Path(tempfile.gettempdir()) / f"gg_test_settings_{os.getpid()}.json"),
 )
 
-from guardian_logic import BalanceInputs
+from decision import BalanceInputs
 
 
 @pytest.fixture(autouse=True)
@@ -38,5 +38,5 @@ def default_inputs() -> BalanceInputs:
         p_inverter_w=8200.0,
         p_battery_w=5000.0,
         watts_per_percent=70.0,
-        other_eco_slot_active=False,
+        external_schedule_active=False,
     )
