@@ -10,6 +10,12 @@ from fastapi.testclient import TestClient
 import guardian_dashboard as gd
 
 
+@pytest.fixture(autouse=True)
+def _no_kpi_disk(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(gd, "_kpi_disk_get", lambda _d: None)
+    monkeypatch.setattr(gd, "_kpi_disk_put", lambda _d, _t: None)
+
+
 def _pricing_flat(rce: float = 0.5, imp: float = 1.0) -> dict:
     return {
         "source": "test",

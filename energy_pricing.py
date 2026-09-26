@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
-from datetime import date
+import threading
+import time
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -89,6 +93,81 @@ def adjust_rce_for_export_settlement(hourly_rce: list[float]) -> list[float]:
     return [export_pln_per_kwh_effective(float(v) * m) for v in hourly_rce]
 
 
+_PROXY_RCE_TTL_S = 300.0
+_proxy_rce_mem: dict[date, tuple[float, list[float]]] = {}
+_proxy_rce_lock = threading.Lock()
+
+
+def _proxy_rce_path(local_date: date) -> Path:
+    return PRICING_CACHE_DIR / f"proxy_rce_{local_date.isoformat()}.json"
+
+
+def _pricing_today() -> date:
+    return datetime.now(ZoneInfo(TELEMETRY_TZ)).date()
+
+
+def _proxy_rce_fresh(local_date: date, fetched_at: float, *, now: float | None = None) -> bool:
+    if local_date < _pricing_today():
+        return True
+    stamp = time.time() if now is None else now
+    return (stamp - fetched_at) < _PROXY_RCE_TTL_S
+
+
+def _load_proxy_rce_disk(local_date: date) -> list[float] | None:
+    path = _proxy_rce_path(local_date)
+    if not path.is_file():
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    hourly = raw.get("hourly_rce_pln_per_kwh") if isinstance(raw, dict) else None
+    fetched_at = raw.get("fetched_at_epoch") if isinstance(raw, dict) else None
+    if not isinstance(hourly, list) or len(hourly) != 24 or not isinstance(fetched_at, (int, float)):
+        return None
+    if not _proxy_rce_fresh(local_date, float(fetched_at)):
+        return None
+    try:
+        return [float(v) for v in hourly]
+    except (TypeError, ValueError):
+        return None
+
+
+def _store_proxy_rce(local_date: date, hourly: list[float]) -> None:
+    fetched_at = time.time()
+    with _proxy_rce_lock:
+        _proxy_rce_mem[local_date] = (fetched_at, list(hourly))
+    path = _proxy_rce_path(local_date)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "date": local_date.isoformat(),
+                    "fetched_at_epoch": fetched_at,
+                    "hourly_rce_pln_per_kwh": hourly,
+                }
+            ),
+            encoding="utf-8",
+        )
+    except OSError as e:
+        log.warning("proxy rce cache write failed %s: %s", path, e)
+
+
+def _cached_proxy_rce(local_date: date) -> list[float] | None:
+    now = time.time()
+    with _proxy_rce_lock:
+        mem = _proxy_rce_mem.get(local_date)
+        if mem is not None and _proxy_rce_fresh(local_date, mem[0], now=now):
+            return list(mem[1])
+    return _load_proxy_rce_disk(local_date)
+
+
+def clear_proxy_rce_cache() -> None:
+    with _proxy_rce_lock:
+        _proxy_rce_mem.clear()
+
+
 def get_hourly_rce_pln_per_kwh(
     local_date: date,
     *,
@@ -100,9 +179,12 @@ def get_hourly_rce_pln_per_kwh(
     """
     if RCE_PROXY_BASE_URL:
         try:
-            hourly_rce = fetch_hourly_rce_from_proxy(
-                local_date, base_url=RCE_PROXY_BASE_URL, client=client
-            )
+            hourly_rce = None if force_refresh_rce else _cached_proxy_rce(local_date)
+            if hourly_rce is None:
+                hourly_rce = fetch_hourly_rce_from_proxy(
+                    local_date, base_url=RCE_PROXY_BASE_URL, client=client
+                )
+                _store_proxy_rce(local_date, hourly_rce)
             return adjust_rce_for_export_settlement(hourly_rce), "rce_proxy"
         except Exception as e:
             log.warning("rce proxy fetch failed for %s: %s", local_date.isoformat(), e)

@@ -7,6 +7,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from guardian_config import TELEMETRY_DIR
+from telemetry_scan import scan_telemetry_file
 
 
 def read_telemetry_day(local_date: date) -> list[dict]:
@@ -46,61 +47,31 @@ def hourly_actuals(local_date: date) -> dict[int, dict]:
     - ``net_kwh``: ostatni ``remaining_kwh`` w godzinie (Δexp−Δimp)
     - ``load_kwh``, ``pv_kwh``: średnia moc / 1000 * liczba próbek/60… uproszczenie: suma energii z przyrostów
     """
-    rows = read_telemetry_day(local_date)
-    by_hour: dict[int, list[dict]] = {h: [] for h in range(24)}
-    for r in rows:
-        try:
-            h = int(r["local_hour"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        if 0 <= h <= 23:
-            by_hour[h].append(r)
-
+    scan = scan_telemetry_file(TELEMETRY_DIR / f"telemetry_{local_date.isoformat()}.jsonl")
+    if scan is None:
+        return {}
     out: dict[int, dict] = {}
-    for h in range(24):
-        bucket = by_hour[h]
-        if not bucket:
+    for h, n_min in scan.actual_n.items():
+        if n_min <= 0:
             continue
-        last = max(bucket, key=lambda x: (int(x.get("local_minute", 0)), x.get("ts_utc", "")))
-        net = float(last.get("remaining_kwh", 0.0))
-        avg_cons_w = sum(float(x.get("consumption_w", 0.0)) for x in bucket) / len(bucket)
-        avg_pv_w = sum(float(x.get("pv_w", 0.0)) for x in bucket) / len(bucket)
-        n_min = len(bucket)
-        load_kwh = (avg_cons_w / 1000.0) * (n_min / 60.0)
-        pv_kwh = (avg_pv_w / 1000.0) * (n_min / 60.0)
+        avg_cons_w = scan.actual_cons_sum.get(h, 0.0) / n_min
+        avg_pv_w = scan.actual_pv_sum.get(h, 0.0) / n_min
         out[h] = {
-            "net_kwh": net,
-            "load_kwh": load_kwh,
-            "pv_kwh": pv_kwh,
+            "net_kwh": scan.actual_last_remaining.get(h, 0.0),
+            "load_kwh": (avg_cons_w / 1000.0) * (n_min / 60.0),
+            "pv_kwh": (avg_pv_w / 1000.0) * (n_min / 60.0),
             "samples": n_min,
-            "last_soc_pct": float(last.get("soc_pct", 0.0)),
+            "last_soc_pct": scan.actual_last_soc.get(h, 0.0),
         }
     return out
 
 
 def _first_e_pv_kwh_per_hour(local_date: date) -> dict[int, float]:
     """Najwcześniejsza próbka ``E_pv_kwh`` per godzina lokalna."""
-    rows = read_telemetry_day(local_date)
-    best: dict[int, tuple[int, float]] = {}
-    for row in rows:
-        try:
-            hour = int(row["local_hour"])
-            minute = int(row["local_minute"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        if not (0 <= hour <= 23):
-            continue
-        val = row.get("E_pv_kwh")
-        if val is None:
-            continue
-        try:
-            v = float(val)
-        except (TypeError, ValueError):
-            continue
-        prev = best.get(hour)
-        if prev is None or minute < prev[0]:
-            best[hour] = (minute, v)
-    return {h: v for h, (_m, v) in best.items()}
+    scan = scan_telemetry_file(TELEMETRY_DIR / f"telemetry_{local_date.isoformat()}.jsonl")
+    if scan is None:
+        return {}
+    return dict(scan.first_pv)
 
 
 def hourly_pv_meter_delta_kwh(local_date: date) -> dict[int, float]:

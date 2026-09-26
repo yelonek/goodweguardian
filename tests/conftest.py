@@ -14,8 +14,38 @@ os.environ.setdefault(
     "GUARDIAN_SETTINGS_PATH",
     str(Path(tempfile.gettempdir()) / f"gg_test_settings_{os.getpid()}.json"),
 )
+os.environ.setdefault("GUARDIAN_DASHBOARD_WARM", "0")
+os.environ.setdefault(
+    "KPI_DAILY_TOTALS_PATH",
+    str(Path(tempfile.gettempdir()) / f"gg_test_kpi_totals_{os.getpid()}.json"),
+)
 
 from decision import BalanceInputs
+
+
+@pytest.fixture(autouse=True)
+def _reset_dashboard_speed_caches():
+    """Cache prognozy z jednego testu nie może zasłonić monkeypatchy w następnym."""
+    import sys
+
+    def _clear() -> None:
+        gd = sys.modules.get("guardian_dashboard")
+        if gd is not None:
+            gd._combined_forecast_cache = None
+            gd._combined_refreshing = False
+            gd._pv_pyramid_cache = None
+            gd._pyramid_refreshing = False
+            gd._kpi_disk = None
+        pv = sys.modules.get("pv_forecast")
+        if pv is not None:
+            pv.clear_solcast_cache()
+        scan = sys.modules.get("telemetry_scan")
+        if scan is not None:
+            scan.clear_telemetry_scan_cache()
+
+    _clear()
+    yield
+    _clear()
 
 
 @pytest.fixture(autouse=True)

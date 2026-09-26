@@ -8,6 +8,7 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -31,7 +32,13 @@ from ev_charging_plan import (
     resolve_ev_put_target_kwh,
 )
 from ev_charging_store import active_plan, clear_declaration, write_declaration
-from guardian_config import EV_CHARGING_DEFAULT_POWER_KW, LOG_DIR, TELEMETRY_DIR, TELEMETRY_TZ
+from guardian_config import (
+    EV_CHARGING_DEFAULT_POWER_KW,
+    LOG_DIR,
+    STATE_DIR,
+    TELEMETRY_DIR,
+    TELEMETRY_TZ,
+)
 from ecoslot_service import (
     attach_planner_editability,
     balancing_slot_id,
@@ -73,6 +80,7 @@ from planner.policy_output import (
     policy_rows_by_slot,
 )
 from planner.telemetry import hourly_actuals
+from telemetry_scan import DayScan, scan_telemetry_file
 from planner.pv_correction import (
     apply_pv_correction,
     build_pv_intra_state,
@@ -100,7 +108,34 @@ from planner.load_correction import (
 from planner.load_planner_display import planner_load_milp_snapshot
 from tesla_wall_charger import hourly_ev_kwh_from_telemetry, twc_enabled
 
-app = FastAPI(title="GoodWeGuardian Dashboard", version="0.2.0")
+def _warm_dashboard_caches() -> None:
+    """Prognoza i średnia roczna KPI w tle, zanim użytkownik otworzy zakładkę."""
+    logger.info("dashboard warm start")
+    try:
+        _get_combined_forecast_cached()
+    except Exception:
+        logger.exception("dashboard warm forecast failed")
+    try:
+        _get_pv_pyramid_cached()
+    except Exception:
+        logger.exception("dashboard warm pyramid failed")
+    try:
+        _export_avg_payload(_telemetry_today())
+    except Exception:
+        logger.exception("dashboard warm kpi failed")
+    logger.info("dashboard warm done")
+
+
+@asynccontextmanager
+async def _dashboard_lifespan(_app: FastAPI):
+    if os.environ.get("GUARDIAN_DASHBOARD_WARM", "1") != "0":
+        threading.Thread(
+            target=_warm_dashboard_caches, name="dash-warm", daemon=True
+        ).start()
+    yield
+
+
+app = FastAPI(title="GoodWeGuardian Dashboard", version="0.2.0", lifespan=_dashboard_lifespan)
 
 logger = logging.getLogger(__name__)
 
@@ -397,82 +432,36 @@ def annotate_history_closing_balance(rows: list[DashboardRow]) -> None:
 
 
 def _read_telemetry_day(local_date: date) -> list[dict[str, Any]]:
+    """Liczba sparsowanych wierszy (KPI). Treść wierszy nie jest materializowana."""
     path = TELEMETRY_DIR / f"telemetry_{local_date.isoformat()}.jsonl"
-    if not path.exists():
+    scan = scan_telemetry_file(path)
+    if scan is None:
         return []
-    rows: list[dict[str, Any]] = []
-    try:
-        with path.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    data = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(data, dict):
-                    rows.append(data)
-    except OSError:
-        return []
-    return rows
+    return [{}] * scan.n_rows
 
 
-def _parse_ts_utc(ts: str) -> datetime | None:
-    try:
-        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=datetime.UTC)
-    return dt
-
-
-def _epoch_sort_key(r: dict[str, Any]) -> float:
-    dt = _parse_ts_utc(str(r.get("ts_utc", "")))
-    if dt is None:
-        return float("-inf")
-    return dt.timestamp()
-
-
-def _telemetry_sorted_rows(paths: list[Path]) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for path in paths:
-        if not path.exists():
+def _counter_edge(
+    scans: list[tuple[int, DayScan | None]],
+    *,
+    local_date: date,
+    hour: int,
+) -> tuple[float | None, float | None] | None:
+    """Pierwszy (E_imp, E_exp) w godzinie — ten sam porządek co sort po ts_utc."""
+    best_key: tuple[float, int, int] | None = None
+    best: tuple[float | None, float | None] | None = None
+    d_iso = local_date.isoformat()
+    for file_i, scan in scans:
+        if scan is None:
             continue
-        try:
-            with path.open("r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        data = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if isinstance(data, dict):
-                        rows.append(data)
-        except OSError:
+        item = scan.first_counter.get((d_iso, hour))
+        if item is None:
             continue
-    rows.sort(key=_epoch_sort_key)
-    return rows
-
-
-def _first_reading_in_hour(
-    rows: list[dict[str, Any]], *, local_date: date, hour: int
-) -> dict[str, Any] | None:
-    """Pierwszy rekord telemetrii w danej lokalnej godzinie (granica „po pełnej godzinie”)."""
-    d_s = local_date.isoformat()
-    for r in rows:
-        try:
-            if str(r.get("local_date")) != d_s:
-                continue
-            if int(r.get("local_hour")) != hour:
-                continue
-            return r
-        except (TypeError, ValueError):
-            continue
-    return None
+        epoch, seq, imp, exp = item
+        key = (epoch, file_i, seq)
+        if best_key is None or key < best_key:
+            best_key = key
+            best = (imp, exp)
+    return best
 
 
 def _hourly_counter_net_kwh(
@@ -489,46 +478,33 @@ def _hourly_counter_net_kwh(
     """
     warnings: list[str] = []
     next_day = day + timedelta(days=1)
-    rows_full = _telemetry_sorted_rows(
-        [
-            TELEMETRY_DIR / f"telemetry_{day.isoformat()}.jsonl",
-            TELEMETRY_DIR / f"telemetry_{next_day.isoformat()}.jsonl",
-        ]
-    )
+    scans = [
+        (0, scan_telemetry_file(TELEMETRY_DIR / f"telemetry_{day.isoformat()}.jsonl")),
+        (1, scan_telemetry_file(TELEMETRY_DIR / f"telemetry_{next_day.isoformat()}.jsonl")),
+    ]
     out: dict[int, dict[str, Any]] = {}
     for h in range(24):
-        start = _first_reading_in_hour(rows_full, local_date=day, hour=h)
+        start = _counter_edge(scans, local_date=day, hour=h)
         end_hour = 0 if h == 23 else h + 1
         end_date = next_day if h == 23 else day
-        end = _first_reading_in_hour(rows_full, local_date=end_date, hour=end_hour)
-        if start is None or end is None:
+        end = _counter_edge(scans, local_date=end_date, hour=end_hour)
+        if start is None or end is None or None in start or None in end:
             out[h] = {
                 "net_kwh": None,
                 "delta_imp_kwh": None,
                 "delta_exp_kwh": None,
                 "complete": False,
             }
-            if start is None:
+            if start is None or (start is not None and None in start):
                 warnings.append(f"Brak pierwszego pomiaru w godzinie {h:02d}")
-            if end is None:
+            if end is None or (end is not None and None in end):
                 warnings.append(
                     f"Brak pierwszego pomiaru po godzinie {h:02d} (koniec interwału)"
                 )
             continue
-        try:
-            imp0 = float(start["E_imp_kwh"])
-            exp0 = float(start["E_exp_kwh"])
-            imp1 = float(end["E_imp_kwh"])
-            exp1 = float(end["E_exp_kwh"])
-        except (KeyError, TypeError, ValueError):
-            out[h] = {
-                "net_kwh": None,
-                "delta_imp_kwh": None,
-                "delta_exp_kwh": None,
-                "complete": False,
-            }
-            warnings.append(f"Błędne liczniki w godzinie {h:02d}")
-            continue
+        imp0, exp0 = start
+        imp1, exp1 = end
+        assert imp0 is not None and exp0 is not None and imp1 is not None and exp1 is not None
         d_imp = imp1 - imp0
         d_exp = exp1 - exp0
         out[h] = {
@@ -666,14 +642,64 @@ def _export_avg_period_block(
 
 
 _kpi_totals_cache: dict[date, tuple[float, dict[str, Any] | None]] = {}
+_kpi_disk: dict[str, dict[str, Any]] | None = None
+_kpi_disk_lock = threading.Lock()
+
+
+def _kpi_totals_path() -> Path:
+    raw = os.environ.get("KPI_DAILY_TOTALS_PATH", "").strip()
+    if raw:
+        return Path(raw)
+    return STATE_DIR / "kpi_daily_totals.json"
+
+
+def _kpi_disk_load() -> dict[str, dict[str, Any]]:
+    global _kpi_disk
+    if _kpi_disk is not None:
+        return _kpi_disk
+    path = _kpi_totals_path()
+    data: dict[str, dict[str, Any]] = {}
+    if path.is_file():
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            days = raw.get("days") if isinstance(raw, dict) else None
+            if isinstance(days, dict):
+                data = {str(k): v for k, v in days.items() if isinstance(v, dict)}
+        except (OSError, json.JSONDecodeError):
+            logger.warning("kpi totals disk read failed: %s", path, exc_info=True)
+    _kpi_disk = data
+    return data
+
+
+def _kpi_disk_get(local_date: date) -> dict[str, Any] | None:
+    hit = _kpi_disk_load().get(local_date.isoformat())
+    if hit is None:
+        return None
+    return dict(hit)
+
+
+def _kpi_disk_put(local_date: date, totals: dict[str, Any]) -> None:
+    with _kpi_disk_lock:
+        disk = _kpi_disk_load()
+        disk[local_date.isoformat()] = dict(totals)
+        path = _kpi_totals_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(
+            json.dumps({"days": disk}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        tmp.replace(path)
 
 
 def _kpi_totals_for_day(
     local_date: date, *, today: date | None = None
 ) -> dict[str, Any] | None:
-    """Totale z ``_kpi_for_day`` (bez audytu). Przeszłość: cache do restartu; dziś: TTL 60 s.
+    """Totale z ``_kpi_for_day`` (bez audytu).
 
-    ``None`` gdy dzień nie da się policzyć (np. dziura RCE / DST) — agregacja pomija.
+    Dni zamknięte: pamięć i ``state/kpi_daily_totals.json`` (przeżywa restart).
+    Dziś: TTL 60 s, bez zapisu na dysk.
+    ``None`` gdy dzień nie da się policzyć — agregacja pomija i nie utrwala porażki.
     """
     today = today if today is not None else _telemetry_today()
     mono = time.monotonic()
@@ -684,6 +710,11 @@ def _kpi_totals_for_day(
             return totals
         if (mono - at) < _KPI_CACHE_TTL_S:
             return totals
+    if local_date < today:
+        disk_hit = _kpi_disk_get(local_date)
+        if disk_hit is not None:
+            _kpi_totals_cache[local_date] = (mono, disk_hit)
+            return disk_hit
     try:
         totals = dict(_kpi_for_day(local_date).get("totals") or {})
     except Exception:
@@ -694,6 +725,8 @@ def _kpi_totals_for_day(
         )
         totals = None
     _kpi_totals_cache[local_date] = (mono, totals)
+    if totals is not None and local_date < today:
+        _kpi_disk_put(local_date, totals)
     return totals
 
 
@@ -1022,11 +1055,17 @@ async def api_kpi_export_avg(
 _TOMORROW_PRICING_TTL_S = 300.0
 _tomorrow_pricing_cache: tuple[date, float, dict[str, Any] | None] | None = None
 
-_COMBINED_FORECAST_TTL_S = 90.0
+_COMBINED_FRESH_S = 180.0
+_COMBINED_STALE_S = 900.0
 _combined_forecast_cache: tuple[float, dict[str, Any]] | None = None
+_combined_refreshing = False
+_combined_cache_gen = 0
 
-_PV_PYRAMID_TTL_S = 90.0
+_PV_PYRAMID_FRESH_S = 180.0
+_PV_PYRAMID_STALE_S = 900.0
 _pv_pyramid_cache: tuple[float, dict[str, Any]] | None = None
+_pyramid_refreshing = False
+_pyramid_cache_gen = 0
 
 _ECOSLOTS_CACHE_TTL_S = 20.0
 _ecoslots_cache: tuple[float, dict[str, Any]] | None = None
@@ -1037,37 +1076,10 @@ def _first_pv_kwh_per_hour(local_date: date) -> dict[int, float]:
     Najwcześniejsza próbka E_pv_kwh (licznik e_total z inwertera) per godzina lokalna.
     Zwraca {hour: kwh}. Godziny bez próbki lub bez pola E_pv_kwh — pominięte.
     """
-    path = TELEMETRY_DIR / f"telemetry_{local_date.isoformat()}.jsonl"
-    if not path.exists():
+    scan = scan_telemetry_file(TELEMETRY_DIR / f"telemetry_{local_date.isoformat()}.jsonl")
+    if scan is None:
         return {}
-    best: dict[int, tuple[int, float]] = {}
-    try:
-        with path.open("r", encoding="utf-8") as f:
-            for raw in f:
-                line = raw.strip()
-                if not line:
-                    continue
-                try:
-                    row = json.loads(line)
-                    hour = int(row["local_hour"])
-                    minute = int(row["local_minute"])
-                except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-                    continue
-                if not (0 <= hour <= 23):
-                    continue
-                val = row.get("E_pv_kwh")
-                if val is None:
-                    continue
-                try:
-                    v = float(val)
-                except (TypeError, ValueError):
-                    continue
-                prev = best.get(hour)
-                if prev is None or minute < prev[0]:
-                    best[hour] = (minute, v)
-    except OSError:
-        return {}
-    return {h: v for h, (_m, v) in best.items()}
+    return dict(scan.first_pv)
 
 
 def _telemetry_hourly_load_pv_actuals(
@@ -1079,42 +1091,20 @@ def _telemetry_hourly_load_pv_actuals(
           (z licznika ``e_total`` w inwerterze). Dla H=23 używa pierwszej próbki
           z pliku telemetrii następnego dnia.
     """
-    path = TELEMETRY_DIR / f"telemetry_{local_date.isoformat()}.jsonl"
-    buckets_c: dict[int, list[float]] = {h: [] for h in range(24)}
-    if not path.exists():
+    scan = scan_telemetry_file(TELEMETRY_DIR / f"telemetry_{local_date.isoformat()}.jsonl")
+    if scan is None:
         return {}, {}
-    try:
-        with path.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    row = json.loads(line)
-                    hour = int(row["local_hour"])
-                    cw = float(row["consumption_w"])
-                except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-                    continue
-                if 0 <= hour <= 23:
-                    buckets_c[hour].append(cw)
-    except OSError:
-        return {}, {}
-
-    load_kwh: dict[int, float] = {}
-    for h in range(24):
-        if buckets_c[h]:
-            load_kwh[h] = (sum(buckets_c[h]) / len(buckets_c[h])) / 1000.0
-
-    first_pv_today = _first_pv_kwh_per_hour(local_date)
-    first_pv_tomorrow = _first_pv_kwh_per_hour(local_date + timedelta(days=1))
-
+    next_scan = scan_telemetry_file(
+        TELEMETRY_DIR / f"telemetry_{(local_date + timedelta(days=1)).isoformat()}.jsonl"
+    )
+    first_pv_tomorrow = next_scan.first_pv if next_scan is not None else {}
     pv_kwh: dict[int, float] = {}
     for h in range(24):
-        start = first_pv_today.get(h)
+        start = scan.first_pv.get(h)
         if start is None:
             continue
         if h < 23:
-            end = first_pv_today.get(h + 1)
+            end = scan.first_pv.get(h + 1)
         else:
             end = first_pv_tomorrow.get(0)
         if end is None:
@@ -1123,7 +1113,7 @@ def _telemetry_hourly_load_pv_actuals(
         if delta < 0:
             continue
         pv_kwh[h] = delta
-    return load_kwh, pv_kwh
+    return dict(scan.load_avg_kwh), pv_kwh
 
 
 def _planner_hours_for_date(
@@ -1412,8 +1402,11 @@ def _combined_forecast_payload() -> dict[str, Any]:
 
 
 def _invalidate_combined_forecast_cache() -> None:
-    global _combined_forecast_cache
+    global _combined_forecast_cache, _combined_cache_gen, _pv_pyramid_cache, _pyramid_cache_gen
+    _combined_cache_gen += 1
     _combined_forecast_cache = None
+    _pyramid_cache_gen += 1
+    _pv_pyramid_cache = None
 
 
 _PV_CORRECTION_TTL_S = 10.0
@@ -1914,18 +1907,49 @@ def _replan_rolling_after_ev_change() -> dict[str, Any]:
     }
 
 
+def _refresh_combined_background(gen: int) -> None:
+    global _combined_forecast_cache, _combined_refreshing
+    try:
+        with _forecast_build_lock:
+            if gen != _combined_cache_gen:
+                return
+            payload = _combined_forecast_payload()
+            if gen == _combined_cache_gen:
+                _combined_forecast_cache = (time.monotonic(), payload)
+    except Exception:
+        logger.exception("combined forecast refresh failed")
+    finally:
+        _combined_refreshing = False
+
+
 def _get_combined_forecast_cached() -> dict[str, Any]:
-    global _combined_forecast_cache
+    """Świeży wynik albo ostatni payload, a przebudowa leci w tle."""
+    global _combined_forecast_cache, _combined_refreshing
     mono = time.monotonic()
     cached = _combined_forecast_cache
-    if cached is not None and (mono - cached[0]) < _COMBINED_FORECAST_TTL_S:
-        return cached[1]
+    if cached is not None:
+        age = mono - cached[0]
+        if age < _COMBINED_FRESH_S:
+            return cached[1]
+        if age < _COMBINED_STALE_S:
+            if not _combined_refreshing:
+                _combined_refreshing = True
+                threading.Thread(
+                    target=_refresh_combined_background,
+                    args=(_combined_cache_gen,),
+                    name="dash-forecast-refresh",
+                    daemon=True,
+                ).start()
+            return cached[1]
     with _forecast_build_lock:
         cached = _combined_forecast_cache
-        if cached is not None and (mono - cached[0]) < _COMBINED_FORECAST_TTL_S:
+        mono = time.monotonic()
+        if cached is not None and (mono - cached[0]) < _COMBINED_FRESH_S:
             return cached[1]
+        gen = _combined_cache_gen
         payload = _combined_forecast_payload()
-        _combined_forecast_cache = (time.monotonic(), payload)
+        if gen == _combined_cache_gen:
+            _combined_forecast_cache = (time.monotonic(), payload)
         return payload
 
 
@@ -2049,20 +2073,52 @@ async def api_forecast_combined() -> JSONResponse:
     return JSONResponse(payload)
 
 
+def _refresh_pyramid_background(gen: int) -> None:
+    global _pv_pyramid_cache, _pyramid_refreshing
+    try:
+        with _forecast_build_lock:
+            if gen != _pyramid_cache_gen:
+                return
+            from pv_pyramid import build_pv_pyramid_payload
+
+            payload = build_pv_pyramid_payload()
+            if gen == _pyramid_cache_gen:
+                _pv_pyramid_cache = (time.monotonic(), payload)
+    except Exception:
+        logger.exception("pv pyramid refresh failed")
+    finally:
+        _pyramid_refreshing = False
+
+
 def _get_pv_pyramid_cached() -> dict[str, Any]:
-    global _pv_pyramid_cache
+    global _pv_pyramid_cache, _pyramid_refreshing
     mono = time.monotonic()
     cached = _pv_pyramid_cache
-    if cached is not None and (mono - cached[0]) < _PV_PYRAMID_TTL_S:
-        return cached[1]
+    if cached is not None:
+        age = mono - cached[0]
+        if age < _PV_PYRAMID_FRESH_S:
+            return cached[1]
+        if age < _PV_PYRAMID_STALE_S:
+            if not _pyramid_refreshing:
+                _pyramid_refreshing = True
+                threading.Thread(
+                    target=_refresh_pyramid_background,
+                    args=(_pyramid_cache_gen,),
+                    name="dash-pyramid-refresh",
+                    daemon=True,
+                ).start()
+            return cached[1]
     with _forecast_build_lock:
         cached = _pv_pyramid_cache
-        if cached is not None and (mono - cached[0]) < _PV_PYRAMID_TTL_S:
+        mono = time.monotonic()
+        if cached is not None and (mono - cached[0]) < _PV_PYRAMID_FRESH_S:
             return cached[1]
         from pv_pyramid import build_pv_pyramid_payload
 
+        gen = _pyramid_cache_gen
         payload = build_pv_pyramid_payload()
-        _pv_pyramid_cache = (time.monotonic(), payload)
+        if gen == _pyramid_cache_gen:
+            _pv_pyramid_cache = (time.monotonic(), payload)
         return payload
 
 

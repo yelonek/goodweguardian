@@ -10,6 +10,7 @@ from statistics import median
 from typing import Any
 
 from guardian_config import TELEMETRY_DIR
+from telemetry_scan import scan_telemetry_file
 from telemetry_store import recent_consumption_average_w
 
 # Parametry algorytmu nowcast — const (nie strojenie UI).
@@ -38,30 +39,10 @@ def _hourly_kwh_from_file(path: Path) -> dict[int, float]:
     """
     Przybliza zuzycie godzinowe jako srednia consumption_w w godzinie / 1000.
     """
-    buckets: dict[int, list[float]] = {h: [] for h in range(24)}
-    try:
-        with path.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    row = json.loads(line)
-                    hour = int(row["local_hour"])
-                    val = float(row["consumption_w"])
-                except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-                    continue
-                if 0 <= hour <= 23:
-                    buckets[hour].append(val)
-    except OSError:
+    scan = scan_telemetry_file(path)
+    if scan is None:
         return {}
-
-    out: dict[int, float] = {}
-    for h in range(24):
-        vals = buckets[h]
-        if vals:
-            out[h] = (sum(vals) / len(vals)) / 1000.0
-    return out
+    return dict(scan.load_avg_kwh)
 
 
 def _hourly_base_kwh_from_file(path: Path, local_date: date) -> dict[int, float]:

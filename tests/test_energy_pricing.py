@@ -78,6 +78,33 @@ def test_get_hourly_rce_applies_multiplier(monkeypatch: pytest.MonkeyPatch) -> N
     assert got == pytest.approx([0.2 * 1.23] * 24)
 
 
+def test_proxy_rce_hits_network_once(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import energy_pricing as ep
+
+    raw = [0.4] * 24
+    calls: list[date] = []
+
+    def fake_fetch(local_date, *, base_url, client=None):
+        calls.append(local_date)
+        return list(raw)
+
+    monkeypatch.setattr(ep, "RCE_PROXY_BASE_URL", "http://proxy.test")
+    monkeypatch.setattr(ep, "PRICING_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(ep, "fetch_hourly_rce_from_proxy", fake_fetch)
+    monkeypatch.setattr(ep, "_pricing_today", lambda: date(2026, 9, 26))
+    ep.clear_proxy_rce_cache()
+    _set_multiplier(monkeypatch, 1.0)
+
+    past = date(2026, 6, 1)
+    first, source = get_hourly_rce_pln_per_kwh(past)
+    ep.clear_proxy_rce_cache()
+    second, source2 = get_hourly_rce_pln_per_kwh(past)
+    assert source == source2 == "rce_proxy"
+    assert first == pytest.approx(raw)
+    assert second == pytest.approx(raw)
+    assert calls == [past]
+
+
 def test_hourly_row_length(sample_tariff: G12TariffConfig) -> None:
     row = hourly_effective_import_pln_per_kwh_for_day(
         date(2026, 4, 1), tariff=sample_tariff

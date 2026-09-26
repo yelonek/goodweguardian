@@ -14,6 +14,8 @@ Dla zakończonych godzin lokalnych wybieramy snapshot z najnowszym ``fetched_at`
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -23,6 +25,19 @@ import httpx
 from guardian_config import PROXY_HTTP_TIMEOUT_S, SOLCAST_PROXY_BASE_URL, TELEMETRY_TZ
 
 log = logging.getLogger("guardian")
+
+_SOLCAST_TTL_S = 180.0
+_solcast_lock = threading.Lock()
+_forecasts_cache: tuple[float, list[dict], dict[str, Any]] | None = None
+# (fetched_mono, start, end, limit, items)
+_history_cache: tuple[float, datetime, datetime, int, list[dict]] | None = None
+
+
+def clear_solcast_cache() -> None:
+    global _forecasts_cache, _history_cache
+    with _solcast_lock:
+        _forecasts_cache = None
+        _history_cache = None
 
 
 def _parse_dt(ts: str) -> datetime:
@@ -106,13 +121,22 @@ def _aggregate_single_hour(items: list[dict], *, date_s: str, hour: int) -> dict
 
 
 def _fetch_forecasts_items(client: httpx.Client) -> tuple[list[dict], dict[str, Any]]:
+    global _forecasts_cache
+    now = time.monotonic()
+    with _solcast_lock:
+        cached = _forecasts_cache
+        if cached is not None and (now - cached[0]) < _SOLCAST_TTL_S:
+            return list(cached[1]), dict(cached[2])
     r = client.get(f"{SOLCAST_PROXY_BASE_URL}/forecasts")
     r.raise_for_status()
     payload = r.json()
     items = payload.get("data", {}).get("forecasts", [])
     if not isinstance(items, list):
         items = []
-    return [x for x in items if isinstance(x, dict)], payload
+    clean = [x for x in items if isinstance(x, dict)]
+    with _solcast_lock:
+        _forecasts_cache = (time.monotonic(), clean, payload if isinstance(payload, dict) else {})
+    return clean, payload if isinstance(payload, dict) else {}
 
 
 def _fetch_history_items(
@@ -123,6 +147,7 @@ def _fetch_history_items(
     limit: int,
 ) -> list[dict]:
     """``/history`` — zakres ``period_end`` w czasie lokalnym (``start``/``end`` + ``tz``)."""
+    global _history_cache
     tz = ZoneInfo(TELEMETRY_TZ)
     start = (
         start_local.replace(tzinfo=tz)
@@ -134,6 +159,17 @@ def _fetch_history_items(
         if end_local.tzinfo is None
         else end_local.astimezone(tz)
     )
+    now_m = time.monotonic()
+    with _solcast_lock:
+        cached = _history_cache
+        if (
+            cached is not None
+            and (now_m - cached[0]) < _SOLCAST_TTL_S
+            and cached[1] <= start
+            and cached[2] >= end
+            and cached[3] >= int(limit)
+        ):
+            return list(cached[4])
     params = {
         "start": start.strftime("%Y-%m-%dT%H:%M:%S"),
         "end": end.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -146,7 +182,13 @@ def _fetch_history_items(
     items = payload.get("forecasts", [])
     if not isinstance(items, list):
         return []
-    return [x for x in items if isinstance(x, dict)]
+    clean = [x for x in items if isinstance(x, dict)]
+    with _solcast_lock:
+        prev = _history_cache
+        wider = prev is None or start < prev[1] or end > prev[2] or int(limit) > prev[3]
+        if wider or (now_m - (prev[0] if prev else 0)) >= _SOLCAST_TTL_S:
+            _history_cache = (time.monotonic(), start, end, int(limit), clean)
+    return clean
 
 
 def _items_for_local_hour(items: list[dict], *, date_s: str, hour: int) -> list[dict]:

@@ -325,21 +325,22 @@ function localNowParts() {
 
 async function loadOverview(force) {
   if (!force && pageLoaded.overview) return;
-  try {
-    const [status, planViz] = await Promise.all([
-      fetchJson("/api/status", 10000),
-      fetchJson("/api/plan/visualization", 60000).catch((e) => ({ _error: String(e) })),
-    ]);
-    document.getElementById("logPath").textContent = status.log_path || "—";
-    renderEcoOverrideBanner(status);
-    renderStatus(status.fields || {});
-    renderPlanTimeline(planViz);
-    pageLoaded.overview = true;
-    setUpdated(true);
-  } catch (e) {
-    setUpdated(false);
-    console.error(e);
-  }
+  const statusTask = fetchJson("/api/status", 10000)
+    .then((status) => {
+      document.getElementById("logPath").textContent = status.log_path || "—";
+      renderEcoOverrideBanner(status);
+      renderStatus(status.fields || {});
+      pageLoaded.overview = true;
+      setUpdated(true);
+    })
+    .catch((e) => {
+      setUpdated(false);
+      console.error(e);
+    });
+  const planTask = fetchJson("/api/plan/visualization", 60000)
+    .then((planViz) => renderPlanTimeline(planViz))
+    .catch((e) => renderPlanTimeline({ _error: String(e) }));
+  await Promise.all([statusTask, planTask]);
 }
 
 const PLAN_MODE_SHORT = {
@@ -2206,26 +2207,24 @@ async function loadKpi(force) {
   if (!force && pageLoaded.kpi) return;
   const st = document.getElementById("kpiStatus");
   if (!pageLoaded.kpi) st.textContent = "ładowanie…";
-  try {
-    const day = kpiSelectedDay();
-    const [dayRes, avgRes] = await Promise.allSettled([
-      fetchJson(`/api/kpi/day?day=${encodeURIComponent(day)}`, 60000),
-      fetchJson(`/api/kpi/export-avg?day=${encodeURIComponent(day)}`, 120000),
-    ]);
-    if (dayRes.status !== "fulfilled") throw dayRes.reason;
-    renderKpiBlock(dayRes.value);
-    renderKpiMergedTable(dayRes.value);
-    if (avgRes.status === "fulfilled") {
-      renderKpiExportAvg(avgRes.value);
-    } else {
+  const day = kpiSelectedDay();
+  const avgTask = fetchJson(`/api/kpi/export-avg?day=${encodeURIComponent(day)}`, 120000)
+    .then((avg) => renderKpiExportAvg(avg))
+    .catch((e) => {
       renderKpiExportAvg(null);
       const warn = document.getElementById("kpiWarnings");
-      const extra = "średnia sprzedaży: " + avgRes.reason;
+      const extra = "średnia sprzedaży: " + e;
       warn.textContent = warn.textContent ? `${warn.textContent} · ${extra}` : extra;
-    }
+    });
+  try {
+    const dayRes = await fetchJson(`/api/kpi/day?day=${encodeURIComponent(day)}`, 60000);
+    renderKpiBlock(dayRes);
+    renderKpiMergedTable(dayRes);
     pageLoaded.kpi = true;
-    st.textContent = "OK";
+    st.textContent = "średnia sprzedaży…";
     setUpdated(true);
+    await avgTask;
+    if (st.textContent === "średnia sprzedaży…") st.textContent = "OK";
   } catch (e) {
     st.textContent = String(e);
     document.getElementById("kpiWarnings").textContent = "KPI: " + e;
@@ -2910,7 +2909,6 @@ function startPagePolling(page) {
 
 function navigate(page, force) {
   if (!PAGE_LOADERS[page]) page = "overview";
-  const switching = currentPage !== page;
   if (currentPage === page && !force) return;
   currentPage = page;
   document.querySelectorAll(".page").forEach((el) => el.classList.remove("active"));
@@ -2919,8 +2917,8 @@ function navigate(page, force) {
     a.classList.toggle("active", a.dataset.page === page);
   });
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-  // Przy przełączeniu zakładki zawsze pobierz świeże dane (pageLoaded blokował ponowne wejście).
-  PAGE_LOADERS[page](!!force || switching);
+  // Już narysowana zakładka zostaje na ekranie; nowe dane podmieniają ją po odpowiedzi.
+  PAGE_LOADERS[page](true);
   startPagePolling(page);
 }
 
