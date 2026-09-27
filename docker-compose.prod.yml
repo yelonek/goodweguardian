@@ -45,4 +45,4 @@ services:
     volumes:
       - ./data/ntfy:/var/lib/ntfy
     ports:
-      - "127.0.0.1:2586:80"
+      - "192.168.1.15:2586:80"
