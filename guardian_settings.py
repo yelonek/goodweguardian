@@ -195,12 +195,12 @@ class GuardianSettings(BaseModel):
         description="Wykrywanie anomalii palących kasę (ntfy + banner). Wyłącza tylko detektory, nie sterowanie.",
     )
     anomaly_debounce_min: int = Field(
-        3, ge=1, le=15, json_schema_extra=_meta("alerts", "min"),
-        description="Ile kolejnych minut warunek musi trwać, zanim poleci alarm.",
+        5, ge=1, le=15, json_schema_extra=_meta("alerts", "min"),
+        description="Ile kolejnych minut bilans, eksport albo stojąca bateria muszą trwać, zanim poleci alarm.",
     )
     anomaly_cooldown_min: int = Field(
-        30, ge=5, le=240, json_schema_extra=_meta("alerts", "min"),
-        description="Minimalny odstęp między kolejnymi pushami tego samego alarmu.",
+        5, ge=5, le=240, json_schema_extra=_meta("alerts", "min"),
+        description="Przypomnienie, dopóki alarm trwa. Nowy powód nie czeka na ten odstęp.",
     )
     anomaly_clear_min: int = Field(
         2, ge=1, le=15, json_schema_extra=_meta("alerts", "min"),
@@ -208,27 +208,27 @@ class GuardianSettings(BaseModel):
     )
     anomaly_ev_kw_threshold: float = Field(
         3.5, ge=0.0, json_schema_extra=_meta("alerts", "kW"),
-        description="Próg mocy TWC w drogiej G12 — powyżej „zbyt szybkie ładowanie EV”.",
+        description="Nieużywane. Detektor mocy TWC w drogiej strefie został wycofany.",
     )
     anomaly_import_w_threshold: float = Field(
         500.0, ge=0.0, json_schema_extra=_meta("alerts", "W"),
-        description="Próg importu z sieci (moc ujemna) dla alarmu PV+import w drogiej taryfie.",
+        description="Nieużywane. Detektor chwilowego importu przy PV został wycofany.",
     )
     anomaly_pv_w_threshold: float = Field(
         400.0, ge=0.0, json_schema_extra=_meta("alerts", "W"),
-        description="Próg produkcji PV, od którego import w drogiej taryfie jest anomalią.",
+        description="Nieużywane. Detektor chwilowego importu przy PV został wycofany.",
     )
     anomaly_cash_pln_per_h: float = Field(
         1.5, ge=0.0, json_schema_extra=_meta("alerts", "PLN/h"),
-        description="Nie pchać drobnicy poniżej tej stawki (gdy taryfa G12 jest uzupełniona).",
+        description="Nieużywane. Alarmy nie mają progu złotówkowego.",
     )
     anomaly_plan_miss_kwh: float = Field(
         0.8, ge=0.0, json_schema_extra=_meta("alerts", "kWh"),
-        description="Opóźnienie bilansu vs liniowe tempo planu (export_profit / surplus).",
+        description="Nieużywane. Eksport zarobkowy patrzy, czy tempo donosi target, bez progu kWh.",
     )
     anomaly_plan_miss_after_minute: int = Field(
         10, ge=0, le=50, json_schema_extra=_meta("alerts", "min"),
-        description="Od której minuty godziny oceniamy miss planu (unikamy startu slotu).",
+        description="Nieużywane. Tempo eksportu liczy się z ostatnich pięciu minut.",
     )
 
 

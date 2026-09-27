@@ -1,7 +1,7 @@
-"""Detektory anomalii, które palą kasę albo tracą zysk z planu.
+"""Detektory anomalii: bilans godziny, tani eksport, egzekucja planu, zapowiedź.
 
-Czyste funkcje: ``evaluate(snapshot)`` → lista firingów. Debounce / ntfy / persist
-są w ``alert_store``.
+Czyste funkcje: ``evaluate(snapshot, outlook)`` → lista firingów.
+Debounce, zbiorczy push i odczyt planu są w ``alert_store``.
 """
 
 from __future__ import annotations
@@ -11,13 +11,40 @@ from pydantic import BaseModel, Field
 from guardian_settings import GuardianSettings, get_settings
 from tariff_g12 import G12TariffConfig, g12_tariff_from_env
 
-RULE_EV_EXPENSIVE_FAST = "ev_expensive_fast"
-RULE_GRID_IMPORT_PV = "grid_import_pv_expensive"
+RULE_NET_NEGATIVE_EXPENSIVE = "net_negative_expensive"
+RULE_NET_NEGATIVE_MIDDAY = "net_negative_midday"
+RULE_EXPORT_BELOW_CHEAP = "export_below_cheap"
 RULE_PLAN_DISCHARGE_MISS = "plan_discharge_miss"
 RULE_PLANNER_SILENT_FAIL = "planner_silent_fail"
+RULE_EV_OUTSIDE_CHEAP = "ev_outside_cheap"
+RULE_PLAN_IMPORT = "plan_import_unwanted"
 
-INTENTIONAL_IMPORT_MODES = frozenset({"charge_grid", "import_grid"})
-EXPORT_MODES = frozenset({"export_profit", "export_pv_surplus"})
+CURRENT_RULES = frozenset(
+    {
+        RULE_NET_NEGATIVE_EXPENSIVE,
+        RULE_NET_NEGATIVE_MIDDAY,
+        RULE_EXPORT_BELOW_CHEAP,
+        RULE_PLAN_DISCHARGE_MISS,
+        RULE_PLANNER_SILENT_FAIL,
+        RULE_EV_OUTSIDE_CHEAP,
+        RULE_PLAN_IMPORT,
+    }
+)
+
+# Ładowanie 6:00–15:00 (godziny 6–14) uzbraja import o 13–14.
+ARM_HOURS = frozenset(range(6, 15))
+MIDDAY_HOURS = frozenset({13, 14})
+
+# Szum licznika / „bateria jedzie”. Poniżej tego nie ma eksportu ani rozładowania.
+EXPORT_NOISE_W = 150.0
+BATTERY_DISCHARGE_W = 150.0
+
+# Okno tempa: próbka sprzed około pięciu minut.
+PACE_MIN_S = 4.5 * 60.0
+PACE_MAX_S = 6.5 * 60.0
+
+MAX_TWC_SAMPLE_GAP_S = 180.0
+
 SOC_HOLD_REASONS = frozenset(
     {
         "soc_full_defense_hold",
@@ -26,10 +53,6 @@ SOC_HOLD_REASONS = frozenset(
         "export_profit_soc_floor",
     }
 )
-
-# Szum mocy baterii — poniżej tego nie uważamy, że rozładowuje.
-BATTERY_IDLE_W = 150.0
-MAX_TWC_SAMPLE_GAP_S = 180.0
 
 
 class AnomalySnapshot(BaseModel):
@@ -51,11 +74,37 @@ class AnomalySnapshot(BaseModel):
     charging_kw: float | None = None
 
 
+class PlanSlot(BaseModel):
+    """Godzina z rolling planu: bilans, EV i RCE. Tylko bieżąca i przyszłe."""
+
+    hour: int = Field(ge=0, le=23)
+    target_net_kwh: float | None = None
+    ev_kwh: float = 0.0
+    rce_pln_kwh: float | None = None
+
+
+class AlertOutlook(BaseModel):
+    """Fakty z planu, RCE i historii tempa. Detektor ich nie czyta z dysku."""
+
+    rce_pln_kwh: float | None = None
+    cheap_import_pln_kwh: float = 0.59
+    soc_full_pct: float = 99.0
+    day_armed: bool = False
+    pace_remaining_kwh: float | None = None
+    pace_dt_s: float | None = None
+    plan_hours: list[PlanSlot] = Field(default_factory=list)
+
+
 class AlertFiring(BaseModel):
     rule_id: str
     title: str
     body: str
     est_pln_per_h: float = 0.0
+    # Plan i ślepe sterowanie wchodzą od razu. Tempo / bilans czekają debounce.
+    immediate: bool = False
+    remind: bool = True
+    # Pełna bateria: jeden push na godzinę zegarową, bez powtórki co 5 minut.
+    once_per_hour: bool = False
 
 
 def charging_kw_from_twc(
@@ -72,19 +121,17 @@ def charging_kw_from_twc(
     return delta * (3600.0 / dt_s)
 
 
-def _import_kw(grid_w: float) -> float:
-    return max(0.0, -float(grid_w) / 1000.0)
-
-
-def _est_pln_per_h(grid_w: float, import_pln: float) -> float:
-    return _import_kw(grid_w) * float(import_pln)
-
-
-def _cash_gate_ok(est_pln_per_h: float, threshold: float, import_pln: float) -> bool:
-    """Gdy taryfa w settings = 0, nie blokuj detektorów mocy."""
-    if float(import_pln) <= 1e-9:
-        return True
-    return float(est_pln_per_h) + 1e-9 >= float(threshold)
+def day_is_armed(
+    actual_kwh_by_hour: dict[int, float],
+    planned_kwh_by_hour: dict[int, float],
+) -> bool:
+    """Dzień z ładowaniem 6:00–15:00: faktyczne kWh albo slot planu w godzinach 6–14."""
+    for hour in ARM_HOURS:
+        if float(actual_kwh_by_hour.get(hour, 0.0)) > 1e-3:
+            return True
+        if float(planned_kwh_by_hour.get(hour, 0.0)) > 1e-3:
+            return True
+    return False
 
 
 def _reason_is_soc_hold(reason: str) -> bool:
@@ -92,94 +139,135 @@ def _reason_is_soc_hold(reason: str) -> bool:
     return base in SOC_HOLD_REASONS
 
 
-def _plan_lag_kwh(snap: AnomalySnapshot) -> float | None:
-    """Dodatnie = bilans zostaje za liniowym tempem do ``target_net``."""
-    target = snap.plan_target_net_kwh
-    if target is None:
+def _net_negative(remaining_kwh: float) -> bool:
+    return float(remaining_kwh) < -1e-6
+
+
+def _projected_net(snap: AnomalySnapshot, outlook: AlertOutlook) -> float | None:
+    dt_s = outlook.pace_dt_s
+    then = outlook.pace_remaining_kwh
+    if dt_s is None or then is None:
         return None
-    elapsed_s = max(0.0, 3600.0 - float(snap.time_to_end_s))
-    frac = min(1.0, elapsed_s / 3600.0)
-    expected = float(target) * frac
-    return expected - float(snap.remaining_kwh)
+    if dt_s < PACE_MIN_S or dt_s > PACE_MAX_S:
+        return None
+    rate = (float(snap.remaining_kwh) - float(then)) / (dt_s / 3600.0)
+    return float(snap.remaining_kwh) + rate * (float(snap.time_to_end_s) / 3600.0)
 
 
-def _ev_expensive_fast(
-    snap: AnomalySnapshot, s: GuardianSettings, *, zone: str, import_pln: float
+def _below_target(value: float | None, target: float | None) -> bool:
+    if value is None or target is None:
+        return False
+    return float(value) + 1e-3 < float(target)
+
+
+def _firing(
+    rule_id: str,
+    title: str,
+    body: str,
+    *,
+    immediate: bool = False,
+    remind: bool = True,
+    once_per_hour: bool = False,
+) -> AlertFiring:
+    return AlertFiring(
+        rule_id=rule_id,
+        title=title,
+        body=body,
+        immediate=immediate,
+        remind=remind,
+        once_per_hour=once_per_hour,
+    )
+
+
+def _net_negative_live(
+    snap: AnomalySnapshot,
+    outlook: AlertOutlook,
+    *,
+    zone: str,
 ) -> AlertFiring | None:
+    if not _net_negative(snap.remaining_kwh):
+        return None
+    hour = snap.local_hour
+    bal = f"Bilans godziny {hour:02d} jest {snap.remaining_kwh:+.2f} kWh."
+    if hour in MIDDAY_HOURS:
+        if not outlook.day_armed:
+            return None
+        return _firing(
+            RULE_NET_NEGATIVE_MIDDAY,
+            f"Import o {hour:02d} w dniu z ładowaniem",
+            bal + " Dzień ma ładowanie między 6:00 a 15:00.",
+        )
     if zone != "day":
         return None
-    kw = snap.charging_kw
-    if kw is None or kw + 1e-9 < float(s.anomaly_ev_kw_threshold):
-        return None
-    est = _est_pln_per_h(snap.grid_w, import_pln)
-    if est < 1e-9 and import_pln > 1e-9:
-        est = float(kw) * float(import_pln)
-    title = f"EV {kw:.1f} kW w drogiej taryfie"
-    body = (
-        f"Ładowanie {kw:.1f} kW o {snap.local_hour:02d}:{snap.local_minute:02d} "
-        f"(G12 dzień). Szacunek ~{est:.1f} zł/h — zwolnij w Tesli."
-    )
-    return AlertFiring(
-        rule_id=RULE_EV_EXPENSIVE_FAST, title=title, body=body, est_pln_per_h=est
+    return _firing(
+        RULE_NET_NEGATIVE_EXPENSIVE,
+        f"Bilans godziny {hour:02d} poniżej zera",
+        bal,
     )
 
 
-def _grid_import_pv(
-    snap: AnomalySnapshot, s: GuardianSettings, *, zone: str, import_pln: float
+def _export_below_cheap(
+    snap: AnomalySnapshot, outlook: AlertOutlook
 ) -> AlertFiring | None:
-    if zone != "day":
+    if (snap.exec_mode or "") == "export_profit":
         return None
-    if (snap.exec_mode or "") in INTENTIONAL_IMPORT_MODES:
+    if float(snap.grid_w) < EXPORT_NOISE_W:
         return None
-    if float(snap.pv_w) + 1e-9 < float(s.anomaly_pv_w_threshold):
+    rce = outlook.rce_pln_kwh
+    cheap = float(outlook.cheap_import_pln_kwh)
+    if rce is None or float(rce) + 1e-9 >= cheap:
         return None
-    if float(snap.grid_w) > -float(s.anomaly_import_w_threshold):
-        return None
-    est = _est_pln_per_h(snap.grid_w, import_pln)
-    if not _cash_gate_ok(est, float(s.anomaly_cash_pln_per_h), import_pln):
-        return None
-    causes: list[str] = []
-    if snap.charging_kw is not None and snap.charging_kw >= 1.0:
-        causes.append(f"EV {snap.charging_kw:.1f} kW")
-    if snap.battery_w < -BATTERY_IDLE_W:
-        causes.append("bateria ładuje")
-    elif snap.battery_w < BATTERY_IDLE_W:
-        causes.append("bateria stoi")
-    cause_txt = ", ".join(causes) if causes else "load domu"
-    import_kw = _import_kw(snap.grid_w)
-    title = "Import z sieci przy PV w drogiej taryfie"
+    full = float(snap.soc_pct) + 1e-9 >= float(outlook.soc_full_pct)
+    kw = float(snap.grid_w) / 1000.0
     body = (
-        f"Sieć {import_kw:.1f} kW import, PV {snap.pv_w / 1000.0:.1f} kW, "
-        f"{cause_txt}. ~{est:.1f} zł/h o {snap.local_hour:02d}:{snap.local_minute:02d}."
+        f"Eksport {kw:.1f} kW o {snap.local_hour:02d}:{snap.local_minute:02d}, "
+        f"RCE {float(rce):.2f} zł, tani import {cheap:.2f} zł."
     )
-    return AlertFiring(
-        rule_id=RULE_GRID_IMPORT_PV, title=title, body=body, est_pln_per_h=est
+    if full:
+        body += " Bateria pełna — PV nie ma gdzie zostać."
+    else:
+        body += f" SOC {snap.soc_pct:.0f}% — jest gdzie to schować."
+    return _firing(
+        RULE_EXPORT_BELOW_CHEAP,
+        "Eksport poniżej taniego importu",
+        body,
+        remind=not full,
+        once_per_hour=full,
     )
 
 
 def _plan_discharge_miss(
-    snap: AnomalySnapshot, s: GuardianSettings, *, import_pln: float
+    snap: AnomalySnapshot, outlook: AlertOutlook
 ) -> AlertFiring | None:
-    if (snap.exec_mode or "") not in EXPORT_MODES:
-        return None
-    if snap.local_minute < int(s.anomaly_plan_miss_after_minute):
+    if (snap.exec_mode or "") != "export_profit":
         return None
     if _reason_is_soc_hold(snap.watchdog_reason):
         return None
-    if float(snap.battery_w) >= BATTERY_IDLE_W:
+    target = snap.plan_target_net_kwh
+    if target is None:
         return None
-    lag = _plan_lag_kwh(snap)
-    if lag is None or lag + 1e-9 < float(s.anomaly_plan_miss_kwh):
+    still_short = _below_target(snap.remaining_kwh, target)
+    if not still_short:
         return None
-    target = float(snap.plan_target_net_kwh or 0.0)
-    est = _est_pln_per_h(snap.grid_w, import_pln)
-    title = "Bateria nie rozładowuje według planu"
-    body = (
-        f"mode={snap.exec_mode} target {target:+.2f} kWh, bilans {snap.remaining_kwh:+.2f} "
-        f"(zaległość {lag:.2f} kWh), bateria {snap.battery_w:.0f} W, SOC {snap.soc_pct:.0f}%."
-    )
-    return AlertFiring(
-        rule_id=RULE_PLAN_DISCHARGE_MISS, title=title, body=body, est_pln_per_h=est
+    battery_idle = float(snap.battery_w) < BATTERY_DISCHARGE_W
+    projected = _projected_net(snap, outlook)
+    pace_miss = _below_target(projected, target)
+    if not battery_idle and not pace_miss:
+        return None
+    if pace_miss and projected is not None:
+        detail = (
+            f"Tempo daje około {projected:+.2f} kWh na koniec, plan {float(target):+.2f} kWh."
+        )
+    else:
+        detail = (
+            f"Bateria {snap.battery_w:.0f} W, bilans {snap.remaining_kwh:+.2f} kWh, "
+            f"plan {float(target):+.2f} kWh."
+        )
+    return _firing(
+        RULE_PLAN_DISCHARGE_MISS,
+        "Bateria nie oddaje według planu",
+        detail,
+        immediate=pace_miss,
     )
 
 
@@ -187,13 +275,12 @@ def _planner_silent_fail(snap: AnomalySnapshot) -> AlertFiring | None:
     if not snap.planner_execution_enabled:
         return None
     if snap.policy_missing:
-        title = "Planer bez policy — cichy Flappy"
-        body = (
-            "PLANNER_EXECUTION włączony, ale brak ważnego wiersza policy "
-            "(degraded / wygasły / dziura). Guardian spadł na bilans ~0."
-        )
-        return AlertFiring(
-            rule_id=RULE_PLANNER_SILENT_FAIL, title=title, body=body
+        return _firing(
+            RULE_PLANNER_SILENT_FAIL,
+            "Planer bez policy",
+            "PLANNER_EXECUTION włączony, ale brak ważnego wiersza policy. "
+            "Guardian spadł na bilans ~0.",
+            immediate=True,
         )
     mode = snap.exec_mode
     if (
@@ -201,18 +288,84 @@ def _planner_silent_fail(snap: AnomalySnapshot) -> AlertFiring | None:
         and mode not in (None, "neutral")
         and not _reason_is_soc_hold(snap.watchdog_reason)
     ):
-        title = "Sterowanie wyłączone przy aktywnym planie"
-        body = (
-            f"control_off, a plan chce mode={mode}. Inwerter nie dostaje eco slotu."
-        )
-        return AlertFiring(
-            rule_id=RULE_PLANNER_SILENT_FAIL, title=title, body=body
+        return _firing(
+            RULE_PLANNER_SILENT_FAIL,
+            "Sterowanie wyłączone przy aktywnym planie",
+            f"Sterowanie wyłączone, a plan chce mode={mode}.",
+            immediate=True,
         )
     return None
 
 
+def _slot_ev_is_cheap(slot: PlanSlot, *, night: frozenset[int], cheap: float) -> bool:
+    if float(slot.ev_kwh) <= 1e-3:
+        return True
+    if slot.hour in night and slot.hour not in MIDDAY_HOURS:
+        return True
+    if slot.hour in MIDDAY_HOURS:
+        return True
+    rce = slot.rce_pln_kwh
+    if rce is None or slot.target_net_kwh is None:
+        return False
+    covers = float(slot.target_net_kwh) >= -1e-6 and float(rce) < cheap
+    return covers
+
+
+def _ev_outside_cheap(
+    outlook: AlertOutlook, *, night: frozenset[int]
+) -> AlertFiring | None:
+    cheap = float(outlook.cheap_import_pln_kwh)
+    bad: list[str] = []
+    for slot in outlook.plan_hours:
+        if float(slot.ev_kwh) <= 1e-3:
+            continue
+        if _slot_ev_is_cheap(slot, night=night, cheap=cheap):
+            continue
+        rce = "brak RCE" if slot.rce_pln_kwh is None else f"RCE {slot.rce_pln_kwh:.2f} zł"
+        net = "brak planu" if slot.target_net_kwh is None else f"net {slot.target_net_kwh:+.2f} kWh"
+        bad.append(f"{slot.hour:02d}: {slot.ev_kwh:.1f} kWh, {rce}, {net}")
+    if not bad:
+        return None
+    return _firing(
+        RULE_EV_OUTSIDE_CHEAP,
+        "EV poza tanią energią",
+        "Sloty EV, które nie są nocą 22–6 ani nadwyżką przy RCE poniżej taniego importu: "
+        + "; ".join(bad)
+        + ".",
+        immediate=True,
+    )
+
+
+def _plan_import(
+    outlook: AlertOutlook, *, night: frozenset[int]
+) -> AlertFiring | None:
+    lines: list[str] = []
+    for slot in outlook.plan_hours:
+        target = slot.target_net_kwh
+        if target is None or float(target) >= -1e-6:
+            continue
+        if slot.hour in MIDDAY_HOURS:
+            if not outlook.day_armed:
+                continue
+            why = "dzień z ładowaniem 6:00–15:00"
+        elif slot.hour in night:
+            continue
+        else:
+            why = "droga strefa G12"
+        lines.append(f"{slot.hour:02d}: net {float(target):+.2f} kWh ({why})")
+    if not lines:
+        return None
+    return _firing(
+        RULE_PLAN_IMPORT,
+        "Planowany import",
+        "Plan schodzi poniżej zera: " + "; ".join(lines) + ".",
+        immediate=True,
+    )
+
+
 def evaluate(
     snap: AnomalySnapshot,
+    outlook: AlertOutlook | None = None,
     *,
     settings: GuardianSettings | None = None,
     tariff: G12TariffConfig | None = None,
@@ -221,16 +374,19 @@ def evaluate(
     if not s.anomaly_alerts_enabled:
         return []
     t = tariff if tariff is not None else g12_tariff_from_env()
+    view = outlook if outlook is not None else AlertOutlook()
     zone = t.zone_for_hour(snap.local_hour)
-    import_pln = t.import_pln_per_kwh(snap.local_hour)
+    night = frozenset(t.night_hours)
 
     out: list[AlertFiring] = []
-    for fn in (
-        _ev_expensive_fast(snap, s, zone=zone, import_pln=import_pln),
-        _grid_import_pv(snap, s, zone=zone, import_pln=import_pln),
-        _plan_discharge_miss(snap, s, import_pln=import_pln),
+    for firing in (
+        _net_negative_live(snap, view, zone=zone),
+        _export_below_cheap(snap, view),
+        _plan_discharge_miss(snap, view),
         _planner_silent_fail(snap),
+        _ev_outside_cheap(view, night=night),
+        _plan_import(view, night=night),
     ):
-        if fn is not None:
-            out.append(fn)
+        if firing is not None:
+            out.append(firing)
     return out
