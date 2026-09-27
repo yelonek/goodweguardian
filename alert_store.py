@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from anomaly_alerts import (
     CURRENT_RULES,
+    LIVE_HOUR_RULES,
     AlertFiring,
     AlertOutlook,
     AnomalySnapshot,
@@ -59,6 +60,7 @@ class AlertFileState(BaseModel):
     prev_soc_pct: float | None = None
     prev_ts: str | None = None
     last_digest_at: str | None = None
+    streak_hour: str | None = None
     digest_rule_ids: list[str] = Field(default_factory=list)
     pace: list[PaceSample] = Field(default_factory=list)
     rules: dict[str, RuleRuntime] = Field(default_factory=dict)
@@ -251,6 +253,7 @@ def load_alert_outlook(
         rce_pln_kwh=rce_now,
         cheap_import_pln_kwh=tariff.import_pln_per_kwh(0),
         soc_full_pct=float(settings.soc_full_defense_threshold_pct),
+        export_buffer_kwh=float(settings.soak_trigger_kwh),
         day_armed=day_is_armed(actual, planned),
         pace_remaining_kwh=pace_remaining_kwh,
         pace_dt_s=pace_dt_s,
@@ -284,6 +287,21 @@ def apply_firings(
     """Aktualizuje reguły. Zwraca co najwyżej jeden zbiorczy push."""
     now_iso = _iso(now)
     hour_key = _hour_key(now)
+    if state.streak_hour != hour_key:
+        for rule_id, rt in state.rules.items():
+            if rule_id not in LIVE_HOUR_RULES:
+                continue
+            rt.consecutive_hit = 0
+            rt.consecutive_miss = 0
+            rt.active = False
+            rt.activated_at = None
+            rt.title = ""
+            rt.body = ""
+            rt.est_pln_per_h = 0.0
+        state.digest_rule_ids = [
+            rule_id for rule_id in state.digest_rule_ids if rule_id not in LIVE_HOUR_RULES
+        ]
+        state.streak_hour = hour_key
     by_id = {f.rule_id: f for f in firings}
     known = set(state.rules) | set(by_id)
 

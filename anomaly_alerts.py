@@ -19,6 +19,16 @@ RULE_PLANNER_SILENT_FAIL = "planner_silent_fail"
 RULE_EV_OUTSIDE_CHEAP = "ev_outside_cheap"
 RULE_PLAN_IMPORT = "plan_import_unwanted"
 
+# Żywy bilans godziny. Pasmo pięciu minut nie przechodzi przez :00.
+LIVE_HOUR_RULES = frozenset(
+    {
+        RULE_NET_NEGATIVE_EXPENSIVE,
+        RULE_NET_NEGATIVE_MIDDAY,
+        RULE_EXPORT_BELOW_CHEAP,
+        RULE_PLAN_DISCHARGE_MISS,
+    }
+)
+
 CURRENT_RULES = frozenset(
     {
         RULE_NET_NEGATIVE_EXPENSIVE,
@@ -35,8 +45,7 @@ CURRENT_RULES = frozenset(
 ARM_HOURS = frozenset(range(6, 15))
 MIDDAY_HOURS = frozenset({13, 14})
 
-# Szum licznika / „bateria jedzie”. Poniżej tego nie ma eksportu ani rozładowania.
-EXPORT_NOISE_W = 150.0
+# Poniżej tego bateria nie „jedzie” w eksporcie zarobkowym.
 BATTERY_DISCHARGE_W = 150.0
 
 # Okno tempa: próbka sprzed około pięciu minut.
@@ -89,6 +98,7 @@ class AlertOutlook(BaseModel):
     rce_pln_kwh: float | None = None
     cheap_import_pln_kwh: float = 0.59
     soc_full_pct: float = 99.0
+    export_buffer_kwh: float = 0.2
     day_armed: bool = False
     pace_remaining_kwh: float | None = None
     pace_dt_s: float | None = None
@@ -209,19 +219,20 @@ def _net_negative_live(
 def _export_below_cheap(
     snap: AnomalySnapshot, outlook: AlertOutlook
 ) -> AlertFiring | None:
+    """kWh ponad bufor soak, nie chwilowe waty na starcie godziny."""
     if (snap.exec_mode or "") == "export_profit":
         return None
-    if float(snap.grid_w) < EXPORT_NOISE_W:
+    buffer = float(outlook.export_buffer_kwh)
+    if float(snap.remaining_kwh) <= buffer + 1e-9:
         return None
     rce = outlook.rce_pln_kwh
     cheap = float(outlook.cheap_import_pln_kwh)
     if rce is None or float(rce) + 1e-9 >= cheap:
         return None
     full = float(snap.soc_pct) + 1e-9 >= float(outlook.soc_full_pct)
-    kw = float(snap.grid_w) / 1000.0
     body = (
-        f"Eksport {kw:.1f} kW o {snap.local_hour:02d}:{snap.local_minute:02d}, "
-        f"RCE {float(rce):.2f} zł, tani import {cheap:.2f} zł."
+        f"Bilans godziny {snap.local_hour:02d} jest {snap.remaining_kwh:+.2f} kWh, "
+        f"bufor {buffer:.2f} kWh. RCE {float(rce):.2f} zł, tani import {cheap:.2f} zł."
     )
     if full:
         body += " Bateria pełna — PV nie ma gdzie zostać."

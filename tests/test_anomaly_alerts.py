@@ -123,17 +123,35 @@ def test_day_armed_by_charge_between_6_and_15_only() -> None:
     assert day_is_armed({22: 2.0}, {}) is False
 
 
-def test_export_below_cheap_when_battery_can_take_it() -> None:
+def test_export_below_cheap_when_balance_exceeds_buffer() -> None:
     firings = _eval(
-        _snap(grid_w=800.0, exec_mode="neutral", soc_pct=33.0, remaining_kwh=0.05)
+        _snap(exec_mode="neutral", soc_pct=33.0, remaining_kwh=0.50, grid_w=800.0)
     )
     hit = next(f for f in firings if f.rule_id == RULE_EXPORT_BELOW_CHEAP)
     assert hit.once_per_hour is False
     assert hit.remind is True
+    assert "0.50" in hit.body
+
+
+def test_export_inside_start_of_hour_buffer_is_silent() -> None:
+    # 14:01: chwilowy eksport, bilans godziny jeszcze w buforze.
+    firings = _eval(
+        _snap(
+            local_hour=14,
+            local_minute=1,
+            grid_w=820.0,
+            exec_mode="neutral",
+            soc_pct=46.0,
+            remaining_kwh=-0.01,
+        )
+    )
+    assert RULE_EXPORT_BELOW_CHEAP not in _ids(firings)
 
 
 def test_export_below_cheap_full_battery_is_once_per_hour() -> None:
-    firings = _eval(_snap(grid_w=800.0, soc_pct=99.0, exec_mode="neutral"))
+    firings = _eval(
+        _snap(grid_w=800.0, soc_pct=99.0, exec_mode="neutral", remaining_kwh=0.50)
+    )
     hit = next(f for f in firings if f.rule_id == RULE_EXPORT_BELOW_CHEAP)
     assert hit.once_per_hour is True
     assert hit.remind is False
@@ -154,10 +172,41 @@ def test_export_profit_does_not_use_the_price_check() -> None:
 
 def test_high_rce_export_is_silent() -> None:
     firings = _eval(
-        _snap(grid_w=800.0),
+        _snap(remaining_kwh=0.80),
         _outlook(rce_pln_kwh=0.80),
     )
     assert RULE_EXPORT_BELOW_CHEAP not in _ids(firings)
+
+
+def test_live_streak_resets_when_the_hour_changes() -> None:
+    firing = AlertFiring(rule_id=RULE_EXPORT_BELOW_CHEAP, title="Eksport", body="ponad bufor")
+    state = AlertFileState()
+    start = datetime(2026, 9, 27, 13, 50, tzinfo=TZ)
+    pushed = []
+    for minute in range(6):
+        pushed.extend(
+            apply_firings(
+                state,
+                [firing],
+                now=start + timedelta(minutes=minute),
+                debounce_min=5,
+                cooldown_min=5,
+                clear_min=2,
+            )
+        )
+    assert len(pushed) == 1
+    assert state.rules[RULE_EXPORT_BELOW_CHEAP].active is True
+    at_1401 = apply_firings(
+        state,
+        [firing],
+        now=datetime(2026, 9, 27, 14, 1, tzinfo=TZ),
+        debounce_min=5,
+        cooldown_min=5,
+        clear_min=2,
+    )
+    assert at_1401 == []
+    assert state.rules[RULE_EXPORT_BELOW_CHEAP].consecutive_hit == 1
+    assert state.rules[RULE_EXPORT_BELOW_CHEAP].active is False
 
 
 def test_discharge_miss_when_battery_idle_and_still_short() -> None:
