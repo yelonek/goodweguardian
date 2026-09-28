@@ -427,11 +427,13 @@
       gap: 16px;
       align-items: start;
     }
-    @media (min-width: 1000px) {
-      .charging-layout {
-        grid-template-columns: minmax(280px, 1fr) minmax(360px, 1.15fr);
-      }
+    #evBudgetCard .grid-ev {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+      gap: 10px;
+      align-items: end;
     }
+    #evBudgetCard input[type="number"] { width: 100%; max-width: 8rem; box-sizing: border-box; }
     .charging-budget-compare {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
@@ -897,42 +899,25 @@
         <span class="muted" id="chargingStatus"></span>
       </div>
       <p class="muted setting-lead">
-        Tania nadwyżka PV (po domu) i deklaracja EV w jednym miejscu.
-        Planer widzi <code>load_plan = load_base + EV</code>.
+        Budżet to współczynnik razy tania nadwyżka od 8:00 (RCE poniżej 59 gr, PV minus zużycie domu).
+        Limit i prąd ustawiasz w aucie. Przy włączonym stosowaniu Planer dostaje ten budżet jako zużycie auta.
       </p>
-      <div class="charging-budget-compare" id="chargingBudgetCompare"></div>
-      <p class="muted charging-budget-note" id="chargingBudgetNote"></p>
-      <div class="charging-layout">
-        <div class="ev-charging-panel" id="evChargingPanel">
-          <h3 style="margin:0 0 4px; font-size:15px;">Ile chcesz załadować</h3>
-          <div class="grid-ev">
-            <div>
-              <label for="evDeliveredKwh">Już załadowane [kWh]</label>
-              <input type="number" id="evDeliveredKwh" min="0" step="0.1" value="0" readonly tabindex="-1" />
-            </div>
-            <div>
-              <label for="evRemainingKwh">Jeszcze do załadowania [kWh]</label>
-              <input type="number" id="evRemainingKwh" min="0" step="0.5" placeholder="np. 10" />
-            </div>
-            <div>
-              <label for="evPreferredHour">Start (godz., opcj.)</label>
-              <input type="number" id="evPreferredHour" min="0" max="23" step="1" placeholder="np. 10" />
-            </div>
-            <div>
-              <label for="evMaxPowerKw">Moc ładowarki [kW]</label>
-              <input type="number" id="evMaxPowerKw" min="1" max="22" step="0.5" value="3" />
-              <div class="field-hint">3 kW na co dzień; 11 kW tylko w taniej taryfie</div>
-            </div>
-            <div style="display:flex; gap:6px; flex-wrap:wrap;">
-              <button type="button" id="evChargingSave">Zapisz plan</button>
-              <button type="button" id="evChargingClear">Wyczyść</button>
-            </div>
+      <div class="card" id="evBudgetCard" style="max-width: 640px; margin-bottom: 12px;">
+        <h3 style="margin:0 0 8px; font-size:15px;">Budżet na dziś</h3>
+        <div class="plan-hero" id="evBudgetHero"></div>
+        <div class="grid-ev" style="margin-top:10px;">
+          <div>
+            <label for="evBudgetCoefficient">Współczynnik</label>
+            <input type="number" id="evBudgetCoefficient" min="0.05" max="1" step="0.05" value="0.80" />
           </div>
-          <div class="muted" id="evChargingTotalHint" style="font-size:11px; margin-top:6px;"></div>
-          <div class="muted" id="evChargingSlots" style="font-size:11px; margin-top:8px;"></div>
-          <div class="ev-charging-warnings" id="evChargingWarnings"></div>
-          <div class="muted" id="evChargingStatus" style="font-size:11px; margin-top:4px;"></div>
+          <label class="wd-label eco-enabled" style="flex-direction: row; align-items: center; gap: 10px;">
+            <input id="evChargingPlanEnabled" type="checkbox" />
+            <span>Stosuj plan ładowania</span>
+          </label>
         </div>
+        <div class="muted" id="evChargingStatus" style="font-size:11px; margin-top:8px;"></div>
+      </div>
+      <div class="charging-layout">
         <div class="pv-pyramid-block card" id="pvPyramidBlock" style="display:none;">
           <h3>Tania energia PV (RCE &lt;59 gr)</h3>
           <p class="muted setting-lead" style="font-size:12px; margin:0 0 8px;">

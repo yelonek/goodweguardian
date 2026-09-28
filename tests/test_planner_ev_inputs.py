@@ -7,30 +7,15 @@ from unittest.mock import patch
 
 import pytest
 
-from ev_charging_plan import EvChargingDeclaration, EvChargingPlan, EvChargingSlot
 from planner.inputs import build_hour_inputs_for_slots
 
 
 def test_build_hour_inputs_adds_ev_to_load(monkeypatch: pytest.MonkeyPatch) -> None:
     d = "2026-06-11"
-    decl = EvChargingDeclaration(
-        date=d, target_kwh=11.0, preferred_start_hour=10, max_power_kw=11.0
-    )
-    plan = EvChargingPlan(
-        date=d,
-        declaration=decl,
-        slots=[EvChargingSlot(date=d, hour=10, kwh=11.0)],
-        warnings=[],
-        recommended_slots=[],
-    )
 
     monkeypatch.setattr(
-        "planner.inputs.declarations_for_dates",
-        lambda dates: {d: decl} if d in dates else {},
-    )
-    monkeypatch.setattr(
-        "planner.inputs.build_ev_charging_plan",
-        lambda declaration=None, **kwargs: plan,
+        "planner.inputs.ev_schedule_for_planner",
+        lambda now, **kwargs: ({(d, 10): 11.0}, {d: {"budget_kwh": 11.0}}),
     )
     monkeypatch.setattr(
         "planner.inputs.forecast_load_hours",

@@ -64,6 +64,12 @@ def _pv_forecast_bands(
 
 
 CHEAP_THRESHOLD_PLN = 0.59
+BUDGET_FROM_HOUR = 8
+
+
+def house_surplus_kwh(*, pv_kwh: float, load_base_kwh: float) -> float:
+    """Nadwyżka PV ponad zużycie domu. Nie bierze ``target_net`` planu."""
+    return max(0.0, float(pv_kwh) - float(load_base_kwh))
 
 
 def export_kwh_for_slot(

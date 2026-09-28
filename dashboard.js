@@ -1,4 +1,3 @@
-const EV_DEFAULT_POWER_KW = 3;
 function dv(v, d) { return v !== null && v !== undefined ? v : d; }
 const fmt = (v) => (v === null || v === undefined) ? "—" : v;
 function card(key, val) {
@@ -742,6 +741,7 @@ function renderPlanTimeline(p) {
     `<div><div class="plan-hero-key">E[CF]</div><div class="plan-hero-val">${cash}</div></div>` +
     `<div><div class="plan-hero-key">SOC plan</div><div>${socStart} → ${socEnd}</div></div>` +
     `<span class="status-pill ${execOn ? "status-on" : "status-off"}">egzekucja: ${execOn ? "tak" : "nie"}</span>` +
+    `<button type="button" id="applyDayPlan" data-enabled="${execOn ? "1" : "0"}">${execOn ? "Plan stosowany" : "Stosuj plan"}</button>` +
     `</div>`;
   const days = p.days || [];
   const tomorrowDim = !p.pricing_tomorrow_available;
@@ -757,6 +757,12 @@ function renderPlanTimeline(p) {
     `<div class="plan-legend">${legend}</div>` +
     (tomorrowDim ? `<p class="muted" style="font-size:11px;margin:8px 0 0;">Jutro: RCE jeszcze nieopublikowane — panel przygaszony.</p>` : "");
   bindPlanScenariosToggle();
+  const applyBtn = document.getElementById("applyDayPlan");
+  if (applyBtn) {
+    applyBtn.addEventListener("click", () => {
+      putPlanner(applyBtn.dataset.enabled !== "1");
+    });
+  }
 }
 
 function renderPvPyramidTable(segment, tbodyId, cheapGr) {
@@ -886,62 +892,12 @@ async function loadHistory(force) {
   }
 }
 
-function _pyramidSurplus(segment) {
-  const p50 = Number(segment?.cheap_surplus_kwh_p50 ?? segment?.cheap_surplus_kwh ?? 0);
-  const p10 = Number(segment?.cheap_surplus_kwh_p10 ?? p50);
-  const p90 = Number(segment?.cheap_surplus_kwh_p90 ?? p50);
-  return { p10, p50, p90 };
-}
-
-function renderChargingBudgetCompare() {
-  const el = document.getElementById("chargingBudgetCompare");
-  const note = document.getElementById("chargingBudgetNote");
-  if (!el) return;
-  const p = _lastChargingPyramid;
-  const ev = _lastChargingEv || {};
-  if (!p || p._error) {
-    el.innerHTML = "";
-    if (note) {
-      note.textContent = p && p._error ? "Brak piramidy taniej energii: " + p._error : "";
-    }
-    return;
-  }
-  const cheapGr = (p.segments && p.segments.cheap_threshold_gr) || RCE_CHEAP_THRESHOLD_GR;
-  const todayS = _pyramidSurplus(p.segments && p.segments.today && p.segments.today.remaining);
-  const tomS = _pyramidSurplus(p.segments && p.segments.tomorrow && p.segments.tomorrow.total);
-  const want = ev.declaration != null ? Number(ev.remaining_kwh ?? 0) : null;
-  const cheapExport = Number((ev.cheap_budget || {}).cheap_export_kwh || 0);
-  const wantCard = want == null
-    ? card("Jeszcze do załadowania", "—")
-    : card("Jeszcze do załadowania", `${want.toFixed(1)} kWh`);
-  el.innerHTML =
-    cardWithHint(
-      `Dziś nadwyżka (<${cheapGr} gr)`,
-      `${todayS.p50.toFixed(1)} kWh`,
-      `p10 ${todayS.p10.toFixed(1)} · p90 ${todayS.p90.toFixed(1)}`
-    ) +
-    cardWithHint(
-      "Jutro nadwyżka",
-      `${tomS.p50.toFixed(1)} kWh`,
-      p.pricing_tomorrow_available
-        ? `p10 ${tomS.p10.toFixed(1)} · p90 ${tomS.p90.toFixed(1)}`
-        : "RCE jutro jeszcze nieopublikowane"
-    ) +
-    wantCard +
-    card(`Eksport tanio (<${cheapGr} gr)`, `${cheapExport.toFixed(1)} kWh`);
-  if (!note) return;
-  if (want != null && want > todayS.p50 + 0.05) {
-    const short = want - todayS.p50;
-    note.textContent =
-      `Chcesz ${want.toFixed(1)} kWh, a dzisiejsza nadwyżka p50 to ${todayS.p50.toFixed(1)} kWh ` +
-      `(brakuje ${short.toFixed(1)}). Reszta: noc G12 albo jutro.`;
-  } else if (want != null && todayS.p50 > 0) {
-    note.textContent =
-      `Nadwyżka p50 dziś pokrywa deklarację (p10 = ${todayS.p10.toFixed(1)} kWh — bezpieczny budżet).`;
-  } else {
-    note.textContent =
-      "Po load = PV w tanich godzinach minus load domu. p10 to bezpieczny budżet na auto.";
-  }
+function _budgetWindow(ev) {
+  const start = ev.window_start_hour;
+  const end = ev.window_end_hour;
+  if (start == null || end == null) return "brak okna";
+  const pad = (h) => String(h).padStart(2, "0");
+  return `${pad(start)}:00–${pad(end)}:00`;
 }
 
 async function loadCharging(force) {
@@ -958,7 +914,7 @@ async function loadCharging(force) {
     _lastChargingPyramid = pyramid;
     _lastChargingEv = ev;
     renderPvPyramid(pyramid);
-    renderChargingBudgetCompare();
+    renderEvBudgetCard(ev);
     pageLoaded.charging = true;
     st.textContent = pyramid && pyramid._error ? "piramida: " + pyramid._error : "OK";
     setUpdated(true);
@@ -968,85 +924,48 @@ async function loadCharging(force) {
   }
 }
 
-function renderEvChargingPanel(ev) {
+function renderEvBudgetCard(ev) {
   if (!ev) return;
   _lastChargingEv = ev;
-  const decl = ev.declaration;
-  const delivered = Number(ev.delivered_kwh || 0);
-  const remaining = decl ? Number(ev.remaining_kwh ?? 0) : null;
-  const deliveredEl = document.getElementById("evDeliveredKwh");
-  if (deliveredEl) deliveredEl.value = delivered.toFixed(1);
-  const remainingEl = document.getElementById("evRemainingKwh");
-  const prefEl = document.getElementById("evPreferredHour");
-  const powerEl = document.getElementById("evMaxPowerKw");
-  if (remainingEl && !remainingEl.matches(":focus") && decl) {
-    remainingEl.value = remaining != null ? String(remaining) : "";
+  const hero = document.getElementById("evBudgetHero");
+  const budget = Number(ev.budget_kwh || 0);
+  const delivered = Number(ev.delivered_since_8_kwh || 0);
+  const surplus = Number(ev.surplus_kwh || 0);
+  if (hero) {
+    hero.innerHTML =
+      `<div><div class="plan-hero-key">Budżet</div><div class="plan-hero-val">${budget.toFixed(1)} kWh</div></div>` +
+      `<div><div class="plan-hero-key">Okno</div><div>${_budgetWindow(ev)}</div></div>` +
+      `<div><div class="plan-hero-key">Od 8:00 na liczniku</div><div>${delivered.toFixed(1)} kWh</div></div>` +
+      `<div><div class="plan-hero-key">Nadwyżka p50</div><div>${surplus.toFixed(1)} kWh</div></div>`;
   }
-  if (decl && prefEl && !prefEl.matches(":focus")) {
-    prefEl.value = decl.preferred_start_hour != null ? String(decl.preferred_start_hour) : "";
+  const coeffEl = document.getElementById("evBudgetCoefficient");
+  if (coeffEl && !coeffEl.matches(":focus") && ev.coefficient != null) {
+    coeffEl.value = String(ev.coefficient);
   }
-  if (decl && powerEl && decl.max_power_kw != null && !powerEl.matches(":focus")) {
-    powerEl.value = String(decl.max_power_kw);
+  const enabledEl = document.getElementById("evChargingPlanEnabled");
+  if (enabledEl && document.activeElement !== enabledEl) {
+    enabledEl.checked = Boolean(ev.plan_enabled);
   }
-  const totalHint = document.getElementById("evChargingTotalHint");
-  if (totalHint) {
-    if (decl) {
-      const total = Number(decl.target_kwh);
-      const remShow = remaining != null ? remaining : 0;
-      totalHint.textContent =
-        `łącznie dziś = ${delivered.toFixed(1)} + ${remShow.toFixed(1)} = ${total.toFixed(1)} kWh`;
-    } else {
-      totalHint.textContent = "";
-    }
-  }
-  const slotsEl = document.getElementById("evChargingSlots");
-  const futureSlots = decl ? (ev.slots || []) : (ev.recommended_slots || []);
-  const pastSlots = ev.past_slots || [];
-  if (slotsEl) {
-    const parts = [];
-    if (pastSlots.length) {
-      parts.push(
-        "Już naładowano: " + pastSlots.map((s) => `${String(s.hour).padStart(2, "0")}:00 → ${Number(s.kwh).toFixed(1)} kWh`).join(", ")
-      );
-    }
-    if (futureSlots.length) {
-      const prefix = decl ? "Plan na przyszłość" : "Propozycja slotów";
-      parts.push(
-        prefix + ": " + futureSlots.map((s) => `${String(s.hour).padStart(2, "0")}:00 → ${Number(s.kwh).toFixed(1)} kWh`).join(", ")
-      );
-    }
-    if (!parts.length) {
-      slotsEl.textContent = decl
-        ? (delivered > 0.001 && remaining != null && remaining < 0.001
-          ? `Cel ${Number(decl.target_kwh).toFixed(1)} kWh już zrealizowany dziś.`
-          : "Brak przypisanych godzin — zapisz plan ponownie.")
-        : "Brak deklaracji — podaj ile jeszcze chcesz załadować i zapisz.";
-    } else {
-      slotsEl.textContent = parts.join(" · ");
-    }
-  }
-  const warnEl = document.getElementById("evChargingWarnings");
-  if (warnEl) warnEl.textContent = (ev.warnings || []).join(" ");
-  renderChargingBudgetCompare();
+  updateEvChargingAuthHint();
 }
 
 function updateEvChargingAuthHint() {
   const st = document.getElementById("evChargingStatus");
-  const saveBtn = document.getElementById("evChargingSave");
-  const clearBtn = document.getElementById("evChargingClear");
+  const coeffEl = document.getElementById("evBudgetCoefficient");
+  const enabledEl = document.getElementById("evChargingPlanEnabled");
   const hasKey = !!getKey();
-  if (saveBtn) saveBtn.disabled = !hasKey;
-  if (clearBtn) clearBtn.disabled = !hasKey;
+  if (coeffEl) coeffEl.disabled = !hasKey;
+  if (enabledEl) enabledEl.disabled = !hasKey;
   if (!st) return;
   if (!hasKey) {
-    st.textContent = "Zapis i wyczyszczenie wymagają klucza API — Ustawienia → Zapisz klucz.";
+    st.textContent = "Zmiana współczynnika i przełącznika wymaga klucza API — Ustawienia → Zapisz klucz.";
   }
 }
 
 async function loadEvChargingPlan() {
   try {
     const plan = await fetchJson("/api/ev-charging/plan", 30000);
-    renderEvChargingPanel(plan);
+    renderEvBudgetCard(plan);
     updateEvChargingAuthHint();
     return plan;
   } catch (e) {
@@ -1057,79 +976,24 @@ async function loadEvChargingPlan() {
   }
 }
 
-async function saveEvChargingPlan() {
+async function saveEvBudget(partial) {
   const key = getKey();
-  if (!key) { alert("Ustaw klucz API w ustawieniach"); return; }
-  const remaining = parseFloat(document.getElementById("evRemainingKwh").value);
-  if (Number.isNaN(remaining) || remaining < 0) { alert("Podaj jeszcze do załadowania kWh ≥ 0"); return; }
-  const prefRaw = document.getElementById("evPreferredHour").value.trim();
-  const preferred_start_hour = prefRaw === "" ? null : parseInt(prefRaw, 10);
-  if (preferred_start_hour != null && (Number.isNaN(preferred_start_hour) || preferred_start_hour < 0 || preferred_start_hour > 23)) {
-    alert("Godzina startu: 0–23 lub puste");
-    return;
-  }
-  const max_power_kw = parseFloat(document.getElementById("evMaxPowerKw").value) || EV_DEFAULT_POWER_KW;
   const st = document.getElementById("evChargingStatus");
-  if (st) st.textContent = "Zapisuję i przeliczam plan…";
-  const r = await fetch("/api/ev-charging/plan", {
+  if (!key) { alert("Ustaw klucz API"); return; }
+  if (st) st.textContent = "zapisuję…";
+  const r = await fetch("/api/ev-charging/budget", {
     method: "PUT",
     headers: { "Content-Type": "application/json", "X-Guardian-Api-Key": key },
-    body: JSON.stringify({ remaining_kwh: remaining, preferred_start_hour, max_power_kw }),
+    body: JSON.stringify(partial),
   });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) {
-    const msg = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail || "error");
+    const msg = typeof j.detail === "string" ? j.detail : "error";
     if (st) st.textContent = msg;
-    alert(msg);
     return;
   }
-  renderEvChargingPanel(j);
-  if (st) {
-    if (j.planner && j.planner.replanned) {
-      st.textContent = "Zapisano — planer przeliczony.";
-    } else if (j.planner && j.planner.reason) {
-      st.textContent = "Zapisano deklarację EV, ale planer nie przeliczony: " + j.planner.reason;
-    } else {
-      st.textContent = "Zapisano.";
-    }
-  }
-  pageLoaded.forecast = false;
-  pageLoaded.charging = false;
-  await loadCharging(true);
-}
-
-async function clearEvChargingPlan() {
-  const key = getKey();
-  if (!key) { alert("Ustaw klucz API w ustawieniach"); return; }
-  const st = document.getElementById("evChargingStatus");
-  const r = await fetch("/api/ev-charging/plan", {
-    method: "DELETE",
-    headers: { "X-Guardian-Api-Key": key },
-  });
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) {
-    if (st) st.textContent = j.detail || "error";
-    return;
-  }
-  const remainingEl = document.getElementById("evRemainingKwh");
-  if (remainingEl) remainingEl.value = "";
-  document.getElementById("evPreferredHour").value = "";
-  const powerEl = document.getElementById("evMaxPowerKw");
-  if (powerEl) powerEl.value = String(EV_DEFAULT_POWER_KW);
-  const totalHint = document.getElementById("evChargingTotalHint");
-  if (totalHint) totalHint.textContent = "";
-  if (st) {
-    if (j.planner && j.planner.replanned) {
-      st.textContent = "Wyczyszczono — planer przeliczony.";
-    } else if (j.planner && j.planner.reason) {
-      st.textContent = "Wyczyszczono deklarację EV, ale planer nie przeliczony: " + j.planner.reason;
-    } else {
-      st.textContent = "Wyczyszczono deklarację EV.";
-    }
-  }
-  pageLoaded.forecast = false;
-  pageLoaded.charging = false;
-  await loadCharging(true);
+  renderEvBudgetCard(j);
+  if (st) st.textContent = "zapisane";
 }
 
 function _numOrNull(v) {
@@ -2376,6 +2240,12 @@ async function putPlanner(enabled) {
     on: "Plan stosowany",
     off: "Plan tylko podgląd",
   });
+  const applyBtn = document.getElementById("applyDayPlan");
+  if (applyBtn) {
+    const on = Boolean(j.planner_execution_enabled);
+    applyBtn.dataset.enabled = on ? "1" : "0";
+    applyBtn.textContent = on ? "Plan stosowany" : "Stosuj plan";
+  }
   if (pageLoaded.slots) refreshEcoslots(false).catch(console.error);
 }
 
@@ -2959,8 +2829,17 @@ document.getElementById("wd_soc_night_reserve_enabled").addEventListener("change
   setNightReserveFieldsEnabled(e.target.checked);
 });
 
-document.getElementById("evChargingSave").addEventListener("click", () => saveEvChargingPlan().catch(console.error));
-document.getElementById("evChargingClear").addEventListener("click", () => clearEvChargingPlan().catch(console.error));
+document.getElementById("evBudgetCoefficient").addEventListener("change", () => {
+  const coeff = parseFloat(document.getElementById("evBudgetCoefficient").value);
+  if (Number.isNaN(coeff) || coeff <= 0 || coeff > 1) {
+    alert("Współczynnik: od 0 do 1");
+    return;
+  }
+  saveEvBudget({ coefficient: coeff }).catch(console.error);
+});
+document.getElementById("evChargingPlanEnabled").addEventListener("change", (e) => {
+  saveEvBudget({ plan_enabled: e.target.checked }).catch(console.error);
+});
 
 const ecoPanels = document.getElementById("ecoSlotsPanels");
 ecoPanels.addEventListener("click", handleEcoSaveEvent);

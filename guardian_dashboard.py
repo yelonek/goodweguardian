@@ -206,6 +206,13 @@ class EcoslotWriteBody(BaseModel):
     enabled: bool = True
 
 
+class EvBudgetSettingsBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    plan_enabled: bool | None = None
+    coefficient: float | None = Field(default=None, gt=0.0, le=1.0)
+
+
 class EvChargingPlanBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -2282,8 +2289,28 @@ async def api_ev_charging_recommendation(
 
 @app.get("/api/ev-charging/plan")
 async def api_ev_charging_plan_get() -> JSONResponse:
-    payload = await _run_heavy(lambda: active_plan().model_dump())
+    from ev_day_budget import charging_page_view
+
+    payload = await _run_heavy(charging_page_view)
     return JSONResponse(payload)
+
+
+@app.put("/api/ev-charging/budget")
+def api_ev_budget_put(
+    body: EvBudgetSettingsBody,
+    _: None = Depends(_require_guardian_api_key),
+) -> JSONResponse:
+    from ev_day_budget import charging_page_view
+    from guardian_settings import update_overrides
+
+    updates: dict[str, Any] = {}
+    if body.plan_enabled is not None:
+        updates["ev_charging_plan_enabled"] = body.plan_enabled
+    if body.coefficient is not None:
+        updates["ev_charging_budget_coefficient"] = body.coefficient
+    if updates:
+        update_overrides(updates)
+    return JSONResponse(charging_page_view())
 
 
 @app.put("/api/ev-charging/plan")

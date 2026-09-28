@@ -8,9 +8,9 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from energy_pricing import pricing_day_breakdown
-from ev_charging_plan import build_ev_charging_plan, ev_schedule_map
-from ev_charging_store import declarations_for_dates
+from ev_day_budget import ev_schedule_for_planner
 from guardian_config import TELEMETRY_TZ
+from guardian_settings import get_settings
 from load_forecast import forecast_load_hours
 from planner.config import PLANNER_LOAD_LOOKBACK_DAYS
 from planner.models import HourInputs
@@ -81,14 +81,15 @@ def build_hour_inputs_for_slots(
         now=now_local,
     )
 
-    slot_dates = {d for d, _ in slots}
-    ev_declarations = declarations_for_dates(slot_dates)
+    settings = get_settings()
+    ev_schedule, ev_dump = ev_schedule_for_planner(
+        now_local,
+        enabled=settings.ev_charging_plan_enabled,
+        coefficient=settings.ev_charging_budget_coefficient,
+    )
     ev_plans_by_date: dict[str, Any] = {}
-    ev_schedule: dict[tuple[str, int], float] = {}
-    for d_iso, decl in ev_declarations.items():
-        plan = build_ev_charging_plan(declaration=decl, now=now_local)
-        ev_plans_by_date[d_iso] = plan.model_dump()
-        ev_schedule.update(ev_schedule_map(plan))
+    if ev_dump:
+        ev_plans_by_date[now_local.date().isoformat()] = ev_dump
 
     load_corrected, load_sources, load_intra_meta = apply_load_correction(
         slots,

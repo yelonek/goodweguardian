@@ -30,6 +30,14 @@ _Avoid_: stawka importu, G12, ujemna cena sprzedaży
 Cena zakupu niedoboru zamkniętej godziny, gdy net < 0. Wchodzi dopiero wtedy, gdy zamknięta godzina ma net < 0.
 _Avoid_: koszt cofnięcia eksportu w godzinie, która zostaje netto eksportem
 
+**Depozyt**:
+Wpływ za godzinę z net > 0: nadwyżka razy RCE, ucięte od dołu do 0.
+_Avoid_: cashflow, rachunek
+
+**Cashflow**:
+Depozyt minus rachunek za godziny z importem. Ma pierwszeństwo przed ładowaniem dziennym.
+_Avoid_: depozyt
+
 **Reszta godziny**:
 Planowany bilans godzinowy minus bieżący bilans. Ujemna reszta przy dodatnim bilansie godzinowym to ściągnięcie już wyeksportowanych kWh, nie zakup z sieci.
 _Avoid_: import, odkup
@@ -44,6 +52,10 @@ _Avoid_: odkup po G12, clawback jako kupno po taryfie importu
 Ustala politykę godziny. Nie zapisuje na falownik.
 _Avoid_: Guardian, DeyeDefender, nastawa
 
+**Stosowanie planu**:
+Czy Guardian używa bieżącego planu przy sterowaniu. Plan liczy się dalej, także gdy stosowanie jest wyłączone. Zapis na falownik to osobny przełącznik.
+_Avoid_: akceptacja planu, zatrzymanie planera, zapis na falownik
+
 **Nastawa**:
 Moc baterii w watach, limit SOC i czy oddać falownik jego własnemu programowi.
 _Avoid_: procent slotu, EcoSlot, power_pct
@@ -55,3 +67,41 @@ _Avoid_: cały program, planer, DeyeDefender
 **DeyeDefender**:
 Adapter, który tę samą nastawę zapisuje na falowniku Deye.
 _Avoid_: drugi planer, Guardian
+
+### Samochód
+
+**Ładowanie wyjazdowe**:
+Ładowanie auta w nocy poprzedzającej wyjazd.
+_Avoid_: plan, zlecenie, ładowanie dzienne
+
+**Ładowanie dzienne**:
+Ładowanie auta tanią nadwyżką.
+_Avoid_: ładowanie wyjazdowe, soak, plan
+
+**Tania nadwyżka**:
+Nadwyżka PV ponad zużycie domu w godzinie, której RCE jest niższe niż cena taniej taryfy. Próg w tym domu to 59 gr/kWh. Powyżej progu kWh idzie w depozyt.
+_Avoid_: godzina nocnej strefy G12, cała produkcja PV, depozyt
+
+**Propozycja**:
+Tania nadwyżka tego dnia do auta po współczynniku propozycji, podana o 8:00: suma i okno godzin. Limit i start ładowania ustawiasz w aucie. Mocy ładowania propozycja nie podaje.
+_Avoid_: zlecenie, p10, komunikat wieczorny na jutro, instrukcja amperów
+
+**Stosowanie planu ładowania**:
+Trwały przełącznik na stronie Ładowanie, na starcie wyłączony. Włączony: przy każdym przeliczeniu Planer dostaje aktualny budżet jako zużycie ładowania dziennego, także gdy auto nie jest podpięte, aż go wyłączysz.
+_Avoid_: stosowanie planu, rezerwa w magazynie, limit eksportu, przekroczenie
+
+**Budżet**:
+Współczynnik propozycji razy aktualne p50 taniej nadwyżki od 8:00 do końca dnia. Rusza się z prognozą, poranna liczba się nie zamraża.
+_Avoid_: p10, licznik od północy, ładowanie wyjazdowe
+
+**Przekroczenie**:
+Energia na liczniku ładowarki od 8:00 powyżej budżetu. Drugi komunikat podaje, ile weszło i jaki jest budżet. Limit obniżasz w aucie. Przy odpiętym aucie komunikatu nie ma.
+_Avoid_: spadek prognozy bez ładowania, ładowanie nocne
+
+**Współczynnik propozycji**:
+Ułamek p50 taniej nadwyżki podawany do auta. Startowo 0,80. Da się go zmienić.
+_Avoid_: p10, pełne p50
+
+**Autokonsumpcja**:
+Zużycie produkcji PV w domu albo w aucie w tej samej godzinie, kosztem sprzedaży po RCE tej godziny.
+_Avoid_: depozyt, uniknięcie G12, darmowa energia

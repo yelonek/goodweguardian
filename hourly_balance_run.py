@@ -546,6 +546,15 @@ async def run_one_cycle() -> None:
             )
 
     try:
+        from ev_budget_notify import notice_cycle
+
+        notice_cycle(now=now, E_twc_kwh=E_twc_kwh)
+    except Exception:
+        logging.getLogger("guardian").warning(
+            "ev budget notice failed", exc_info=True
+        )
+
+    try:
         process_cycle_alerts(
             now=now,
             grid_w=grid_w,

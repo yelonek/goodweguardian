@@ -178,6 +178,7 @@ def build_horizon_slot_rows(
     pv_by_key: dict[tuple[str, int], dict[str, Any]] | None = None,
     load_by_key: dict[tuple[str, int], dict[str, Any]] | None = None,
     plan: DailyPlan | None = None,
+    use_rolling_plan: bool = True,
 ) -> list[dict[str, Any]]:
     tariff = g12_tariff_from_env()
     pricing_cache: dict[str, dict[str, Any]] = {}
@@ -204,7 +205,7 @@ def build_horizon_slot_rows(
                 log.warning("EV plan: load forecast unavailable: %s", e)
 
     rolling_plan = plan
-    if rolling_plan is None:
+    if rolling_plan is None and use_rolling_plan:
         from planner.plan_store import load_latest_plan
 
         rolling_plan = load_latest_plan()

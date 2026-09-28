@@ -115,6 +115,9 @@ NTFY_TOKEN = (os.environ.get("NTFY_TOKEN") or "").strip()
 ANOMALY_ALERTS_PATH = Path(
     os.environ.get("ANOMALY_ALERTS_PATH") or (STATE_DIR / "anomaly_alerts.json")
 )
+EV_BUDGET_NOTICE_PATH = Path(
+    os.environ.get("EV_BUDGET_NOTICE_PATH") or (STATE_DIR / "ev_budget_notice.json")
+)
 
 
 def get_slot_id() -> str:

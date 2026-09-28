@@ -180,6 +180,17 @@ class GuardianSettings(BaseModel):
             "(kwantyle 10/30/50/70/90, wagi 1/25). Wyłączony = deterministyczny p50."
         ),
     )
+    ev_charging_plan_enabled: bool = Field(
+        False, json_schema_extra=_meta("planner"),
+        description=(
+            "Stosowanie planu ładowania. Włączone: Planer dostaje aktualny budżet "
+            "taniej nadwyżki jako zużycie auta. Nie zakazuje eksportu."
+        ),
+    )
+    ev_charging_budget_coefficient: float = Field(
+        0.80, gt=0.0, le=1.0, json_schema_extra=_meta("planner"),
+        description="Ułamek p50 taniej nadwyżki (od 8:00), który jest budżetem ładowania.",
+    )
     pv_weather_correction_enabled: bool = Field(
         True,
         json_schema_extra=_meta("planner"),
