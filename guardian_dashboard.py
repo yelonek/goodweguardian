@@ -28,7 +28,6 @@ from ev_charging_plan import (
     EvChargingDeclaration,
     build_ev_recommendation,
     current_delivered_ev_kwh,
-    ev_schedule_map,
     resolve_ev_put_target_kwh,
 )
 from ev_charging_store import active_plan, clear_declaration, write_declaration
@@ -1154,6 +1153,56 @@ def _pricing_for_day_quiet(local_date: date) -> dict[str, Any] | None:
     return val
 
 
+def _forecast_ev_charging(
+    now: datetime,
+) -> tuple[dict[str, Any], dict[tuple[str, int], float]]:
+    """Ten sam harmonogram, który dostaje Planer — widoczny w Prognozie."""
+    from ev_charging_store import read_declaration
+    from ev_day_budget import ev_schedule_for_planner
+
+    settings = guardian_settings.get_settings()
+    enabled = bool(settings.ev_charging_plan_enabled)
+    schedule, dump = ev_schedule_for_planner(
+        now,
+        enabled=enabled,
+        coefficient=float(settings.ev_charging_budget_coefficient),
+    )
+    if not enabled:
+        decl = read_declaration()
+        payload: dict[str, Any] = {"slots": [], "warnings": [], "source": None}
+        if decl is not None:
+            delivered = current_delivered_ev_kwh(now.date(), now=now)
+            payload["declaration"] = decl.model_dump()
+            payload["remaining_kwh"] = round(max(0.0, decl.target_kwh - delivered), 4)
+        return payload, {}
+    if dump:
+        return dump, schedule
+    return {"slots": [], "warnings": [], "source": "budget"}, {}
+
+
+def _charging_page_payload() -> dict[str, Any]:
+    """Budżet plus ręczna ilość i sloty, które Planer faktycznie dostaje."""
+    from ev_day_budget import charging_page_view
+
+    now = datetime.now(ZoneInfo(TELEMETRY_TZ)).replace(tzinfo=None)
+    view = charging_page_view(now)
+    payload, _schedule = _forecast_ev_charging(now)
+    view["slots"] = list(payload.get("slots") or [])
+    view["schedule_source"] = payload.get("source")
+    view["schedule_warnings"] = list(payload.get("warnings") or [])
+    raw_decl = payload.get("declaration")
+    decl = raw_decl if (
+        payload.get("source") == "manual"
+        or (payload.get("source") is None and isinstance(raw_decl, dict))
+    ) else None
+    view["manual"] = decl is not None
+    if isinstance(decl, dict):
+        view["manual_target_kwh"] = decl.get("target_kwh")
+        view["manual_remaining_kwh"] = payload.get("remaining_kwh")
+        view["manual_max_power_kw"] = decl.get("max_power_kw")
+    return view
+
+
 def _combined_forecast_payload() -> dict[str, Any]:
     """48 hours starting today 00:00 with RCE/G12, load forecast and PV forecast merged."""
     today = date.today()
@@ -1213,8 +1262,7 @@ def _combined_forecast_payload() -> dict[str, Any]:
     telemetry_today = hourly_actuals(today)
     telemetry_tomorrow = hourly_actuals(tomorrow)
 
-    ev_plan = active_plan()
-    ev_by_slot = ev_schedule_map(ev_plan, include_past=True)
+    ev_plan_payload, ev_by_slot = _forecast_ev_charging(now)
 
     rows: list[dict[str, Any]] = []
     start_dt = datetime.combine(today, datetime.min.time())
@@ -1403,7 +1451,7 @@ def _combined_forecast_payload() -> dict[str, Any]:
             "Przełącznik w ustawieniach steruje egzekucją w Guardianie (jeszcze nie podpięte do policy)."
         ) + plan_note,
         "planner_policy": policy_meta,
-        "ev_charging": ev_plan.model_dump(),
+        "ev_charging": ev_plan_payload,
         "rows": rows,
     }
 
@@ -2289,9 +2337,7 @@ async def api_ev_charging_recommendation(
 
 @app.get("/api/ev-charging/plan")
 async def api_ev_charging_plan_get() -> JSONResponse:
-    from ev_day_budget import charging_page_view
-
-    payload = await _run_heavy(charging_page_view)
+    payload = await _run_heavy(_charging_page_payload)
     return JSONResponse(payload)
 
 
@@ -2300,7 +2346,6 @@ def api_ev_budget_put(
     body: EvBudgetSettingsBody,
     _: None = Depends(_require_guardian_api_key),
 ) -> JSONResponse:
-    from ev_day_budget import charging_page_view
     from guardian_settings import update_overrides
 
     updates: dict[str, Any] = {}
@@ -2310,7 +2355,7 @@ def api_ev_budget_put(
         updates["ev_charging_budget_coefficient"] = body.coefficient
     if updates:
         update_overrides(updates)
-    return JSONResponse(charging_page_view())
+    return JSONResponse(_charging_page_payload())
 
 
 @app.put("/api/ev-charging/plan")

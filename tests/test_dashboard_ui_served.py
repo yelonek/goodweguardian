@@ -52,8 +52,10 @@ def test_index_uses_external_ui_file() -> None:
     assert 'id="evChargingPlanEnabled"' in body
     assert 'id="applyDayPlan"' in js.text
     assert "Stosuj plan ładowania" in body
-    assert 'id="evRemainingKwh"' not in body
-    assert 'getElementById("evRemainingKwh")' not in js.text
+    assert 'id="evRemainingKwh"' in body
+    assert 'id="evRemainingSave"' in body
+    assert 'id="evRemainingClear"' in body
+    assert 'getElementById("evRemainingKwh")' in js.text
     assert 'data-page="charging">Ładowanie</a>' in body
     assert 'id="page-charging"' in body
     assert "function loadCharging(" in js.text
@@ -65,6 +67,10 @@ def test_index_uses_external_ui_file() -> None:
     assert "evBudgetCard" not in forecast
     assert "pvPyramidBlock" not in overview
     assert 'id="evBudgetCard"' in charging
+    assert 'id="evChargingPlanEnabled"' not in charging
     assert 'id="pvPyramidBlock"' in charging
+    settings = body.split('id="page-settings"', 1)[1]
+    assert 'id="evChargingPlanEnabled"' in settings
+    assert "Ładowanie auta — stosowanie" in settings
     assert 'class="forecast-day-chart-block wide"' in forecast
     assert "viewBox=\"0 0 960 320\"" in forecast

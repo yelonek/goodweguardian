@@ -20,6 +20,7 @@ from ev_charging_plan import (
     current_delivered_ev_kwh,
     ev_schedule_map,
 )
+from ev_charging_store import read_declaration
 from guardian_config import EV_CHARGING_DEFAULT_POWER_KW, TELEMETRY_TZ
 from pv_pyramid import BUDGET_FROM_HOUR, CHEAP_THRESHOLD_PLN, house_surplus_kwh
 
@@ -151,6 +152,24 @@ def charging_page_view(
     return payload
 
 
+# Planer nie układa ładowania w nocy 22:00–6:00. Ostatnia godzina to 21:00.
+PLANNER_EV_LAST_HOUR = 21
+
+
+def planner_ev_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Godziny 8–21 z RCE poniżej taniej taryfy. 22–6 i droższy eksport odpadają."""
+    kept: list[dict[str, Any]] = []
+    for row in rows:
+        hour = int(row["hour"])
+        if hour < BUDGET_FROM_HOUR or hour > PLANNER_EV_LAST_HOUR:
+            continue
+        rce = row.get("rce_pln_kwh")
+        if rce is None or float(rce) >= CHEAP_THRESHOLD_PLN:
+            continue
+        kept.append(row)
+    return kept
+
+
 def ev_schedule_for_planner(
     now: datetime,
     *,
@@ -158,33 +177,65 @@ def ev_schedule_for_planner(
     coefficient: float,
     slot_rows: list[dict[str, Any]] | None = None,
 ) -> tuple[dict[tuple[str, int], float], dict[str, Any]]:
-    """Harmonogram EV dla Planera. Wyłączony przełącznik → pusto, plik deklaracji się nie liczy.
+    """Harmonogram EV dla Planera.
 
-    ``target_kwh`` to budżet plus kWh z nocy (przed 8:00), żeby noc nie ścinała dnia.
-    Przyszłe sloty dostają to, co z budżetu jeszcze nie weszło od 8:00.
+    Wyłączony przełącznik → pusto. Ręczna deklaracja (ilość kWh) zastępuje budżet.
+    Slot tylko w 8:00–21:00, gdy RCE jest niższe niż tania taryfa. Godziny 22–6 nie wchodzą.
+    Bez deklaracji ``target_kwh`` to budżet plus kWh z nocy (przed 8:00), żeby noc nie ścinała dnia.
     """
     if not enabled:
         return {}, {}
     local_date = now.date().isoformat()
     rows = slot_rows
     if rows is None:
-        slots = [(local_date, h) for h in range(BUDGET_FROM_HOUR, 24)]
+        slots = [(local_date, h) for h in range(BUDGET_FROM_HOUR, PLANNER_EV_LAST_HOUR + 1)]
         rows = build_horizon_slot_rows(slots, use_rolling_plan=False)
     else:
         rows = [r for r in rows if int(r["hour"]) >= BUDGET_FROM_HOUR]
     budget = compute_day_charging_budget(rows, coefficient=coefficient)
-    if budget.budget_kwh <= 1e-9:
-        return {}, {"budget": budget.as_dict(), "slots": []}
+    manual = read_declaration()
+    if manual is None and budget.budget_kwh <= 1e-9:
+        return {}, {"budget": budget.as_dict(), "slots": [], "source": "budget"}
     delivered_all = current_delivered_ev_kwh(now.date(), now=now)
     since_8 = delivered_kwh_since_budget_hour(now.date())
     night = max(0.0, delivered_all - since_8)
-    decl = EvChargingDeclaration(
-        date=local_date,
-        target_kwh=budget.budget_kwh + night,
-        max_power_kw=EV_CHARGING_DEFAULT_POWER_KW,
-    )
-    plan = allocate_ev_schedule(decl, rows, now=now)
+    if manual is not None:
+        manual_slots = None
+        if manual.manual_slots:
+            manual_slots = {
+                int(h): float(kwh)
+                for h, kwh in manual.manual_slots.items()
+                if BUDGET_FROM_HOUR <= int(h) <= PLANNER_EV_LAST_HOUR and float(kwh) > 0
+            } or None
+        decl = EvChargingDeclaration(
+            date=local_date,
+            target_kwh=manual.target_kwh,
+            max_power_kw=manual.max_power_kw,
+            manual_slots=manual_slots,
+        )
+        alloc_rows = rows if manual_slots else planner_ev_rows(rows)
+        source = "manual"
+    else:
+        decl = EvChargingDeclaration(
+            date=local_date,
+            target_kwh=budget.budget_kwh + night,
+            max_power_kw=EV_CHARGING_DEFAULT_POWER_KW,
+        )
+        alloc_rows = planner_ev_rows(rows)
+        source = "budget"
+    plan = allocate_ev_schedule(decl, alloc_rows, now=now)
     schedule = ev_schedule_map(plan)
     dump = plan.model_dump()
+    placed = sum(schedule.values())
+    leftover = float(plan.remaining_kwh) - placed
+    if leftover > 0.05:
+        dump["warnings"] = list(dump.get("warnings") or []) + [
+            (
+                f"W godzinach 8–21 przy RCE poniżej {CHEAP_THRESHOLD_PLN:.2f} zł "
+                f"mieści się {placed:.1f} kWh. Zostało {leftover:.1f} kWh poza tym oknem "
+                "(22–6 i droższy eksport planer pomija)."
+            )
+        ]
     dump["budget"] = budget.as_dict()
+    dump["source"] = source
     return schedule, dump

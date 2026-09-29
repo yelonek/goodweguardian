@@ -6,6 +6,7 @@ from datetime import date, datetime
 
 import pytest
 
+from ev_charging_plan import EvChargingDeclaration
 from ev_day_budget import (
     compute_day_charging_budget,
     delivered_kwh_since_budget_hour,
@@ -92,6 +93,49 @@ def test_night_kwh_do_not_shrink_budget_daytime_does(monkeypatch: pytest.MonkeyP
     assert dump["budget"]["budget_kwh"] == pytest.approx(10.0)
     assert 7 not in {hour for _, hour in schedule}
     assert sum(schedule.values()) == pytest.approx(8.0)
+
+
+def test_planner_skips_evening_and_night_even_when_budget_is_large(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("ev_charging_plan.twc_enabled", lambda: False)
+    monkeypatch.setattr("ev_day_budget.read_declaration", lambda: None)
+    now = datetime(2026, 9, 28, 8, 0)
+    rows = [
+        _row(12, pv=5.0, load=1.0, rce=0.20),
+        _row(17, pv=0.2, load=0.4, rce=0.90),
+        _row(20, pv=0.0, load=0.4, rce=0.84),
+        _row(22, pv=0.0, load=0.5, rce=0.40),
+        _row(23, pv=0.0, load=0.5, rce=0.30),
+    ]
+    schedule, dump = ev_schedule_for_planner(
+        now, enabled=True, coefficient=0.80, slot_rows=rows
+    )
+    assert set(hour for _, hour in schedule) == {12}
+    assert 22 not in {hour for _, hour in schedule}
+    assert dump["source"] == "budget"
+
+
+def test_manual_target_replaces_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("ev_charging_plan.twc_enabled", lambda: False)
+    monkeypatch.setattr(
+        "ev_day_budget.read_declaration",
+        lambda: EvChargingDeclaration(
+            date="2026-09-28", target_kwh=1.5, max_power_kw=3.0
+        ),
+    )
+    now = datetime(2026, 9, 28, 8, 0)
+    rows = [
+        _row(10, pv=4.0, load=1.0, rce=0.20),
+        _row(11, pv=4.0, load=1.0, rce=0.30),
+        _row(18, pv=0.0, load=0.4, rce=1.00),
+    ]
+    schedule, dump = ev_schedule_for_planner(
+        now, enabled=True, coefficient=0.80, slot_rows=rows
+    )
+    assert dump["source"] == "manual"
+    assert sum(schedule.values()) == pytest.approx(1.5)
+    assert set(hour for _, hour in schedule) <= {10, 11}
 
 
 def test_delivered_since_8_skips_night(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -946,6 +946,24 @@ function renderEvBudgetCard(ev) {
   if (enabledEl && document.activeElement !== enabledEl) {
     enabledEl.checked = Boolean(ev.plan_enabled);
   }
+  const remEl = document.getElementById("evRemainingKwh");
+  if (remEl && document.activeElement !== remEl && ev.manual && ev.manual_remaining_kwh != null) {
+    remEl.value = String(ev.manual_remaining_kwh);
+  }
+  const hoursEl = document.getElementById("evScheduleHours");
+  if (hoursEl) {
+    const slots = Array.isArray(ev.slots) ? ev.slots : [];
+    const lines = slots
+      .filter((s) => Number(s.kwh) > 0)
+      .map((s) => `${String(s.hour).padStart(2, "0")}:00 ${Number(s.kwh).toFixed(1)} kWh`);
+    const mode = ev.manual ? "Ręczna ilość" : "Budżet automatyczny";
+    const warn = Array.isArray(ev.schedule_warnings) && ev.schedule_warnings.length
+      ? `<div class="ev-charging-warnings">${ev.schedule_warnings.map((w) => escapeHtml(String(w))).join("<br>")}</div>`
+      : "";
+    hoursEl.innerHTML = lines.length
+      ? `<div>${mode}: ${lines.join(" · ")}</div>${warn}`
+      : `<div class="muted">${mode}: brak slotów w tanich godzinach 8–21.</div>${warn}`;
+  }
   updateEvChargingAuthHint();
 }
 
@@ -953,12 +971,21 @@ function updateEvChargingAuthHint() {
   const st = document.getElementById("evChargingStatus");
   const coeffEl = document.getElementById("evBudgetCoefficient");
   const enabledEl = document.getElementById("evChargingPlanEnabled");
+  const remEl = document.getElementById("evRemainingKwh");
+  const saveBtn = document.getElementById("evRemainingSave");
+  const clearBtn = document.getElementById("evRemainingClear");
   const hasKey = !!getKey();
   if (coeffEl) coeffEl.disabled = !hasKey;
   if (enabledEl) enabledEl.disabled = !hasKey;
-  if (!st) return;
+  if (remEl) remEl.disabled = !hasKey;
+  if (saveBtn) saveBtn.disabled = !hasKey;
+  if (clearBtn) clearBtn.disabled = !hasKey;
+  const settingsSt = document.getElementById("evChargingSettingsStatus");
   if (!hasKey) {
-    st.textContent = "Zmiana współczynnika i przełącznika wymaga klucza API — Ustawienia → Zapisz klucz.";
+    if (st) st.textContent = "Zmiana współczynnika wymaga klucza API — Ustawienia → Zapisz klucz.";
+    if (settingsSt) settingsSt.textContent = "Zmiana kratki wymaga klucza API — powyżej, Zapisz klucz.";
+  } else if (settingsSt && settingsSt.textContent.startsWith("Zmiana kratki")) {
+    settingsSt.textContent = "";
   }
 }
 
@@ -979,8 +1006,10 @@ async function loadEvChargingPlan() {
 async function saveEvBudget(partial) {
   const key = getKey();
   const st = document.getElementById("evChargingStatus");
+  const settingsSt = document.getElementById("evChargingSettingsStatus");
   if (!key) { alert("Ustaw klucz API"); return; }
   if (st) st.textContent = "zapisuję…";
+  if (settingsSt && partial.plan_enabled != null) settingsSt.textContent = "zapisuję…";
   const r = await fetch("/api/ev-charging/budget", {
     method: "PUT",
     headers: { "Content-Type": "application/json", "X-Guardian-Api-Key": key },
@@ -990,10 +1019,63 @@ async function saveEvBudget(partial) {
   if (!r.ok) {
     const msg = typeof j.detail === "string" ? j.detail : "error";
     if (st) st.textContent = msg;
+    if (settingsSt && partial.plan_enabled != null) settingsSt.textContent = msg;
     return;
   }
   renderEvBudgetCard(j);
+  pageLoaded.forecast = false;
   if (st) st.textContent = "zapisane";
+  if (settingsSt && partial.plan_enabled != null) {
+    settingsSt.textContent = j.plan_enabled ? "Włączone — Planer dostaje ładowanie auta." : "Wyłączone — Planer liczy dzień bez auta.";
+  }
+}
+
+async function saveEvRemaining() {
+  const key = getKey();
+  const st = document.getElementById("evChargingStatus");
+  if (!key) { alert("Ustaw klucz API"); return; }
+  const kwh = parseFloat(document.getElementById("evRemainingKwh").value);
+  if (Number.isNaN(kwh) || kwh < 0) {
+    alert("Podaj ilość kWh (0 albo więcej)");
+    return;
+  }
+  if (st) st.textContent = "zapisuję ilość…";
+  const r = await fetch("/api/ev-charging/plan", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", "X-Guardian-Api-Key": key },
+    body: JSON.stringify({ remaining_kwh: kwh }),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const msg = typeof j.detail === "string" ? j.detail : "error";
+    if (st) st.textContent = msg;
+    return;
+  }
+  pageLoaded.forecast = false;
+  await loadEvChargingPlan();
+  if (st) st.textContent = "ilość zapisana — plan przeliczony";
+}
+
+async function clearEvRemaining() {
+  const key = getKey();
+  const st = document.getElementById("evChargingStatus");
+  if (!key) { alert("Ustaw klucz API"); return; }
+  if (st) st.textContent = "wracam do budżetu…";
+  const r = await fetch("/api/ev-charging/plan", {
+    method: "DELETE",
+    headers: { "X-Guardian-Api-Key": key },
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const msg = typeof j.detail === "string" ? j.detail : "error";
+    if (st) st.textContent = msg;
+    return;
+  }
+  const remEl = document.getElementById("evRemainingKwh");
+  if (remEl) remEl.value = "";
+  pageLoaded.forecast = false;
+  await loadEvChargingPlan();
+  if (st) st.textContent = "budżet automatyczny";
 }
 
 function _numOrNull(v) {
@@ -2164,6 +2246,7 @@ async function loadSettings(force) {
     refreshControl().catch(console.error);
     refreshPlanner().catch(console.error);
   }
+  loadEvChargingPlan().catch(console.error);
   pageLoaded.settings = true;
 }
 
@@ -2839,6 +2922,12 @@ document.getElementById("evBudgetCoefficient").addEventListener("change", () => 
 });
 document.getElementById("evChargingPlanEnabled").addEventListener("change", (e) => {
   saveEvBudget({ plan_enabled: e.target.checked }).catch(console.error);
+});
+document.getElementById("evRemainingSave").addEventListener("click", () => {
+  saveEvRemaining().catch(console.error);
+});
+document.getElementById("evRemainingClear").addEventListener("click", () => {
+  clearEvRemaining().catch(console.error);
 });
 
 const ecoPanels = document.getElementById("ecoSlotsPanels");

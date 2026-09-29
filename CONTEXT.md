@@ -75,32 +75,48 @@ _Avoid_: drugi planer, Guardian
 _Avoid_: plan, zlecenie, ładowanie dzienne
 
 **Ładowanie dzienne**:
-Ładowanie auta tanią nadwyżką.
-_Avoid_: ładowanie wyjazdowe, soak, plan
+Ładowanie auta tanią nadwyżką. CWU do tego nie należy.
+_Avoid_: CWU, bojler, ładowanie wyjazdowe, soak, plan
 
 **Tania nadwyżka**:
 Nadwyżka PV ponad zużycie domu w godzinie, której RCE jest niższe niż cena taniej taryfy. Próg w tym domu to 59 gr/kWh. Powyżej progu kWh idzie w depozyt.
 _Avoid_: godzina nocnej strefy G12, cała produkcja PV, depozyt
 
 **Propozycja**:
-Tania nadwyżka tego dnia do auta po współczynniku propozycji, podana o 8:00: suma i okno godzin. Limit i start ładowania ustawiasz w aucie. Mocy ładowania propozycja nie podaje.
-_Avoid_: zlecenie, p10, komunikat wieczorny na jutro, instrukcja amperów
+Budżet tego dnia pokazany na dwa sposoby naraz: procent taniej nadwyżki i kWh. Do tego okno godzin.
+_Avoid_: zlecenie, p10, komunikat wieczorny na jutro, instrukcja amperów, CWU
+
+**Rozkład**:
+Godziny ładowania dziennego od startu, w każdej najwyżej moc. Tylko godziny z energią tańszą niż tania taryfa, bez nocy 22–6. Reszta przy każdym przeliczeniu to budżet minus energia już pobrana z wallboxa od 8:00.
+_Avoid_: plan, ręczna siatka godzin, ładowanie wyjazdowe
+
+**Start**:
+Pierwsza godzina rozkładu. Samo: pierwsza pozostała godzina taniej nadwyżki. Da się przesunąć ręcznie.
+_Avoid_: godzina ustawiona w aucie, 22:00
+
+**Moc ładowania**:
+Najwięcej kWh, jakie rozkład kładzie w jednej godzinie. Samo: 3 kW. Da się zmienić ręcznie.
+_Avoid_: prąd w amperach w aucie, moc falownika
 
 **Stosowanie planu ładowania**:
-Trwały przełącznik na stronie Ładowanie, na starcie wyłączony. Włączony: przy każdym przeliczeniu Planer dostaje aktualny budżet jako zużycie ładowania dziennego, także gdy auto nie jest podpięte, aż go wyłączysz.
+Trwały przełącznik w Ustawieniach, obok sterowania Planerem i Guardianem. Na starcie wyłączony. Włączony: przy każdym przeliczeniu Planer dostaje aktualny budżet jako zużycie ładowania dziennego, także gdy auto nie jest podpięte, aż go wyłączysz.
 _Avoid_: stosowanie planu, rezerwa w magazynie, limit eksportu, przekroczenie
 
 **Budżet**:
-Współczynnik propozycji razy aktualne p50 taniej nadwyżki od 8:00 do końca dnia. Rusza się z prognozą, poranna liczba się nie zamraża.
-_Avoid_: p10, licznik od północy, ładowanie wyjazdowe
+Współczynnik propozycji razy aktualne p50 taniej nadwyżki od 8:00 do końca dnia. Bez przypięcia rusza się z prognozą.
+_Avoid_: p10, licznik od północy, ładowanie wyjazdowe, przypięcie
+
+**Przypięcie**:
+Ręcznie ustawiona suma kWh, start albo moc. Trzyma do najbliższego 8:00 albo do powrotu na automat. Gdy prognoza taniej nadwyżki spadnie poniżej trzymanej sumy, suma schodzi do tej nadwyżki, więc procent nie przekracza 100%. Rozkład i tak skraca się o energię już pobraną z wallboxa.
+_Avoid_: drugi budżet, ręczna siatka godzin, procent powyżej 100%
 
 **Przekroczenie**:
 Energia na liczniku ładowarki od 8:00 powyżej budżetu. Drugi komunikat podaje, ile weszło i jaki jest budżet. Limit obniżasz w aucie. Przy odpiętym aucie komunikatu nie ma.
 _Avoid_: spadek prognozy bez ładowania, ładowanie nocne
 
 **Współczynnik propozycji**:
-Ułamek p50 taniej nadwyżki podawany do auta. Startowo 0,80. Da się go zmienić.
-_Avoid_: p10, pełne p50
+Ułamek p50 taniej nadwyżki podawany do auta. Co rano, bez przypięcia, stoi na 100%. Da się go zmienić.
+_Avoid_: p10
 
 **Autokonsumpcja**:
 Zużycie produkcji PV w domu albo w aucie w tej samej godzinie, kosztem sprzedaży po RCE tej godziny.
