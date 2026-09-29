@@ -41,7 +41,13 @@ CURRENT_RULES = frozenset(
     }
 )
 
-# Ładowanie 6:00–15:00 (godziny 6–14) uzbraja import o 13–14.
+# Do 13:00 ujemny bilans alarmuje sam. Od 13:00 do 22:00 tylko duży pobór.
+WATCH_HOURS = frozenset(range(6, 13))
+ABNORMAL_LOAD_HOURS = frozenset(range(13, 22))
+ABNORMAL_HOUSE_W = 2500.0
+ABNORMAL_EV_KW = 1.0
+
+# Ładowanie 6:00–15:00 (godziny 6–14) zostaje w outlooku jako day_armed.
 ARM_HOURS = frozenset(range(6, 15))
 MIDDAY_HOURS = frozenset({13, 14})
 
@@ -189,30 +195,60 @@ def _firing(
     )
 
 
+def _house_load_w(snap: AnomalySnapshot) -> float:
+    """Pobór domu. Auto z TWC schodzi z consumption, gdy próbka jest świeża."""
+    ev_w = 0.0
+    if snap.charging_kw is not None:
+        ev_w = max(0.0, float(snap.charging_kw)) * 1000.0
+    return float(snap.consumption_w) - ev_w
+
+
+def _abnormal_draw(snap: AnomalySnapshot, *, night: frozenset[int]) -> list[str]:
+    """Grzałka albo auto poza tanim G12. Zwykły dom (~0,5 kW) tu nie wchodzi."""
+    reasons: list[str] = []
+    house_w = _house_load_w(snap)
+    if house_w > ABNORMAL_HOUSE_W:
+        reasons.append(f"pobór domu {house_w / 1000.0:.1f} kW")
+    ev = snap.charging_kw
+    if (
+        ev is not None
+        and float(ev) >= ABNORMAL_EV_KW
+        and snap.local_hour not in night
+    ):
+        reasons.append(f"auto {float(ev):.1f} kW")
+    return reasons
+
+
 def _net_negative_live(
     snap: AnomalySnapshot,
-    outlook: AlertOutlook,
     *,
     zone: str,
+    night: frozenset[int],
 ) -> AlertFiring | None:
     if not _net_negative(snap.remaining_kwh):
         return None
     hour = snap.local_hour
     bal = f"Bilans godziny {hour:02d} jest {snap.remaining_kwh:+.2f} kWh."
-    if hour in MIDDAY_HOURS:
-        if not outlook.day_armed:
+    if hour in WATCH_HOURS:
+        if zone != "day":
             return None
         return _firing(
-            RULE_NET_NEGATIVE_MIDDAY,
-            f"Import o {hour:02d} w dniu z ładowaniem",
-            bal + " Dzień ma ładowanie między 6:00 a 15:00.",
+            RULE_NET_NEGATIVE_EXPENSIVE,
+            f"Bilans godziny {hour:02d} poniżej zera",
+            bal,
         )
-    if zone != "day":
+    if hour not in ABNORMAL_LOAD_HOURS:
         return None
+    reasons = _abnormal_draw(snap, night=night)
+    if not reasons:
+        return None
+    rule = (
+        RULE_NET_NEGATIVE_MIDDAY if hour in MIDDAY_HOURS else RULE_NET_NEGATIVE_EXPENSIVE
+    )
     return _firing(
-        RULE_NET_NEGATIVE_EXPENSIVE,
-        f"Bilans godziny {hour:02d} poniżej zera",
-        bal,
+        rule,
+        f"Duży pobór o {hour:02d}",
+        bal + " " + "; ".join(reasons) + ".",
     )
 
 
@@ -347,23 +383,18 @@ def _ev_outside_cheap(
     )
 
 
-def _plan_import(
-    outlook: AlertOutlook, *, night: frozenset[int]
-) -> AlertFiring | None:
+def _plan_import(outlook: AlertOutlook) -> AlertFiring | None:
+    """Tylko 6:00–13:00. Wieczór z wysokim RCE i zwykłym loadem nie jest alarmem."""
     lines: list[str] = []
     for slot in outlook.plan_hours:
         target = slot.target_net_kwh
         if target is None or float(target) >= -1e-6:
             continue
-        if slot.hour in MIDDAY_HOURS:
-            if not outlook.day_armed:
-                continue
-            why = "dzień z ładowaniem 6:00–15:00"
-        elif slot.hour in night:
+        if slot.hour not in WATCH_HOURS:
             continue
-        else:
-            why = "droga strefa G12"
-        lines.append(f"{slot.hour:02d}: net {float(target):+.2f} kWh ({why})")
+        lines.append(
+            f"{slot.hour:02d}: net {float(target):+.2f} kWh (droga strefa G12)"
+        )
     if not lines:
         return None
     return _firing(
@@ -391,12 +422,12 @@ def evaluate(
 
     out: list[AlertFiring] = []
     for firing in (
-        _net_negative_live(snap, view, zone=zone),
+        _net_negative_live(snap, zone=zone, night=night),
         _export_below_cheap(snap, view),
         _plan_discharge_miss(snap, view),
         _planner_silent_fail(snap),
         _ev_outside_cheap(view, night=night),
-        _plan_import(view, night=night),
+        _plan_import(view),
     ):
         if firing is not None:
             out.append(firing)

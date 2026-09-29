@@ -103,16 +103,67 @@ def test_negative_balance_in_expensive_hour() -> None:
 
 
 def test_negative_balance_at_night_is_silent() -> None:
-    firings = _eval(_snap(local_hour=23, remaining_kwh=-0.4))
+    firings = _eval(
+        _snap(
+            local_hour=23,
+            remaining_kwh=-0.4,
+            consumption_w=6000.0,
+            charging_kw=0.0,
+        )
+    )
     assert RULE_NET_NEGATIVE_EXPENSIVE not in _ids(firings)
     assert RULE_NET_NEGATIVE_MIDDAY not in _ids(firings)
 
 
-def test_midday_import_silent_until_day_is_armed() -> None:
-    quiet = _eval(_snap(local_hour=14, remaining_kwh=-0.5), _outlook(day_armed=False))
+def test_midday_import_silent_without_abnormal_load() -> None:
+    quiet = _eval(
+        _snap(
+            local_hour=14,
+            remaining_kwh=-0.5,
+            consumption_w=5000.0,
+            charging_kw=4.4,
+        ),
+        _outlook(day_armed=True),
+    )
     assert RULE_NET_NEGATIVE_MIDDAY not in _ids(quiet)
-    armed = _eval(_snap(local_hour=14, remaining_kwh=-0.5), _outlook(day_armed=True))
-    assert RULE_NET_NEGATIVE_MIDDAY in _ids(armed)
+    assert RULE_NET_NEGATIVE_EXPENSIVE not in _ids(quiet)
+
+
+def test_midday_heater_with_negative_balance_alerts() -> None:
+    firings = _eval(
+        _snap(
+            local_hour=14,
+            remaining_kwh=-0.5,
+            consumption_w=4000.0,
+            charging_kw=0.0,
+        )
+    )
+    hit = next(f for f in firings if f.rule_id == RULE_NET_NEGATIVE_MIDDAY)
+    assert "4.0 kW" in hit.body
+
+
+def test_evening_plan_import_with_normal_load_is_silent() -> None:
+    firings = _eval(
+        _snap(local_hour=16, remaining_kwh=-0.2, consumption_w=600.0, charging_kw=0.0)
+    )
+    assert RULE_NET_NEGATIVE_EXPENSIVE not in _ids(firings)
+
+
+def test_evening_heater_with_negative_balance_alerts() -> None:
+    firings = _eval(
+        _snap(local_hour=17, remaining_kwh=-0.3, consumption_w=3500.0, charging_kw=0.0)
+    )
+    hit = next(f for f in firings if f.rule_id == RULE_NET_NEGATIVE_EXPENSIVE)
+    assert hit.title.startswith("Duży pobór")
+    assert "3.5 kW" in hit.body
+
+
+def test_evening_car_with_negative_balance_alerts() -> None:
+    firings = _eval(
+        _snap(local_hour=16, remaining_kwh=-0.4, consumption_w=800.0, charging_kw=7.2)
+    )
+    hit = next(f for f in firings if f.rule_id == RULE_NET_NEGATIVE_EXPENSIVE)
+    assert "7.2 kW" in hit.body
 
 
 def test_day_armed_by_charge_between_6_and_15_only() -> None:
@@ -311,21 +362,26 @@ def test_night_ev_import_is_allowed() -> None:
     assert RULE_PLAN_IMPORT not in _ids(firings)
 
 
-def test_planned_import_in_expensive_hour() -> None:
+def test_planned_import_only_before_13() -> None:
     outlook = _outlook(
-        plan_hours=[PlanSlot(hour=16, target_net_kwh=-0.4, ev_kwh=0.0, rce_pln_kwh=0.30)]
+        plan_hours=[
+            PlanSlot(hour=11, target_net_kwh=-0.4, ev_kwh=0.0, rce_pln_kwh=0.30),
+            PlanSlot(hour=16, target_net_kwh=-0.4, ev_kwh=0.0, rce_pln_kwh=1.20),
+            PlanSlot(hour=17, target_net_kwh=-0.13, ev_kwh=0.0, rce_pln_kwh=1.30),
+        ]
     )
-    firings = _eval(_snap(), outlook)
-    assert RULE_PLAN_IMPORT in _ids(firings)
+    firings = _eval(_snap(remaining_kwh=0.1, consumption_w=500.0, charging_kw=0.0), outlook)
+    hit = next(f for f in firings if f.rule_id == RULE_PLAN_IMPORT)
+    assert "11:" in hit.body
+    assert "16:" not in hit.body
+    assert "17:" not in hit.body
 
 
-def test_planned_midday_import_follows_arming() -> None:
+def test_planned_import_after_13_is_silent() -> None:
     slot = PlanSlot(hour=14, target_net_kwh=-0.52, ev_kwh=0.8, rce_pln_kwh=-0.01)
-    quiet = _eval(_snap(), _outlook(day_armed=False, plan_hours=[slot]))
-    assert RULE_PLAN_IMPORT not in _ids(quiet)
-    armed = _eval(_snap(), _outlook(day_armed=True, plan_hours=[slot]))
-    assert RULE_PLAN_IMPORT in _ids(armed)
-    assert RULE_EV_OUTSIDE_CHEAP not in _ids(armed)
+    firings = _eval(_snap(), _outlook(day_armed=True, plan_hours=[slot]))
+    assert RULE_PLAN_IMPORT not in _ids(firings)
+    assert RULE_EV_OUTSIDE_CHEAP not in _ids(firings)
 
 
 def test_debounce_holds_five_minutes_then_digest_reminds() -> None:
