@@ -166,7 +166,10 @@ def planner_ev_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         rce = row.get("rce_pln_kwh")
         if rce is None or float(rce) >= CHEAP_THRESHOLD_PLN:
             continue
-        kept.append(row)
+        item = dict(row)
+        # Kolejność automatyczna: sama cena RCE. Niższy score = tańsza godzina.
+        item["score"] = float(rce)
+        kept.append(item)
     return kept
 
 

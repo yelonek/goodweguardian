@@ -109,7 +109,9 @@ def build_hour_inputs_for_slots(
         pack = load_corrected.get(key)
         if pack is not None:
             load_base = float(pack["base"])
-            load_kwh = float(pack["total"])
+            # Auto jest osobnym slotem (ev_load_kwh). Nie wchodzi do load,
+            # bo planer traktowałby je jak zużycie domu i dobijał brak z sieci.
+            load_kwh = load_base
             load_p25 = float(pack["p25"])
             load_p75 = float(pack["p75"])
             ev_kwh = float(pack["ev"])
@@ -117,11 +119,9 @@ def build_hour_inputs_for_slots(
         else:
             load_base = float(lr.get("load_base_kwh_p50") or lr.get("load_kwh_p50") or 0.0)
             ev_kwh = float(ev_schedule.get(key, 0.0))
-            load_kwh = load_base + ev_kwh
+            load_kwh = load_base
             load_p25 = float(lr.get("load_kwh_p25") if lr.get("load_kwh_p25") is not None else load_base)
             load_p75 = float(lr.get("load_kwh_p75") if lr.get("load_kwh_p75") is not None else load_base)
-            if ev_kwh > 0:
-                load_p75 = max(load_p75, load_kwh)
             load_src = str(lr.get("source") or "unknown")
 
         if key in pv_corrected:

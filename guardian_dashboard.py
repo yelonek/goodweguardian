@@ -209,7 +209,7 @@ class EvBudgetSettingsBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     plan_enabled: bool | None = None
-    coefficient: float | None = Field(default=None, gt=0.0, le=1.0)
+    coefficient: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 class EvChargingPlanBody(BaseModel):

@@ -924,66 +924,101 @@ async function loadCharging(force) {
   }
 }
 
+function _evSurplus(ev) {
+  return Math.max(0, Number(ev && ev.surplus_kwh) || 0);
+}
+
+function _evCoeff(ev) {
+  const n = Number(ev && ev.coefficient);
+  if (!Number.isFinite(n)) return 1;
+  return Math.min(1, Math.max(0, n));
+}
+
+function _paintEvPair(pct, kwh) {
+  const pctOut = document.getElementById("evPctOut");
+  const kwhOut = document.getElementById("evKwhOut");
+  if (pctOut) pctOut.textContent = `${Math.round(pct)}%`;
+  if (kwhOut) kwhOut.textContent = `${kwh.toFixed(1)} kWh`;
+}
+
+function _evSentence(ev, pct, kwh) {
+  const surplus = _evSurplus(ev);
+  const delivered = Number(ev.delivered_since_8_kwh || 0);
+  const bits = [
+    `${Math.round(pct)}% z ${surplus.toFixed(1)} kWh taniej nadwyżki to ${kwh.toFixed(1)} kWh do auta.`,
+    `Wallbox od 8:00 wziął ${delivered.toFixed(1)} kWh.`,
+    `Tanie godziny: ${_budgetWindow(ev)}.`,
+  ];
+  if (!ev.plan_enabled) {
+    bits.push("Planer tego nie dostaje. Kratka jest w Ustawieniach.");
+  } else {
+    const slots = (ev.slots || []).filter((s) => Number(s.kwh) > 0);
+    if (!slots.length) {
+      bits.push("Dziś nie zostało taniej godziny, w którą da się to ułożyć.");
+    } else {
+      const lines = slots.map((s) => `${String(s.hour).padStart(2, "0")}:00 ${Number(s.kwh).toFixed(1)} kWh`);
+      bits.push(`Ułożone: ${lines.join(", ")}.`);
+    }
+  }
+  return bits.join(" ");
+}
+
 function renderEvBudgetCard(ev) {
   if (!ev) return;
   _lastChargingEv = ev;
-  const hero = document.getElementById("evBudgetHero");
-  const budget = Number(ev.budget_kwh || 0);
-  const delivered = Number(ev.delivered_since_8_kwh || 0);
-  const surplus = Number(ev.surplus_kwh || 0);
-  if (hero) {
-    hero.innerHTML =
-      `<div><div class="plan-hero-key">Budżet</div><div class="plan-hero-val">${budget.toFixed(1)} kWh</div></div>` +
-      `<div><div class="plan-hero-key">Okno</div><div>${_budgetWindow(ev)}</div></div>` +
-      `<div><div class="plan-hero-key">Od 8:00 na liczniku</div><div>${delivered.toFixed(1)} kWh</div></div>` +
-      `<div><div class="plan-hero-key">Nadwyżka p50</div><div>${surplus.toFixed(1)} kWh</div></div>`;
+  const surplus = _evSurplus(ev);
+  const coeff = _evCoeff(ev);
+  const pct = Math.round(coeff * 100);
+  const kwh = surplus * coeff;
+  const facts = document.getElementById("evBudgetFacts");
+  if (facts) {
+    facts.textContent = `Tania nadwyżka ${surplus.toFixed(1)} kWh · na liczniku od 8:00 ${Number(ev.delivered_since_8_kwh || 0).toFixed(1)} kWh`;
   }
-  const coeffEl = document.getElementById("evBudgetCoefficient");
-  if (coeffEl && !coeffEl.matches(":focus") && ev.coefficient != null) {
-    coeffEl.value = String(ev.coefficient);
+  const pctSlider = document.getElementById("evPctSlider");
+  const kwhSlider = document.getElementById("evKwhSlider");
+  const dragging = document.activeElement === pctSlider || document.activeElement === kwhSlider;
+  if (!dragging) {
+    if (kwhSlider) {
+      kwhSlider.max = surplus > 0 ? String(surplus) : "1";
+      kwhSlider.step = surplus >= 20 ? "0.5" : "0.1";
+      kwhSlider.value = String(kwh);
+      kwhSlider.disabled = surplus <= 0;
+    }
+    if (pctSlider) {
+      pctSlider.value = String(pct);
+      pctSlider.disabled = surplus <= 0;
+    }
+    _paintEvPair(pct, kwh);
   }
+  const sentence = document.getElementById("evBudgetSentence");
+  if (sentence) sentence.textContent = _evSentence(ev, pct, kwh);
+  const takeAll = document.getElementById("evTakeAll");
+  if (takeAll) takeAll.hidden = surplus <= 0 || pct >= 100;
   const enabledEl = document.getElementById("evChargingPlanEnabled");
   if (enabledEl && document.activeElement !== enabledEl) {
     enabledEl.checked = Boolean(ev.plan_enabled);
-  }
-  const remEl = document.getElementById("evRemainingKwh");
-  if (remEl && document.activeElement !== remEl && ev.manual && ev.manual_remaining_kwh != null) {
-    remEl.value = String(ev.manual_remaining_kwh);
-  }
-  const hoursEl = document.getElementById("evScheduleHours");
-  if (hoursEl) {
-    const slots = Array.isArray(ev.slots) ? ev.slots : [];
-    const lines = slots
-      .filter((s) => Number(s.kwh) > 0)
-      .map((s) => `${String(s.hour).padStart(2, "0")}:00 ${Number(s.kwh).toFixed(1)} kWh`);
-    const mode = ev.manual ? "Ręczna ilość" : "Budżet automatyczny";
-    const warn = Array.isArray(ev.schedule_warnings) && ev.schedule_warnings.length
-      ? `<div class="ev-charging-warnings">${ev.schedule_warnings.map((w) => escapeHtml(String(w))).join("<br>")}</div>`
-      : "";
-    hoursEl.innerHTML = lines.length
-      ? `<div>${mode}: ${lines.join(" · ")}</div>${warn}`
-      : `<div class="muted">${mode}: brak slotów w tanich godzinach 8–21.</div>${warn}`;
   }
   updateEvChargingAuthHint();
 }
 
 function updateEvChargingAuthHint() {
   const st = document.getElementById("evChargingStatus");
-  const coeffEl = document.getElementById("evBudgetCoefficient");
   const enabledEl = document.getElementById("evChargingPlanEnabled");
-  const remEl = document.getElementById("evRemainingKwh");
-  const saveBtn = document.getElementById("evRemainingSave");
-  const clearBtn = document.getElementById("evRemainingClear");
+  const pctSlider = document.getElementById("evPctSlider");
+  const kwhSlider = document.getElementById("evKwhSlider");
+  const takeAll = document.getElementById("evTakeAll");
   const hasKey = !!getKey();
-  if (coeffEl) coeffEl.disabled = !hasKey;
+  const noSurplus = _evSurplus(_lastChargingEv) <= 0;
   if (enabledEl) enabledEl.disabled = !hasKey;
-  if (remEl) remEl.disabled = !hasKey;
-  if (saveBtn) saveBtn.disabled = !hasKey;
-  if (clearBtn) clearBtn.disabled = !hasKey;
+  if (pctSlider) pctSlider.disabled = !hasKey || noSurplus;
+  if (kwhSlider) kwhSlider.disabled = !hasKey || noSurplus;
+  if (takeAll) takeAll.disabled = !hasKey || noSurplus;
   const settingsSt = document.getElementById("evChargingSettingsStatus");
   if (!hasKey) {
-    if (st) st.textContent = "Zmiana współczynnika wymaga klucza API — Ustawienia → Zapisz klucz.";
+    if (st) st.textContent = "Zmiana suwaków wymaga klucza API — Ustawienia → Zapisz klucz.";
     if (settingsSt) settingsSt.textContent = "Zmiana kratki wymaga klucza API — powyżej, Zapisz klucz.";
+  } else if (st && st.textContent.startsWith("Zmiana suwaków")) {
+    st.textContent = "";
   } else if (settingsSt && settingsSt.textContent.startsWith("Zmiana kratki")) {
     settingsSt.textContent = "";
   }
@@ -1030,52 +1065,25 @@ async function saveEvBudget(partial) {
   }
 }
 
-async function saveEvRemaining() {
-  const key = getKey();
-  const st = document.getElementById("evChargingStatus");
-  if (!key) { alert("Ustaw klucz API"); return; }
-  const kwh = parseFloat(document.getElementById("evRemainingKwh").value);
-  if (Number.isNaN(kwh) || kwh < 0) {
-    alert("Podaj ilość kWh (0 albo więcej)");
-    return;
+function _previewEvSliders(source) {
+  const ev = _lastChargingEv || {};
+  const surplus = _evSurplus(ev);
+  const pctSlider = document.getElementById("evPctSlider");
+  const kwhSlider = document.getElementById("evKwhSlider");
+  let pct = Number(pctSlider && pctSlider.value);
+  let kwh = Number(kwhSlider && kwhSlider.value);
+  if (source === "pct") {
+    kwh = surplus * (pct / 100);
+    if (kwhSlider) kwhSlider.value = String(kwh);
+  } else {
+    pct = surplus > 0 ? Math.round((kwh / surplus) * 100) : 0;
+    if (pctSlider) pctSlider.value = String(pct);
   }
-  if (st) st.textContent = "zapisuję ilość…";
-  const r = await fetch("/api/ev-charging/plan", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json", "X-Guardian-Api-Key": key },
-    body: JSON.stringify({ remaining_kwh: kwh }),
-  });
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) {
-    const msg = typeof j.detail === "string" ? j.detail : "error";
-    if (st) st.textContent = msg;
-    return;
-  }
-  pageLoaded.forecast = false;
-  await loadEvChargingPlan();
-  if (st) st.textContent = "ilość zapisana — plan przeliczony";
-}
-
-async function clearEvRemaining() {
-  const key = getKey();
-  const st = document.getElementById("evChargingStatus");
-  if (!key) { alert("Ustaw klucz API"); return; }
-  if (st) st.textContent = "wracam do budżetu…";
-  const r = await fetch("/api/ev-charging/plan", {
-    method: "DELETE",
-    headers: { "X-Guardian-Api-Key": key },
-  });
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) {
-    const msg = typeof j.detail === "string" ? j.detail : "error";
-    if (st) st.textContent = msg;
-    return;
-  }
-  const remEl = document.getElementById("evRemainingKwh");
-  if (remEl) remEl.value = "";
-  pageLoaded.forecast = false;
-  await loadEvChargingPlan();
-  if (st) st.textContent = "budżet automatyczny";
+  _paintEvPair(pct, kwh);
+  const sentence = document.getElementById("evBudgetSentence");
+  if (sentence) sentence.textContent = _evSentence(ev, pct, kwh);
+  const takeAll = document.getElementById("evTakeAll");
+  if (takeAll) takeAll.hidden = surplus <= 0 || pct >= 100;
 }
 
 function _numOrNull(v) {
@@ -2912,22 +2920,23 @@ document.getElementById("wd_soc_night_reserve_enabled").addEventListener("change
   setNightReserveFieldsEnabled(e.target.checked);
 });
 
-document.getElementById("evBudgetCoefficient").addEventListener("change", () => {
-  const coeff = parseFloat(document.getElementById("evBudgetCoefficient").value);
-  if (Number.isNaN(coeff) || coeff <= 0 || coeff > 1) {
-    alert("Współczynnik: od 0 do 1");
-    return;
-  }
+document.getElementById("evPctSlider").addEventListener("input", () => _previewEvSliders("pct"));
+document.getElementById("evKwhSlider").addEventListener("input", () => _previewEvSliders("kwh"));
+document.getElementById("evPctSlider").addEventListener("change", () => {
+  const pct = Number(document.getElementById("evPctSlider").value);
+  saveEvBudget({ coefficient: Math.min(1, Math.max(0, pct / 100)) }).catch(console.error);
+});
+document.getElementById("evKwhSlider").addEventListener("change", () => {
+  const surplus = _evSurplus(_lastChargingEv);
+  const kwh = Number(document.getElementById("evKwhSlider").value);
+  const coeff = surplus > 0 ? Math.min(1, Math.max(0, kwh / surplus)) : 0;
   saveEvBudget({ coefficient: coeff }).catch(console.error);
+});
+document.getElementById("evTakeAll").addEventListener("click", () => {
+  saveEvBudget({ coefficient: 1 }).catch(console.error);
 });
 document.getElementById("evChargingPlanEnabled").addEventListener("change", (e) => {
   saveEvBudget({ plan_enabled: e.target.checked }).catch(console.error);
-});
-document.getElementById("evRemainingSave").addEventListener("click", () => {
-  saveEvRemaining().catch(console.error);
-});
-document.getElementById("evRemainingClear").addEventListener("click", () => {
-  clearEvRemaining().catch(console.error);
 });
 
 const ecoPanels = document.getElementById("ecoSlotsPanels");

@@ -116,6 +116,28 @@ def test_planner_skips_evening_and_night_even_when_budget_is_large(
     assert dump["source"] == "budget"
 
 
+def test_planner_fills_lowest_rce_ahead_of_a_better_score(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("ev_charging_plan.twc_enabled", lambda: False)
+    monkeypatch.setattr("ev_day_budget.read_declaration", lambda: None)
+    now = datetime(2026, 9, 28, 8, 0)
+    expensive = _row(15, pv=4.0, load=1.0, rce=0.41)
+    expensive["score"] = 0.01
+    cheap = _row(11, pv=5.0, load=1.0, rce=0.25)
+    cheap["score"] = 9.0
+    cheapest = _row(12, pv=5.0, load=1.0, rce=0.13)
+    cheapest["score"] = 8.0
+    schedule, _dump = ev_schedule_for_planner(
+        now,
+        enabled=True,
+        coefficient=3.0 / 11.0,
+        slot_rows=[expensive, cheap, cheapest],
+    )
+    assert set(hour for _, hour in schedule) == {12}
+    assert schedule[("2026-09-28", 12)] == pytest.approx(3.0)
+
+
 def test_manual_target_replaces_budget(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("ev_charging_plan.twc_enabled", lambda: False)
     monkeypatch.setattr(

@@ -99,7 +99,7 @@ Najwięcej kWh, jakie rozkład kładzie w jednej godzinie. Samo: 3 kW. Da się z
 _Avoid_: prąd w amperach w aucie, moc falownika
 
 **Stosowanie planu ładowania**:
-Trwały przełącznik w Ustawieniach, obok sterowania Planerem i Guardianem. Na starcie wyłączony. Włączony: przy każdym przeliczeniu Planer dostaje aktualny budżet jako zużycie ładowania dziennego, także gdy auto nie jest podpięte, aż go wyłączysz.
+Trwały przełącznik w Ustawieniach, obok sterowania Planerem i Guardianem. Na starcie wyłączony. Włączony: przy każdym przeliczeniu rozkład jest w Prognozie, także gdy auto nie jest podpięte, aż go wyłączysz. Zużycie domu w planie zostaje zużyciem domu — auto nie wchodzi do load.
 _Avoid_: stosowanie planu, rezerwa w magazynie, limit eksportu, przekroczenie
 
 **Budżet**:

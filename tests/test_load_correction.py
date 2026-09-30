@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from planner.intra_hour import mix_k_into_hour
 from planner.load_correction import (
     apply_load_correction,
     build_load_intra_meta,
@@ -234,11 +235,11 @@ def test_mix_load_base_keep_ev_does_not_scale_ev() -> None:
         load_p25=1.0,
         load_p75=2.5,
     )
-    # w=0.5 → 0.5·2.4 + 0.5·2.0 = 2.2; EV +3
+    # w=0.5 → 0.5·2.4 + 0.5·2.0 = 2.2; EV zostaje w total, pasmo p75 to dom
     assert base == pytest.approx(2.2)
     assert total == pytest.approx(5.2)
     assert p25 == pytest.approx(0.5 * 2.4 + 0.5 * 1.0)
-    assert p75 == pytest.approx(5.2)  # EV podnosi p75 do total
+    assert p75 == pytest.approx(mix_k_into_hour(f50=2.0, k=1.2, spill_min=30, q_raw=2.5))
 
 
 def test_mix_load_base_keep_ev_full_spill_still_adds_ev() -> None:
@@ -252,7 +253,7 @@ def test_mix_load_base_keep_ev_full_spill_still_adds_ev() -> None:
     )
     assert base == pytest.approx(1.3)
     assert total == pytest.approx(5.3)
-    assert p75 == pytest.approx(5.3)
+    assert p75 == pytest.approx(mix_k_into_hour(f50=2.0, k=0.65, spill_min=60, q_raw=2.5))
 
 
 def test_load_k_carries_prev_hour_across_clock_roll(

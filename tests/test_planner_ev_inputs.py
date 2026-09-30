@@ -10,7 +10,7 @@ import pytest
 from planner.inputs import build_hour_inputs_for_slots
 
 
-def test_build_hour_inputs_adds_ev_to_load(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_build_hour_inputs_keeps_ev_out_of_house_load(monkeypatch: pytest.MonkeyPatch) -> None:
     d = "2026-06-11"
 
     monkeypatch.setattr(
@@ -62,6 +62,7 @@ def test_build_hour_inputs_adds_ev_to_load(monkeypatch: pytest.MonkeyPatch) -> N
     hin = inputs[0]
     assert hin.load_base_kwh == pytest.approx(0.5)
     assert hin.ev_load_kwh == pytest.approx(11.0)
-    assert hin.load_kwh == pytest.approx(11.5)
-    assert hin.load_kwh_p75 == pytest.approx(11.5)
+    assert hin.load_kwh == pytest.approx(0.5)
+    assert hin.load_kwh_p25 == pytest.approx(0.4)
+    assert hin.load_kwh_p75 == pytest.approx(0.6)
     assert "ev_charging_plans" in snapshot

@@ -48,14 +48,15 @@ def test_index_uses_external_ui_file() -> None:
         "function "
     )[0]
     assert 'id="evBudgetCard"' in body
-    assert 'id="evBudgetCoefficient"' in body
+    assert 'id="evPctSlider"' in body
+    assert 'id="evKwhSlider"' in body
+    assert 'id="evTakeAll"' in body
     assert 'id="evChargingPlanEnabled"' in body
     assert 'id="applyDayPlan"' in js.text
     assert "Stosuj plan ładowania" in body
-    assert 'id="evRemainingKwh"' in body
-    assert 'id="evRemainingSave"' in body
-    assert 'id="evRemainingClear"' in body
-    assert 'getElementById("evRemainingKwh")' in js.text
+    assert 'id="evRemainingKwh"' not in body
+    assert "Budżet automatyczny" not in body
+    assert "function _previewEvSliders(" in js.text
     assert 'data-page="charging">Ładowanie</a>' in body
     assert 'id="page-charging"' in body
     assert "function loadCharging(" in js.text

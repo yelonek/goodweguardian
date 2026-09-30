@@ -188,8 +188,8 @@ class GuardianSettings(BaseModel):
         ),
     )
     ev_charging_budget_coefficient: float = Field(
-        0.80, gt=0.0, le=1.0, json_schema_extra=_meta("planner"),
-        description="Ułamek p50 taniej nadwyżki (od 8:00), który jest budżetem ładowania.",
+        0.80, ge=0.0, le=1.0, json_schema_extra=_meta("planner"),
+        description="Ułamek p50 taniej nadwyżki (od 8:00), który jest budżetem ładowania. 0 = auto nic nie bierze.",
     )
     pv_weather_correction_enabled: bool = Field(
         True,

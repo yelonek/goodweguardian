@@ -152,13 +152,11 @@ def mix_load_base_keep_ev(
     load_p25: float,
     load_p75: float,
 ) -> tuple[float, float, float, float]:
-    """k miesza tylko ``load_base``; EV dodawane po mix. (base, total, p25, p75)."""
+    """k miesza tylko ``load_base``. ``total`` to dom + EV (diagnostyka); pasma zostają domem."""
     base = mix_k_into_hour(f50=load_base, k=k, spill_min=spill_min)
     p25 = mix_k_into_hour(f50=load_base, k=k, spill_min=spill_min, q_raw=load_p25)
     p75 = mix_k_into_hour(f50=load_base, k=k, spill_min=spill_min, q_raw=load_p75)
     total = max(0.0, base + float(ev_kwh))
-    if ev_kwh > 0:
-        p75 = max(p75, total)
     return base, total, p25, p75
 
 
@@ -441,6 +439,24 @@ def _load_bands_from_row(row: dict[str, Any] | None, load_base: float) -> tuple[
     return p25, p75
 
 
+def _strip_ev_from_load_so_far(state: dict[str, Any], now: datetime) -> None:
+    """Licznik ``consumption_w`` zawiera auto. Korekta k porównuje dom z domem."""
+    a = state.get("a_so_far_kwh")
+    if a is None:
+        return
+    from tesla_wall_charger import hourly_ev_kwh_from_telemetry
+
+    ev = float(hourly_ev_kwh_from_telemetry(now.date()).get(now.hour, 0.0))
+    if ev <= 1e-9:
+        return
+    state["a_so_far_kwh"] = max(0.0, float(a) - ev)
+    state["ev_so_far_kwh"] = ev
+    if state.get("k_intra_source") == "current_hour":
+        state["k_intra"] = None
+        state["k_intra_current"] = None
+        state["reason"] = "pending"
+
+
 def apply_load_correction(
     slots: list[tuple[str, int]],
     load_by_key: dict[tuple[str, int], dict[str, Any]],
@@ -466,17 +482,17 @@ def apply_load_correction(
     prev_slot = (prev_dt.date().isoformat(), prev_dt.hour)
 
     cur_base = load_base_from_row(load_by_key.get(current_slot))
-    cur_ev = float(ev_schedule.get(current_slot, 0.0))
     prev_row = load_by_key.get(prev_slot)
     f50_prev = load_base_from_row(prev_row) if prev_row is not None else None
 
     state = build_load_intra_meta(
         now,
-        f50_current_kwh=cur_base + cur_ev,
+        f50_current_kwh=cur_base,
         f50_prev_kwh=f50_prev,
     )
+    _strip_ev_from_load_so_far(state, now)
     if LOAD_CORRECTION_ENABLED:
-        apply_load_plan_to_meta(state, f50_kwh=cur_base + cur_ev)
+        apply_load_plan_to_meta(state, f50_kwh=cur_base)
     k_intra = state.get("k_intra")
     spill_min = float(state.get("spill_min") or 0.0)
     alpha = float(state.get("alpha") or 0.0)
@@ -505,13 +521,9 @@ def apply_load_correction(
             p75 = max(0.0, p75 * k)
             base = max(0.0, base * k)
             total = base + ev_kwh
-            if ev_kwh > 0:
-                p75 = max(p75, total)
             source = "load_intra_current"
         else:
             total = base + ev_kwh
-            if ev_kwh > 0:
-                p75 = max(p75, total)
         corrected[slot] = {
             "base": base,
             "total": total,
