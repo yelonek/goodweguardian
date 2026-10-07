@@ -80,6 +80,26 @@ def test_export_pv_surplus_deficit_only_below_zero() -> None:
     assert "deficit" in d.reason
 
 
+def test_export_pv_surplus_planned_import_holds_battery() -> None:
+    """Stary wiersz export_pv_surplus nie może zrzucić baterii przy planowanym imporcie."""
+    d = decide_plan_execution(
+        _inp(
+            remaining_kwh=-1.51,
+            soc_pct=100.0,
+            pv_w=2000.0,
+            consumption_w=600.0,
+            time_to_end_s=1200.0,
+        ),
+        _row("export_pv_surplus", target_net_kwh=-1.05),
+        cfg=WatchdogConfig(),
+    )
+    assert d.write_slot is True
+    assert d.mode == "charge"
+    assert d.power_pct == -1
+    assert d.slot_soc_pct == 10
+    assert d.reason == "export_pv_surplus_planned_import_hold"
+
+
 def test_neutral_end_hour_no_buffer_build_oscillation() -> None:
     """Regresja 2026-07-09: pod koniec h nie przeplataj soak z neutral_buffer_build."""
     cfg = WatchdogConfig(
@@ -204,6 +224,42 @@ def test_neutral_negative_target_no_pv_soak_on_import_shortfall() -> None:
     )
     assert d.reason == "neutral_import_shortfall_hold"
     assert d.write_slot is False
+
+
+def test_neutral_planned_import_with_flat_soc_does_not_recover_deficit() -> None:
+    """Planowany import i bd≈0: nie zrzucaj baterii, gdy licznik jest za nisko."""
+    d = decide_plan_execution(
+        _inp(
+            remaining_kwh=-1.51,
+            soc_pct=90.0,
+            pv_w=2000.0,
+            consumption_w=600.0,
+            time_to_end_s=1200.0,
+        ),
+        _row("neutral", target_net_kwh=-1.05, battery_delta_kwh=0.0),
+        cfg=WatchdogConfig(),
+    )
+    assert d.write_slot is False
+    assert d.mode == "neutral"
+    assert d.reason == "neutral_planned_import_hold"
+
+
+def test_neutral_planned_import_with_planned_battery_drop_can_recover_deficit() -> None:
+    """Wyraźnie ujemne bd oznacza świadome zejście SOC, nie hold planowanego importu."""
+    d = decide_plan_execution(
+        _inp(
+            remaining_kwh=-1.51,
+            soc_pct=90.0,
+            pv_w=2000.0,
+            consumption_w=600.0,
+            time_to_end_s=1200.0,
+        ),
+        _row("neutral", target_net_kwh=-1.05, battery_delta_kwh=-0.9),
+        cfg=WatchdogConfig(),
+    )
+    assert d.write_slot is True
+    assert d.mode == "discharge"
+    assert "deficit" in d.reason
 
 
 def test_neutral_replanned_target_zero_after_obsolete_import() -> None:

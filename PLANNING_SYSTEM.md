@@ -111,7 +111,7 @@ Brak osobnego `anchor_net_kwh` — **Ockham:** jedno pole, różna interpretacja
 | Tryb | Rola `target_net_kwh` |
 |------|------------------------|
 | `neutral` | **Setpoint Flappy** — bilans do utrzymania; planer ustawia przy wejściu planu (co 10 min), np. `actual` lub skorygowana wartość |
-| `export_pv_surplus`, `import_grid` | Prognoza końca h + audyt; egzekucja **nie** chase po tym polu |
+| `export_pv_surplus`, `import_grid` | Prognoza końca h + audyt; egzekucja **nie** chase po tym polu. Wyjątek bezpieczeństwa: `export_pv_surplus` przy planowanym imporcie nie odzyskuje ujemnego licznika baterią, lecz przechodzi w CHARGE 1% |
 | `export_profit`, `charge_grid` | Audyt; granice = SOC (`soc_floor_pct` / `target_soc_pct`) |
 
 **Mid-hour:** energie PV/load w MILP to **pełna godzina** (so_far + zwężona reszta); `hour_fraction` ogranicza tylko moc baterii (`ch`/`dis`). `net_so_far` (`N₀`) wchodzi do bilansu tak, że `imp`/`exp` oznaczają rozliczenie **końca godziny**. Zielony cap: `exp ≤ N₀⁺ + PV_reszta + dis_g` — już sprzedane kWh **nie** zjadają budżetu mocy reszty h (regresja 2026-08-29 20:30). `target_net_kwh` = net końca h; intencja trybu z `net_end − N₀`.
@@ -131,6 +131,7 @@ Brak osobnego `anchor_net_kwh` — **Ockham:** jedno pole, różna interpretacja
 - Cała godzina **`DISCHARGE 1%`** — PV do sieci, **nie** ładuj baterii z nadwyżki (brak soak w tym trybie).
 - Oczekiwany dodatni bilans na koniec h; **nie** gonimy planowanego `target_net`.
 - Bateria **tylko** przy bilansie godzinowym **&lt; 0** (load zjadł PV); podłoga **0**, nie target planu.
+- Gdy `target_net_kwh < −0,05`, ten tryb nie może odzyskać ujemnego licznika baterią: Guardian wpisuje **CHARGE 1%** z celem slotu SOC 10%. To backstop dla starego wiersza policy / replanu. Planowany import z płaskim SOC pozostaje importem.
 
 #### `neutral` — Flappy Bird względem `target_net_kwh`
 
@@ -138,7 +139,7 @@ Utrzymuj **`target_net_kwh`** z planu (aktualizacja przy wejściu planu), nie do
 
 1. **Load &gt; PV, bilans ≥ target** → **nic** (pozwól bilansowi spaść), **chyba że** okno końca h i **drobny** ogonek eksportu (≤ 0,5 kWh) przy wolnym SOC → CHARGE soak. Self-consumption z baterii **nie** zjada wyeksportowanych kWh. **Nie** odkupuj całogodzinnego zrzutu (`actual ≫ target`) importem z sieci — to sprzedana energia, nie uwięziony ogonek.
 2. **Bilans &lt; target** → najpierw **PV** (1% discharge gdy PV ≥ load).
-3. **Bilans &lt; 0, PV nie nadrobi** → korekta deficytu baterią, limit **`min(P_bat, P_inverter − PV_w)`**; **nie** gdy plan `battery_delta &gt; 0` (godzina ładowania — nie zrzucaj magazynu za stale PV).
+3. **Bilans &lt; 0, PV nie nadrobi** → korekta deficytu baterią, limit **`min(P_bat, P_inverter − PV_w)`**; **nie** gdy plan `battery_delta &gt; 0` (godzina ładowania — nie zrzucaj magazynu za stale PV), ani gdy `target_net_kwh < −0,05` i `battery_delta_kwh ≥ −0,05` (planowany import przy stojącym SOC).
 4. **Bilans &gt; target, PV &gt; load** → ładuj z PV (soak).
 5. **Bilans &gt; target, PV ≤ load, poza oknem końca h** → neutral.
 

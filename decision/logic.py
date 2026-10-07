@@ -24,6 +24,8 @@ _EXEC_SKIP_SOC_FULL: frozenset[ExecMode] = frozenset({"export_profit"})
 
 # Hold CHARGE −1% przy pełnej baterii / rezerwie nocnej (kontrakt, nie strojenie).
 SOC_HOLD_CHARGE_PCT = -1
+# Granica neutralnego netu planu; zgodna z planner.policy_output.NET_NEUTRAL_EPS_KWH.
+PLAN_NET_NEUTRAL_EPS_KWH = 0.05
 
 
 @dataclass
@@ -503,6 +505,14 @@ def decide_flappy_relative(
                     time_to_end_s=inp.time_to_end_s,
                 )
             return _neutral_decision("neutral_hold_below_target")
+
+        # Planowany import przy stojącym SOC nie jest deficytem do odzyskania
+        # magazynem. Utrzymaj bieżący bilans; PV może go poprawić samo.
+        if (
+            target < -PLAN_NET_NEUTRAL_EPS_KWH
+            and float(plan_battery_delta_kwh) >= -PLAN_NET_NEUTRAL_EPS_KWH
+        ):
+            return _neutral_decision("neutral_planned_import_hold")
 
         shortfall = -net
         required_kw = power_needed_kw(shortfall, inp.time_to_end_s)

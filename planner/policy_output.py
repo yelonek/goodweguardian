@@ -231,10 +231,15 @@ def map_hour_to_exec_mode(
     else:
         # Płaski / drobny dip (|gap| < próg rozładowania) — nie mylić z export_profit.
         # MILP z net*>0 i gap≈0 już zdecydował: nie soakuj, oddaj nadwyżkę PV.
-        # near_full zostaje fallbackiem gdy net≈0, a bateria i tak nie przyjmie więcej.
+        # Planowany import przy stojącym SOC ma pozostać importem: CHARGE 1% chroni
+        # magazyn przed zasilaniem domu. Nie zmieniaj go na export_pv_surplus tylko
+        # dlatego, że bateria jest pełna i chwilowo widać nadwyżkę PV.
         near_full = max(soc0, soc_star) >= SOC_NEAR_FULL_PCT - 1e-9
         plan_exports = net > NET_NEUTRAL_EPS_KWH
-        if (
+        plan_import_hold = net < -NET_NEUTRAL_EPS_KWH and bd_nonneg
+        if plan_import_hold:
+            exec_mode = "import_grid"
+        elif (
             surplus > NET_NEUTRAL_EPS_KWH
             and _export_pv_surplus_viable(export_pln)
             and (plan_exports or near_full)

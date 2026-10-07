@@ -65,6 +65,20 @@ def test_hold_soc_export_pv_surplus() -> None:
     assert row.exec_mode == "export_pv_surplus"
 
 
+def test_near_full_planned_import_holds_battery_despite_pv_surplus() -> None:
+    """Regresja 2026-10-07 14:40: import planowany, pełna bateria i PV > load.
+
+    target_net jest prognozą zamknięcia godziny, nie poleceniem zrzucenia baterii
+    do zera. import_grid utrzymuje CHARGE 1%, więc GoodWe nie serwuje domu z baterii.
+    """
+    row = map_hour_to_exec_mode(
+        _hp(soc0=100.0, soc_end=100.0, net=-1.05, bd=0.0),
+        _hin(pv=2.0, load=0.6, export_pln=0.491, import_pln=0.59),
+    )
+    assert row.exec_mode == "import_grid"
+    assert row.params.allow_grid_charge is False
+
+
 def test_hold_soc_planned_export_is_export_pv_surplus_even_with_headroom() -> None:
     """Płaski SOC + net*>0 + nadwyżka PV → export_pv_surplus (MILP już nie soakuje)."""
     row = map_hour_to_exec_mode(

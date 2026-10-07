@@ -95,8 +95,23 @@ def _exec_export_profit(
     )
 
 
-def _exec_export_pv_surplus(inp: BalanceInputs, cfg: WatchdogConfig) -> WatchdogDecision:
+def _exec_export_pv_surplus(
+    inp: BalanceInputs,
+    params: HourPolicyParams,
+    cfg: WatchdogConfig,
+) -> WatchdogDecision:
     if float(inp.remaining_kwh) < 0.0:
+        # Backstop dla starego wiersza policy / replanu: przy planowanym imporcie
+        # płaski SOC nie może wyzerować licznika kosztem magazynu. Wpisujemy
+        # CHARGE 1%, żeby przykryć ewentualny wcześniejszy slot DISCHARGE.
+        if float(params.target_net_kwh) < -0.05:
+            return _steady_decision(
+                power_pct=-EXEC_STEADY_PCT,
+                mode="charge",
+                reason="export_pv_surplus_planned_import_hold",
+                time_to_end_s=inp.time_to_end_s,
+                slot_soc_pct=IMPORT_GRID_SOC_PCT,
+            )
         return _deficit_recovery_decision(inp, cfg)
     return _steady_decision(
         power_pct=EXEC_STEADY_PCT,
@@ -156,7 +171,7 @@ def _exec_neutral(
 
 _EXEC_HANDLERS = {
     "export_profit": lambda inp, row, cfg: _exec_export_profit(inp, row.params, cfg),
-    "export_pv_surplus": lambda inp, row, cfg: _exec_export_pv_surplus(inp, cfg),
+    "export_pv_surplus": lambda inp, row, cfg: _exec_export_pv_surplus(inp, row.params, cfg),
     "neutral": lambda inp, row, cfg: _exec_neutral(inp, row.params, cfg),
     "import_grid": lambda inp, row, cfg: _exec_import_grid(inp),
     "charge_grid": lambda inp, row, cfg: _exec_charge_grid(inp, row.params),
