@@ -15,6 +15,7 @@ from planner.config import (
     ensure_planner_dirs,
     max_battery_kwh_per_hour,
 )
+from planner.hour_remainder import ev_taken_from_pv_remainder_kwh
 from planner.models import (
     DailyPlan,
     ExecMode,
@@ -95,14 +96,15 @@ def _export_pv_surplus_viable(export_pln: float) -> bool:
 
 
 def _pv_surplus_rem_kwh(hin: HourInputs | None) -> float:
-    """Nadwyżka PV na resztę / pełną godzinę [kWh]."""
+    """Nadwyżka PV po aucie, na resztę / pełną godzinę [kWh]."""
     if hin is None:
         return 0.0
     pv_so = float(hin.pv_so_far_kwh or 0.0)
     load_so = float(hin.load_so_far_kwh or 0.0)
     pv_rem = float(hin.pv_kwh) - pv_so
+    taken = ev_taken_from_pv_remainder_kwh(pv_rem, hin.ev_load_kwh)
     load_rem = float(hin.load_kwh) - load_so
-    return pv_rem - load_rem
+    return (pv_rem - taken) - load_rem
 
 
 def _soc_gap_ac_kwh(gap_pct: float) -> float:

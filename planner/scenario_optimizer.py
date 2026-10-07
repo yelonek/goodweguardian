@@ -17,9 +17,10 @@ from planner.battery import (
 )
 from planner.config import PLANNER_BATTERY_CYCLE_COST_PLN
 from planner.hour_remainder import (
+    balance_rhs_kwh,
     green_export_cap_rhs_kwh,
     meter_export_so_far_kwh,
-    pv_remainder_kwh,
+    pv_after_ev_remainder_kwh,
     remaining_battery_delta_kwh,
 )
 from planner.models import HourInputs, HourPlan, ScenarioSeriesDetail, ScenariosDetail
@@ -182,12 +183,13 @@ def _solve_shared_milp(
             row[exp_idx(s, h)] = -1.0
             eq_rows.append(row)
             hin = hours_in[h]
-            load_so = float(hin.load_so_far_kwh or 0.0)
-            pv_so = float(hin.pv_so_far_kwh or 0.0)
-            n0 = float(hin.net_so_far_kwh or 0.0)
-            load_rem = float(sc.load_kwh[h]) - load_so
-            pv_rem = float(sc.pv_kwh[h]) - pv_so
-            eq_rhs.append(load_rem - pv_rem - n0)
+            eq_rhs.append(
+                balance_rhs_kwh(
+                    hin,
+                    pv_kwh=float(sc.pv_kwh[h]),
+                    load_kwh=float(sc.load_kwh[h]),
+                )
+            )
 
     ineq_rows: list[np.ndarray] = []
     ineq_rhs: list[float] = []
@@ -208,7 +210,7 @@ def _solve_shared_milp(
         green_index=green_index,
         ch_pv_index=ch_pv_index,
         dis_g_index=dis_g_index,
-        pv_kwh_of=lambda h: pv_remainder_kwh(hours_in[h]),
+        pv_kwh_of=lambda h: pv_after_ev_remainder_kwh(hours_in[h]),
         pmax_of=lambda h: max_power_for_hour(hours_in[h], params),
         lb=lb,
         ub=ub,

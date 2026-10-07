@@ -12,3 +12,5 @@ Load w planie i w kolumnie p50 Prognozy to zużycie domu. Rozkład auta zostaje 
 ## Consequences
 
 Włączone stosowanie planu pokazuje rozkład w Prognozie i trzyma `ev_load_kwh` obok domu. Nie podnosi `load_kwh` ani pasma p75. Korekta mid-hour odejmuje energię już pobraną przez wallbox od licznika, zanim liczy k domu.
+
+Bilans MILP i tak rezerwuje ten slot z reszty PV, zanim dom albo magazyn dostaną nadwyżkę. Auto ponad PV zostaje poza bilansem. Patrz [0005](0005-auto-zjada-pv-zanim-magazyn.md).

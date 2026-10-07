@@ -109,8 +109,8 @@ def build_hour_inputs_for_slots(
         pack = load_corrected.get(key)
         if pack is not None:
             load_base = float(pack["base"])
-            # Auto jest osobnym slotem (ev_load_kwh). Nie wchodzi do load,
-            # bo planer traktowałby je jak zużycie domu i dobijał brak z sieci.
+            # Auto zostaje w ev_load_kwh, nie w load: brak ponad PV nie jest
+            # zużyciem domu. MILP i tak zdejmuje je z reszty PV.
             load_kwh = load_base
             load_p25 = float(pack["p25"])
             load_p75 = float(pack["p75"])

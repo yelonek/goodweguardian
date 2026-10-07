@@ -20,7 +20,7 @@ from planner.config import PLANNER_BATTERY_CYCLE_COST_PLN, planner_scenario_opti
 from planner.hour_remainder import (
     balance_rhs_kwh,
     meter_export_so_far_kwh,
-    pv_remainder_kwh,
+    pv_after_ev_remainder_kwh,
     remaining_battery_delta_kwh,
 )
 from planner.models import HourInputs, HourPlan, ScenariosDetail
@@ -180,7 +180,7 @@ def _solve_milp(
         green_index=green_index,
         ch_pv_index=ch_pv_index,
         dis_g_index=dis_g_index,
-        pv_kwh_of=lambda h: pv_remainder_kwh(hours_in[h]),
+        pv_kwh_of=lambda h: pv_after_ev_remainder_kwh(hours_in[h]),
         pmax_of=lambda h: max_power_for_hour(hours_in[h], params),
         lb=lb,
         ub=ub,

@@ -385,14 +385,6 @@
     table.forecast .grp-planner { background: rgba(200, 160, 255, 0.12); }
     table.forecast tr.day-break td { border-top: 2px solid rgba(127,127,127,0.55); }
     table.forecast tr.now td { background: rgba(255, 215, 0, 0.18); font-weight: 700; }
-    table.forecast tr.pv-planner-slot td.pv-planner-val {
-      background: rgba(13, 128, 80, 0.14);
-      color: #0d8050;
-      font-weight: 700;
-    }
-    @media (prefers-color-scheme: dark) {
-      table.forecast tr.pv-planner-slot td.pv-planner-val { color: #6ee7a8; }
-    }
     table.forecast tr.past td { opacity: 0.55; }
     table.forecast tr.net-bar-export td:nth-last-child(-n+2) {
       background: rgba(255, 215, 0, 0.14);
@@ -865,12 +857,12 @@
             <th colspan="5" class="grp-load" id="forecastLoadColspan">load [kWh]</th>
             <th colspan="2" class="grp-load ev-plan-col" id="forecastEvPlanColspan">EV plan</th>
             <th colspan="5" class="grp-pv">PV [kWh]</th>
-            <th colspan="5" class="grp-planner">plan / policy</th>
+            <th colspan="7" class="grp-planner">plan / policy</th>
             <th colspan="2" class="grp-price">price [PLN/kWh]</th>
           </tr>
           <tr>
             <th class="grp-load">p25</th>
-            <th class="grp-load" title="Gdy jest plan: zużycie, którego użył planer. Surowa prognoza jest w podpowiedzi.">p50</th>
+            <th class="grp-load" title="Prognoza zużycia domu, p50.">p50</th>
             <th class="grp-load">p75</th>
             <th class="grp-load">razem</th>
             <th class="grp-load">Δ</th>
@@ -879,15 +871,17 @@
             <th class="grp-load ev-plan-col" title="Planowane ładowanie EV">EV plan</th>
             <th class="grp-load ev-plan-col" title="Prognoza dom + EV plan">load plan</th>
             <th class="grp-pv" title="Surowa prognoza Solcast p10. To nie jest liczba planu.">p10</th>
-            <th class="grp-pv" title="Gdy jest plan: słońce, którego użył planer. Solcast jest w podpowiedzi.">mean</th>
+            <th class="grp-pv" title="Prognoza Solcast, średnia.">mean</th>
             <th class="grp-pv" title="Surowa prognoza Solcast p90. To nie jest liczba planu.">p90</th>
             <th class="grp-pv">act</th>
             <th class="grp-pv">Δ</th>
+            <th class="grp-planner" title="Słońce, którego użył Planer.">PV</th>
+            <th class="grp-planner" title="Zużycie domu ze znakiem minus.">−load</th>
+            <th class="grp-planner" title="Magazyn: ładowanie na plus, oddawanie na minus.">bat</th>
+            <th class="grp-planner" title="Eksport dodatni, import ujemny.">net</th>
             <th class="grp-planner">policy</th>
             <th class="grp-planner">grid?</th>
-            <th class="grp-planner">bat Δ</th>
             <th class="grp-planner">SOC %</th>
-            <th class="grp-planner">net kWh</th>
             <th class="grp-price">buy</th>
             <th class="grp-price">sell</th>
           </tr>

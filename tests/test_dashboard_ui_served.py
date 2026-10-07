@@ -73,5 +73,14 @@ def test_index_uses_external_ui_file() -> None:
     settings = body.split('id="page-settings"', 1)[1]
     assert 'id="evChargingPlanEnabled"' in settings
     assert "Ładowanie auta — stosowanie" in settings
+    assert 'colspan="7" class="grp-planner">plan / policy' in forecast
+    assert ">−load</th>" in forecast
+    assert ">bat</th>" in forecast
+    assert ">−bat</th>" not in forecast
+    assert "planOrForecastCell" not in js.text
+    assert "pv-planner-val" not in body
+    assert "const balanceTerm = " in js.text
+    assert "balanceTerm(r.planner_load_kwh, -1)" in js.text
+    assert "balanceTerm(r.policy_battery_delta_kwh, 1)" in js.text
     assert 'class="forecast-day-chart-block wide"' in forecast
     assert "viewBox=\"0 0 960 320\"" in forecast

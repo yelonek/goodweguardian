@@ -27,19 +27,41 @@ def hour_remaining_fraction(now: datetime, *, date: str, hour: int) -> float:
     return max(0.0, min(1.0, 1.0 - hour_elapsed_fraction(now)))
 
 
-def balance_rhs_kwh(hin: HourInputs) -> float:
-    """
-    Prawa strona bilansu MILP: ``load_rem − pv_rem − N₀``.
+def ev_taken_from_pv_remainder_kwh(pv_rem_kwh: float, ev_kwh: float) -> float:
+    """kWh reszty PV zjedzone przez auto.
 
-    Przy pełnych energiach i so_far: optymalizator planuje **net końca godziny**
-    (imp/exp = rozliczenie godzinowe), z wykonalnością mocy przez ``hour_fraction``.
+    Auto ponad resztę PV zostaje poza bilansem: nie robi importu ani rozładowania.
+    Ujemna reszta PV (scenariusz poniżej już zmierzonego) nie karmi auta.
+    """
+    ev = float(ev_kwh)
+    pv_rem = float(pv_rem_kwh)
+    if ev <= 0.0 or pv_rem <= 0.0:
+        return 0.0
+    return min(ev, pv_rem)
+
+
+def balance_rhs_kwh(
+    hin: HourInputs,
+    *,
+    pv_kwh: float | None = None,
+    load_kwh: float | None = None,
+) -> float:
+    """
+    Prawa strona bilansu MILP: ``load_rem − (pv_rem − EV_z_PV) − N₀``.
+
+    ``ev_load_kwh`` schodzi z reszty PV, nie z ``load_kwh``. Nadwyżka auta ponad
+    PV nie wchodzi do prawej strony. Przy pełnych energiach i so_far optymalizator
+    planuje **net końca godziny** (imp/exp = rozliczenie godzinowe).
     """
     load_so_far = float(hin.load_so_far_kwh or 0.0)
     pv_so_far = float(hin.pv_so_far_kwh or 0.0)
     n0 = float(hin.net_so_far_kwh or 0.0)
-    load_rem = float(hin.load_kwh) - load_so_far
-    pv_rem = float(hin.pv_kwh) - pv_so_far
-    return load_rem - pv_rem - n0
+    load = float(hin.load_kwh if load_kwh is None else load_kwh)
+    pv = float(hin.pv_kwh if pv_kwh is None else pv_kwh)
+    load_rem = load - load_so_far
+    pv_rem = pv - pv_so_far
+    taken = ev_taken_from_pv_remainder_kwh(pv_rem, hin.ev_load_kwh)
+    return load_rem - (pv_rem - taken) - n0
 
 
 def pv_remainder_kwh(hin: HourInputs, *, pv_kwh: float | None = None) -> float:
@@ -54,12 +76,22 @@ def meter_export_so_far_kwh(hin: HourInputs) -> float:
     return max(0.0, float(hin.net_so_far_kwh or 0.0))
 
 
-def green_export_cap_rhs_kwh(hin: HourInputs, *, pv_kwh: float | None = None) -> float:
-    """RHS ``exp − dis_g ≤ …``: PV reszty + już sprzedane (nie zjadaj N₀ limitem mocy).
+def pv_after_ev_remainder_kwh(hin: HourInputs, *, pv_kwh: float | None = None) -> float:
+    """Reszta PV jeszcze do domu i magazynu, po rezerwacji ``ev_load_kwh``."""
+    pv = float(hin.pv_kwh if pv_kwh is None else pv_kwh)
+    pv_so = float(hin.pv_so_far_kwh or 0.0)
+    pv_rem = pv - pv_so
+    taken = ev_taken_from_pv_remainder_kwh(pv_rem, hin.ev_load_kwh)
+    return max(0.0, pv_rem - taken)
 
-    Na ``:00`` (N₀=0, so_far=0) = pełne PV. Mid-hour: ``exp ≤ N₀⁺ + PV_rem + dis_g``.
+
+def green_export_cap_rhs_kwh(hin: HourInputs, *, pv_kwh: float | None = None) -> float:
+    """RHS ``exp − dis_g ≤ …``: PV reszty po aucie + już sprzedane.
+
+    Na ``:00`` (N₀=0, so_far=0) = pełne PV minus auto. Mid-hour:
+    ``exp ≤ N₀⁺ + PV_po_aucie + dis_g``.
     """
-    return pv_remainder_kwh(hin, pv_kwh=pv_kwh) + meter_export_so_far_kwh(hin)
+    return pv_after_ev_remainder_kwh(hin, pv_kwh=pv_kwh) + meter_export_so_far_kwh(hin)
 
 
 def remaining_battery_delta_kwh(hin: HourInputs, net_end_kwh: float) -> float:
@@ -69,8 +101,10 @@ def remaining_battery_delta_kwh(hin: HourInputs, net_end_kwh: float) -> float:
     pv_so = float(hin.pv_so_far_kwh or 0.0)
     load_so = float(hin.load_so_far_kwh or 0.0)
     n0 = float(hin.net_so_far_kwh or 0.0)
+    pv_rem = float(hin.pv_kwh) - pv_so
+    taken = ev_taken_from_pv_remainder_kwh(pv_rem, hin.ev_load_kwh)
     return battery_delta_from_net(
-        pv_kwh=float(hin.pv_kwh) - pv_so,
+        pv_kwh=pv_rem - taken,
         load_kwh=float(hin.load_kwh) - load_so,
         net_kwh=float(net_end_kwh) - n0,
     )
