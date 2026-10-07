@@ -73,7 +73,10 @@ def test_index_uses_external_ui_file() -> None:
     settings = body.split('id="page-settings"', 1)[1]
     assert 'id="evChargingPlanEnabled"' in settings
     assert "Ładowanie auta — stosowanie" in settings
-    assert 'colspan="7" class="grp-planner">plan / policy' in forecast
+    assert 'colspan="8" class="grp-planner">plan / policy' in forecast
+    assert ">green</th>" in forecast
+    assert "area-green" in js.text
+    assert "Zielony zapas:" in js.text
     assert ">−load</th>" in forecast
     assert ">bat</th>" in forecast
     assert ">−bat</th>" not in forecast

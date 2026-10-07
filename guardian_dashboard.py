@@ -1331,12 +1331,15 @@ def _combined_forecast_payload() -> dict[str, Any]:
 
         net_kwh: float | None
         soc_pct: float | None
+        green_end_kwh: float | None = None
         if tel_h is not None and hour_complete:
             net_kwh = float(tel_h["net_kwh"])
             soc_pct = float(tel_h["last_soc_pct"])
         elif plan_h is not None:
             net_kwh = float(plan_h.target_net_kwh)
             soc_pct = float(plan_h.soc_end_pct)
+            if plan_h.green_end_kwh is not None:
+                green_end_kwh = round(max(0.0, float(plan_h.green_end_kwh)), 3)
         else:
             net_kwh = None
             soc_pct = None
@@ -1370,6 +1373,7 @@ def _combined_forecast_payload() -> dict[str, Any]:
                 "pv_kwh_delta_mean": pv_delta_mean,
                 "net_kwh": net_kwh,
                 "soc_pct": soc_pct,
+                "green_end_kwh": green_end_kwh,
                 "exec_mode": policy_row.exec_mode if policy_row else None,
                 "exec_mode_label": (
                     exec_mode_label_pl(policy_row.exec_mode) if policy_row else None
@@ -2008,6 +2012,26 @@ def _get_combined_forecast_cached() -> dict[str, Any]:
         return payload
 
 
+def _green_stock_display(
+    soc_pct: Any,
+    green_kwh: Any,
+) -> tuple[float | None, float | None, float | None]:
+    """Surowy zielony zapas, szare kWh i zielony jako % pojemności, ucięty do SOC."""
+    if green_kwh is None or soc_pct is None:
+        return None, None, None
+    from planner.battery import BatteryParams
+
+    capacity = float(BatteryParams().capacity_kwh)
+    if capacity <= 0:
+        return None, None, None
+    green = max(0.0, float(green_kwh))
+    soc = float(soc_pct)
+    soc_kwh = max(0.0, soc / 100.0 * capacity)
+    gray = max(0.0, soc_kwh - green)
+    green_pct = min(soc, (green / capacity) * 100.0)
+    return round(green, 3), round(gray, 3), round(green_pct, 2)
+
+
 def _plan_visualization_payload(combined: dict[str, Any]) -> dict[str, Any]:
     """Slim 48h plan view for overview UI (dziś + jutro, 24h each)."""
     plan_latest = load_latest_plan()
@@ -2045,6 +2069,9 @@ def _plan_visualization_payload(combined: dict[str, Any]) -> dict[str, Any]:
             "exec_mode_label": None,
             "target_net_kwh": None,
             "soc_end_pct": None,
+            "green_end_kwh": None,
+            "green_end_pct": None,
+            "gray_end_kwh": None,
             "sell_pln_kwh": None,
             "buy_pln_kwh": None,
             "pv_kwh": None,
@@ -2062,6 +2089,9 @@ def _plan_visualization_payload(combined: dict[str, Any]) -> dict[str, Any]:
                 slot["is_now"] = date_iso == now_date and h == now_hour
                 hours.append(slot)
                 continue
+            green_kwh, gray_kwh, green_pct = _green_stock_display(
+                row.get("soc_pct"), row.get("green_end_kwh")
+            )
             hours.append(
                 {
                     "hour": h,
@@ -2071,6 +2101,9 @@ def _plan_visualization_payload(combined: dict[str, Any]) -> dict[str, Any]:
                     "exec_mode_label": row.get("exec_mode_label"),
                     "target_net_kwh": row.get("net_kwh"),
                     "soc_end_pct": row.get("soc_pct"),
+                    "green_end_kwh": green_kwh,
+                    "green_end_pct": green_pct,
+                    "gray_end_kwh": gray_kwh,
                     "sell_pln_kwh": row.get("sell_pln_kwh"),
                     "buy_pln_kwh": row.get("buy_pln_kwh"),
                     "pv_kwh": row.get("pv_kwh"),

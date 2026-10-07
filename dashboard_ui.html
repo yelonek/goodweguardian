@@ -212,7 +212,11 @@
     .plan-hour-cell.rce-cheap { box-shadow: inset 0 0 0 1px rgba(13, 128, 80, 0.35); }
     .plan-soc-chart { width: 100%; height: 72px; display: block; }
     .plan-soc-chart path.area { fill: rgba(13, 128, 80, 0.15); }
+    .plan-soc-chart path.area-gray { fill: rgba(120, 120, 120, 0.38); }
+    .plan-soc-chart path.area-green { fill: rgba(13, 128, 80, 0.55); }
     .plan-soc-chart path.line { fill: none; stroke: #0d8050; stroke-width: 2; }
+    .plan-legend i.swatch-green { background: rgba(13, 128, 80, 0.55); }
+    .plan-legend i.swatch-gray { background: rgba(120, 120, 120, 0.45); }
     .plan-scenarios {
       margin: 14px 0 4px;
       padding: 12px 0 0;
@@ -857,7 +861,7 @@
             <th colspan="5" class="grp-load" id="forecastLoadColspan">load [kWh]</th>
             <th colspan="2" class="grp-load ev-plan-col" id="forecastEvPlanColspan">EV plan</th>
             <th colspan="5" class="grp-pv">PV [kWh]</th>
-            <th colspan="7" class="grp-planner">plan / policy</th>
+            <th colspan="8" class="grp-planner">plan / policy</th>
             <th colspan="2" class="grp-price">price [PLN/kWh]</th>
           </tr>
           <tr>
@@ -882,6 +886,7 @@
             <th class="grp-planner">policy</th>
             <th class="grp-planner">grid?</th>
             <th class="grp-planner">SOC %</th>
+            <th class="grp-planner" title="Zielony zapas na koniec godziny: kWh z PV w magazynie, które wolno oddać do sieci. Zamknięta godzina nie ma tej liczby.">green</th>
             <th class="grp-price">buy</th>
             <th class="grp-price">sell</th>
           </tr>

@@ -27,6 +27,7 @@ from planner.models import HourInputs, HourPlan, ScenariosDetail
 from planner.night_grid_policy import (
     add_green_stock_constraints,
     add_night_latch_constraints,
+    green_end_kwh_series,
     green_stock_n_vars,
     green_var_indexers,
     night_latch_layout,
@@ -308,6 +309,7 @@ def optimize_horizon(
     n_h = len(hours_in)
     _, layout = _var_layout(n_h)
     hour_idx = layout["hour_idx"]
+    green_ends = _green_ends_from_deterministic(x, hours_in)
 
     plans: list[HourPlan] = []
     traj: list[float] = [_soc_pct(float(x[0]), bp)]
@@ -337,11 +339,19 @@ def optimize_horizon(
                 soc_start_pct=soc_start,
                 soc_end_pct=soc_end,
                 battery_delta_kwh=bd,
+                green_end_kwh=green_ends[h],
             )
         )
         traj.append(soc_end)
 
     return OptimizeResult(hours=plans, total_cashflow_pln=total_cf, soc_trajectory_pct=traj)
+
+
+def _green_ends_from_deterministic(x: np.ndarray, hours_in: list[HourInputs]) -> list[float]:
+    n_h = len(hours_in)
+    n_vars_core, _layout = _var_layout(n_h)
+    _windows, night_pos = night_latch_layout(hours_in)
+    return green_end_kwh_series(x, base=n_vars_core + 2 * len(night_pos), n_hours=n_h)
 
 
 def _fallback_neutral(

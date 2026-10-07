@@ -50,6 +50,8 @@ class HourPlan(BaseModel):
     soc_start_pct: float
     soc_end_pct: float
     battery_delta_kwh: float
+    # Zielony zapas na koniec godziny [kWh w magazynie, pochodzenie PV]. None = solver go nie oddał.
+    green_end_kwh: float | None = None
 
 
 class ScenarioSeriesDetail(BaseModel):

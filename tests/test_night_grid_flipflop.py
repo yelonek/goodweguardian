@@ -222,6 +222,25 @@ def test_milp_midday_g12_charge_evening_export_unchanged(
     assert res.hours[2].target_net_kwh > 1.0
 
 
+def test_milp_records_green_end_kwh(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bez PV zapas nie rośnie i zostaje na godzinie planu."""
+    import planner.optimizer as opt_mod
+
+    monkeypatch.setattr(opt_mod, "planner_scenario_optimizer_enabled", lambda: False)
+    hours = [
+        _hin(6, imp=1.11, exp=1.80),
+        _hin(7, imp=1.11, exp=1.50),
+    ]
+    res = optimize_horizon(hours, soc_start_pct=80.0, params=BP, green_stock_kwh=3.0)
+    cap = BP.capacity_kwh
+    assert res.hours
+    for hp in res.hours:
+        assert hp.green_end_kwh is not None
+        soc_kwh = hp.soc_end_pct / 100.0 * cap
+        assert hp.green_end_kwh <= soc_kwh + 1e-3
+        assert hp.green_end_kwh <= 3.0 + 1e-3
+
+
 def test_milp_leftover_green_may_export_after_night_window(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -277,6 +296,9 @@ def test_shared_milp_also_blocks_night_flipflop(monkeypatch: pytest.MonkeyPatch)
     res = optimize_horizon(hours, soc_start_pct=30.0, params=BP)
     assert res.hours[0].battery_delta_kwh < 0.2
     assert res.hours[1].target_net_kwh > 0.5
+    assert res.hours[1].green_end_kwh is not None
+    soc_kwh = res.hours[1].soc_end_pct / 100.0 * BP.capacity_kwh
+    assert res.hours[1].green_end_kwh <= soc_kwh + 1e-3
 
 
 def test_mapper_blocks_export_profit_when_latch_set() -> None:

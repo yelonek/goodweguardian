@@ -367,6 +367,8 @@ function planHourTooltip(h) {
     h.exec_mode_label ? `Tryb: ${h.exec_mode_label}` : null,
     h.target_net_kwh != null ? `Net plan: ${Number(h.target_net_kwh).toFixed(2)} kWh` : null,
     h.soc_end_pct != null ? `SOC koniec: ${Number(h.soc_end_pct).toFixed(0)} %` : null,
+    h.green_end_kwh != null ? `Zielony zapas: ${Number(h.green_end_kwh).toFixed(3)} kWh` : null,
+    h.gray_end_kwh != null ? `Szare: ${Number(h.gray_end_kwh).toFixed(3)} kWh` : null,
     h.sell_pln_kwh != null ? `RCE: ${Number(h.sell_pln_kwh).toFixed(3)} PLN/kWh` : null,
     h.pv_kwh != null ? `PV: ${Number(h.pv_kwh).toFixed(2)} kWh` : null,
     h.load_kwh_p50 != null ? `Load p50: ${Number(h.load_kwh_p50).toFixed(2)} kWh` : null,
@@ -374,14 +376,47 @@ function planHourTooltip(h) {
   return parts.join(" · ");
 }
 
+function _socRuns(pts, withGreen) {
+  const runs = [];
+  let cur = [];
+  for (const p of pts) {
+    const keep = p.y != null && (withGreen ? p.g != null : p.g == null);
+    if (keep) cur.push(p);
+    else if (cur.length) {
+      runs.push(cur);
+      cur = [];
+    }
+  }
+  if (cur.length) runs.push(cur);
+  return runs;
+}
+
+function _socAreaPath(run, toX, toY, baseline, yOf) {
+  if (run.length < 2) return "";
+  const top = run.map((p) => {
+    const yPx = Math.min(baseline, toY(yOf(p)));
+    return `${toX(p.x).toFixed(1)},${yPx.toFixed(1)}`;
+  });
+  const x0 = toX(run[0].x).toFixed(1);
+  const x1 = toX(run[run.length - 1].x).toFixed(1);
+  return `M ${x0},${baseline} L ${top.join(" L ")} L ${x1},${baseline} Z`;
+}
+
 function renderPlanSocSvg(hours, svgId) {
-  const pts = hours
-    .map((h, i) => ({ x: i, y: h.soc_end_pct != null ? Number(h.soc_end_pct) : null }))
-    .filter((p) => p.y != null && !Number.isNaN(p.y));
-  if (pts.length < 2) {
+  const pts = hours.map((hr, i) => {
+    const yRaw = hr.soc_end_pct != null ? Number(hr.soc_end_pct) : null;
+    const gRaw = hr.green_end_pct != null ? Number(hr.green_end_pct) : null;
+    return {
+      x: i,
+      y: yRaw != null && !Number.isNaN(yRaw) ? yRaw : null,
+      g: gRaw != null && !Number.isNaN(gRaw) ? gRaw : null,
+    };
+  });
+  const known = pts.filter((p) => p.y != null);
+  if (known.length < 2) {
     return `<svg class="plan-soc-chart" id="${svgId}" viewBox="0 0 100 72" preserveAspectRatio="none"></svg>`;
   }
-  const ys = pts.map((p) => p.y);
+  const ys = known.map((p) => p.y);
   const minY = Math.max(0, Math.min(...ys) - 5);
   const maxY = Math.min(100, Math.max(...ys) + 5);
   const span = maxY - minY || 1;
@@ -389,17 +424,25 @@ function renderPlanSocSvg(hours, svgId) {
   const h = 72;
   const toX = (i) => (i / 23) * w;
   const toY = (y) => h - ((y - minY) / span) * (h - 8) - 4;
-  const linePts = hours.map((hr, i) => {
-    const y = hr.soc_end_pct != null ? Number(hr.soc_end_pct) : null;
-    if (y == null || Number.isNaN(y)) return null;
-    return `${toX(i).toFixed(1)},${toY(y).toFixed(1)}`;
-  }).filter(Boolean);
-  const area = linePts.length
-    ? `M ${toX(0).toFixed(1)},${h} L ${linePts.join(" L ")} L ${toX(23).toFixed(1)},${h} Z`
-    : "";
+  const linePts = known.map((p) => `${toX(p.x).toFixed(1)},${toY(p.y).toFixed(1)}`);
+  const past = _socRuns(pts, false)
+    .map((run) => _socAreaPath(run, toX, toY, h, (p) => p.y))
+    .filter(Boolean)
+    .map((d) => `<path class="area" d="${d}"/>`)
+    .join("");
+  const gray = _socRuns(pts, true)
+    .map((run) => _socAreaPath(run, toX, toY, h, (p) => p.y))
+    .filter(Boolean)
+    .map((d) => `<path class="area-gray" d="${d}"/>`)
+    .join("");
+  const green = _socRuns(pts, true)
+    .map((run) => _socAreaPath(run, toX, toY, h, (p) => Math.min(p.y, p.g)))
+    .filter(Boolean)
+    .map((d) => `<path class="area-green" d="${d}"/>`)
+    .join("");
   return (
     `<svg class="plan-soc-chart" id="${svgId}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">` +
-    (area ? `<path class="area" d="${area}"/>` : "") +
+    past + gray + green +
     `<path class="line" d="M ${linePts.join(" L ")}"/>` +
     `</svg>`
   );
@@ -748,7 +791,9 @@ function renderPlanTimeline(p) {
   const boards = days.map((d, i) => renderPlanDayBoard(d, i === 1 && tomorrowDim)).join("");
   const legend = PLAN_MODE_LEGEND.map(([cls, label]) =>
     `<span><i class="plan-hour-mode ${cls}"></i>${label}</span>`
-  ).join("");
+  ).join("") +
+    `<span><i class="swatch-green"></i>zielony zapas</span>` +
+    `<span><i class="swatch-gray"></i>szare</span>`;
   const scenariosHtml = renderScenariosPanel(p.scenarios_detail);
   content.innerHTML =
     hero +
@@ -1538,7 +1583,7 @@ function renderForecastBlock(forecast) {
       ${evPlanCell(r.ev_planned_kwh)}${evPlanCell(r.load_plan_kwh)}
       ${fcell(r.pv_kwh_p10, 3)}${fcell(r.pv_kwh, 3)}${fcell(r.pv_kwh_p90, 3)}${fcell(r.pv_kwh_actual, 3)}${fcellDelta(r.pv_kwh_delta_mean, 3, 0.05)}
       ${balanceTerm(r.planner_pv_kwh, 1)}${balanceTerm(r.planner_load_kwh, -1)}${balanceTerm(r.policy_battery_delta_kwh, 1)}${balanceTerm(r.net_kwh, 1)}
-      ${policyCell(r)}${boolCell(r.policy_allow_grid_charge)}${fcell(r.soc_pct, 1)}
+      ${policyCell(r)}${boolCell(r.policy_allow_grid_charge)}${fcell(r.soc_pct, 1)}${fcell(r.green_end_kwh, 3)}
       ${fcell(r.buy_pln_kwh, 4)}${fcell(r.sell_pln_kwh, 4)}</tr>`;
   }).join("");
   const meta = [`today RCE: ${fmt(forecast.pricing_today_source)}`,

@@ -133,6 +133,7 @@ def test_combined_forecast_current_hour_uses_planned_net_kwh(
                 soc_start_pct=50.0,
                 soc_end_pct=62.0 if h == current_hour else 51.0,
                 battery_delta_kwh=0.0,
+                green_end_kwh=4.2 if h >= current_hour else 3.1,
             )
             for h in range(8, 20)
         ],
@@ -176,3 +177,18 @@ def test_combined_forecast_current_hour_uses_planned_net_kwh(
     assert past["hour_complete"] is True
     assert past["net_kwh"] == pytest.approx(0.42)
     assert past["soc_pct"] == pytest.approx(48.0)
+    assert current["green_end_kwh"] == pytest.approx(4.2)
+    assert past["green_end_kwh"] is None
+
+    from guardian_dashboard import _plan_visualization_payload
+    from planner.battery import BatteryParams
+
+    viz = _plan_visualization_payload(payload)
+    viz_now = next(h for h in viz["days"][0]["hours"] if h["hour"] == current_hour)
+    viz_past = next(h for h in viz["days"][0]["hours"] if h["hour"] == current_hour - 1)
+    cap = BatteryParams().capacity_kwh
+    assert viz_now["green_end_kwh"] == pytest.approx(4.2)
+    assert viz_now["gray_end_kwh"] == pytest.approx(max(0.0, 0.62 * cap - 4.2))
+    assert viz_now["green_end_pct"] == pytest.approx(min(62.0, 4.2 / cap * 100.0))
+    assert viz_past["green_end_kwh"] is None
+    assert viz_past["green_end_pct"] is None

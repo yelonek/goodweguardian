@@ -27,6 +27,7 @@ from planner.models import HourInputs, HourPlan, ScenarioSeriesDetail, Scenarios
 from planner.night_grid_policy import (
     add_green_stock_constraints,
     add_night_latch_constraints,
+    green_end_kwh_series,
     green_stock_n_vars,
     green_var_indexers,
     night_latch_layout,
@@ -341,7 +342,7 @@ def _optimize_from_deterministic_milp(
     green_stock_kwh: float | None = None,
 ) -> OptimizeResult:
     """Fallback: deterministyczny MILP (p50)."""
-    from planner.optimizer import _var_layout
+    from planner.optimizer import _green_ends_from_deterministic, _var_layout
 
     cycle_cost = float(PLANNER_BATTERY_CYCLE_COST_PLN)
     solved = _solve_milp(
@@ -362,6 +363,7 @@ def _optimize_from_deterministic_milp(
     n_h = len(hours_in)
     _, layout = _var_layout(n_h)
     hour_idx = layout["hour_idx"]
+    green_ends = _green_ends_from_deterministic(x, hours_in)
 
     plans: list[HourPlan] = []
     traj: list[float] = [_soc_pct(float(x[0]), params)]
@@ -391,6 +393,7 @@ def _optimize_from_deterministic_milp(
                 soc_start_pct=soc_start,
                 soc_end_pct=soc_end,
                 battery_delta_kwh=bd,
+                green_end_kwh=green_ends[h],
             )
         )
         traj.append(soc_end)
@@ -436,6 +439,11 @@ def _result_from_shared(
     imp_idx = layout["imp_idx"]
     exp_idx = layout["exp_idx"]
     s_rep = representative_scenario_index(scenarios)
+    n_vars_core, _core = _shared_var_layout(len(scenarios), n_h)
+    _windows, night_pos = night_latch_layout(hours_in)
+    green_ends = green_end_kwh_series(
+        x, base=n_vars_core + 2 * len(night_pos), n_hours=n_h
+    )
 
     plans: list[HourPlan] = []
     traj: list[float] = [_soc_pct(float(x[soc_idx(0)]), params)]
@@ -465,6 +473,7 @@ def _result_from_shared(
                 soc_start_pct=soc_start,
                 soc_end_pct=soc_end,
                 battery_delta_kwh=bd,
+                green_end_kwh=green_ends[h],
             )
         )
         traj.append(soc_end)

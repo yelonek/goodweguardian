@@ -342,6 +342,18 @@ def green_var_indexers(
     return green_index, ch_pv_index, dis_g_index
 
 
+def green_end_kwh_series(x: np.ndarray, *, base: int, n_hours: int) -> list[float]:
+    """``green[h+1]`` z wektora rozwiązania: zapas na koniec godziny h."""
+    green_index, _ch_pv_index, _dis_g_index = green_var_indexers(base, n_hours)
+    out: list[float] = []
+    for h in range(n_hours):
+        value = float(x[green_index(h + 1)])
+        if -1e-4 < value < 0.0:
+            value = 0.0
+        out.append(value)
+    return out
+
+
 def add_green_stock_constraints(
     eq_rows: list[np.ndarray],
     eq_rhs: list[float],
