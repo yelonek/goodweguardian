@@ -46,12 +46,41 @@ class OptimizeResult:
     scenarios_detail: ScenariosDetail | None = None
 
 
-def _big_m(hours_in: list[HourInputs], params: BatteryParams) -> float:
+def _big_m(
+    hours_in: list[HourInputs],
+    params: BatteryParams,
+    *,
+    grid_connection_kw: float | None = None,
+) -> float:
+    """Sufit big-M dla wyłączności import/eksport.
+
+    Musi być ≥ możliwego ``imp``/``exp`` w bilansie mid-hour (load + |N₀|), inaczej
+    HiGHS wpada w infeasible (regresja 2026-10-13 05:30, auto + duży N₀).
+    """
     peak = max(
-        (max(h.pv_kwh, h.load_kwh) for h in hours_in),
+        (max(float(h.pv_kwh), float(h.load_kwh)) for h in hours_in),
         default=0.0,
     )
-    return max(peak + params.max_power_kwh_per_h, params.max_power_kwh_per_h * 2.0, 1.0)
+    max_abs_n0 = max(
+        (
+            abs(float(h.net_so_far_kwh))
+            for h in hours_in
+            if h.net_so_far_kwh is not None
+        ),
+        default=0.0,
+    )
+    if grid_connection_kw is None:
+        from guardian_settings import get_settings
+
+        grid_connection_kw = float(get_settings().grid_connection_kw)
+    grid_kwh_h = max(0.0, float(grid_connection_kw))
+    pbat = float(params.max_power_kwh_per_h)
+    return max(
+        peak + pbat + max_abs_n0,
+        pbat * 2.0,
+        grid_kwh_h,
+        1.0,
+    )
 
 
 def _var_layout(n_hours: int) -> tuple[int, dict[str, int]]:

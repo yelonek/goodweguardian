@@ -149,6 +149,13 @@ class GuardianSettings(BaseModel):
         10.0, gt=0.0, json_schema_extra=_meta("planner", "kWh"),
         description="Pojemność magazynu — pacing export_profit oraz symulacja SOC planera.",
     )
+    grid_connection_kw: float = Field(
+        26.0, gt=0.0, le=200.0, json_schema_extra=_meta("planner", "kW"),
+        description=(
+            "Moc przyłącza [kW] — dolny sufit big-M w MILP (≈ kWh/h na liczniku). "
+            "Musi być ≥ realnego max importu/eksportu godziny (auto, PC, dom)."
+        ),
+    )
     planner_policy_valid_minutes: int = Field(
         10, ge=1, le=1440, json_schema_extra=_meta("planner", "min"),
         description="Ważność artefaktu policy od computed_at (gdy brak valid_until).",

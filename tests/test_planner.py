@@ -17,7 +17,7 @@ from planner.hour_remainder import (
     scale_hour_inputs_for_remainder,
 )
 from planner.models import HourInputs
-from planner.optimizer import optimize_horizon
+from planner.optimizer import _big_m, _solve_milp, optimize_horizon
 from planner.audit import append_audit, new_event, read_audit_events
 from planner.config import ensure_planner_dirs
 import planner.audit as audit_mod
@@ -616,4 +616,96 @@ def test_fallback_neutral_holds_meter_so_far_not_clawback() -> None:
     assert res.hours[1].target_net_kwh == pytest.approx(0.0)
     # Δ baterii = PV_rem − load_rem (dom z magazynu), nie +N₀ z sieci.
     assert res.hours[0].battery_delta_kwh < 0.0
+
+
+def test_big_m_includes_grid_connection_and_net_so_far() -> None:
+    """big-M ≥ przyłącze oraz peak + |N₀| + P_bat (regresja 2026-10-13 05:30)."""
+    bp = BatteryParams(
+        capacity_kwh=10.77, soc_min_pct=15.0, soc_max_pct=100.0, max_power_kwh_per_h=5.2
+    )
+    hours = [
+        HourInputs(
+            date="2026-10-13",
+            hour=5,
+            load_kwh=6.58,
+            pv_kwh=0.0,
+            import_pln_per_kwh=0.59,
+            export_pln_per_kwh=0.2,
+            hour_fraction=0.5,
+            net_so_far_kwh=-7.66,
+            load_so_far_kwh=0.6,
+            pv_so_far_kwh=0.0,
+        ),
+        HourInputs(
+            date="2026-10-13",
+            hour=6,
+            load_kwh=0.5,
+            pv_kwh=0.0,
+            import_pln_per_kwh=1.11,
+            export_pln_per_kwh=0.3,
+        ),
+    ]
+    m = _big_m(hours, bp, grid_connection_kw=26.0)
+    assert m >= 26.0
+    # peak(6.58) + P_bat(5.2) + |N₀|(7.66) — floor przyłącza i tak wygrywa (26).
+    assert m == pytest.approx(26.0)
+
+
+
+def test_milp_feasible_mid_hour_large_negative_n0_with_ev_load(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regresja 2026-10-13 05:30: auto + N₀≈−7.7 nie może robić MILP infeasible przez małe big-M."""
+    monkeypatch.setattr(opt_mod, "planner_scenario_optimizer_enabled", lambda: False)
+
+    class _GridSettings:
+        grid_connection_kw = 26.0
+
+    monkeypatch.setattr(
+        "guardian_settings.get_settings", lambda: _GridSettings()
+    )
+    bp = BatteryParams(
+        capacity_kwh=10.77, soc_min_pct=15.0, soc_max_pct=100.0, max_power_kwh_per_h=5.2
+    )
+    hours = [
+        HourInputs(
+            date="2026-10-13",
+            hour=5,
+            load_kwh=6.58,
+            pv_kwh=0.0,
+            import_pln_per_kwh=0.59,
+            export_pln_per_kwh=0.2,
+            hour_fraction=0.5,
+            net_so_far_kwh=-7.66,
+            load_so_far_kwh=0.6,
+            pv_so_far_kwh=0.0,
+        ),
+        HourInputs(
+            date="2026-10-13",
+            hour=6,
+            load_kwh=0.5,
+            pv_kwh=0.0,
+            import_pln_per_kwh=1.11,
+            export_pln_per_kwh=0.3,
+        ),
+        HourInputs(
+            date="2026-10-13",
+            hour=18,
+            load_kwh=0.8,
+            pv_kwh=0.0,
+            import_pln_per_kwh=1.11,
+            export_pln_per_kwh=1.64,
+        ),
+    ]
+    # Stary wzór (peak+P_bat≈11.8) padał; z |N₀| + przyłączem 26 kW — solvable.
+    assert (
+        _solve_milp(
+            hours,
+            soc_start_pct=27.0,
+            params=bp,
+            night_charge_carry_in=True,
+            green_stock_kwh=2.046,
+        )
+        is not None
+    )
 
