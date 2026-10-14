@@ -54,6 +54,9 @@ MIDDAY_HOURS = frozenset({13, 14})
 # Poniżej tego bateria nie „jedzie” w eksporcie zarobkowym.
 BATTERY_DISCHARGE_W = 150.0
 
+# Ekstrapolacja tempa poza ten zakres = śmieć (np. „−48 kWh na koniec”).
+PACE_ABSURD_ABS_KWH = 20.0
+
 # Okno tempa: próbka sprzed około pięciu minut.
 PACE_MIN_S = 4.5 * 60.0
 PACE_MAX_S = 6.5 * 60.0
@@ -225,19 +228,18 @@ def _net_negative_live(
     zone: str,
     night: frozenset[int],
 ) -> AlertFiring | None:
+    """Ujemny bilans alarmuje tylko przy dużym poborze (dom / auto poza tanim G12).
+
+    Sam minus 6–12 (zwykły dom, planowany charge_grid) był szumem — co 5 min
+    remind (regresja 2026-10-13 rano, ~80 pushy/dzień).
+    """
     if not _net_negative(snap.remaining_kwh):
         return None
     hour = snap.local_hour
     bal = f"Bilans godziny {hour:02d} jest {snap.remaining_kwh:+.2f} kWh."
-    if hour in WATCH_HOURS:
-        if zone != "day":
-            return None
-        return _firing(
-            RULE_NET_NEGATIVE_EXPENSIVE,
-            f"Bilans godziny {hour:02d} poniżej zera",
-            bal,
-        )
-    if hour not in ABNORMAL_LOAD_HOURS:
+    watch = hour in WATCH_HOURS and zone == "day"
+    afternoon = hour in ABNORMAL_LOAD_HOURS
+    if not watch and not afternoon:
         return None
     reasons = _abnormal_draw(snap, night=night)
     if not reasons:
@@ -249,6 +251,8 @@ def _net_negative_live(
         rule,
         f"Duży pobór o {hour:02d}",
         bal + " " + "; ".join(reasons) + ".",
+        once_per_hour=True,
+        remind=False,
     )
 
 
@@ -278,8 +282,8 @@ def _export_below_cheap(
         RULE_EXPORT_BELOW_CHEAP,
         "Eksport poniżej taniego importu",
         body,
-        remind=not full,
-        once_per_hour=full,
+        remind=False,
+        once_per_hour=True,
     )
 
 
@@ -298,7 +302,9 @@ def _plan_discharge_miss(
         return None
     battery_idle = float(snap.battery_w) < BATTERY_DISCHARGE_W
     projected = _projected_net(snap, outlook)
-    pace_miss = _below_target(projected, target)
+    pace_miss = False
+    if projected is not None and abs(float(projected)) <= PACE_ABSURD_ABS_KWH:
+        pace_miss = _below_target(projected, target)
     if not battery_idle and not pace_miss:
         return None
     if pace_miss and projected is not None:
@@ -315,6 +321,8 @@ def _plan_discharge_miss(
         "Bateria nie oddaje według planu",
         detail,
         immediate=pace_miss,
+        remind=False,
+        once_per_hour=True,
     )
 
 
@@ -384,25 +392,9 @@ def _ev_outside_cheap(
 
 
 def _plan_import(outlook: AlertOutlook) -> AlertFiring | None:
-    """Tylko 6:00–13:00. Wieczór z wysokim RCE i zwykłym loadem nie jest alarmem."""
-    lines: list[str] = []
-    for slot in outlook.plan_hours:
-        target = slot.target_net_kwh
-        if target is None or float(target) >= -1e-6:
-            continue
-        if slot.hour not in WATCH_HOURS:
-            continue
-        lines.append(
-            f"{slot.hour:02d}: net {float(target):+.2f} kWh (droga strefa G12)"
-        )
-    if not lines:
-        return None
-    return _firing(
-        RULE_PLAN_IMPORT,
-        "Planowany import",
-        "Plan schodzi poniżej zera: " + "; ".join(lines) + ".",
-        immediate=True,
-    )
+    """Wycofane: przy EV / charge_grid rano plan *ma* być na minusie (szum 2026-10-13)."""
+    del outlook
+    return None
 
 
 def evaluate(
@@ -427,6 +419,7 @@ def evaluate(
         _plan_discharge_miss(snap, view),
         _planner_silent_fail(snap),
         _ev_outside_cheap(view, night=night),
+        # plan_import_unwanted: celowo nie wołamy — szum przy tanim buforze / EV.
         _plan_import(view),
     ):
         if firing is not None:

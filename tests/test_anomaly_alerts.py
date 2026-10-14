@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
@@ -97,9 +98,23 @@ def test_ev_power_in_day_hour_with_nonnegative_balance_is_silent() -> None:
     assert RULE_EXPORT_BELOW_CHEAP not in _ids(firings)
 
 
-def test_negative_balance_in_expensive_hour() -> None:
-    firings = _eval(_snap(remaining_kwh=-0.04))
-    assert RULE_NET_NEGATIVE_EXPENSIVE in _ids(firings)
+def test_negative_balance_in_expensive_hour_without_abnormal_load_is_silent() -> None:
+    """Sam minus rano (zwykły dom) nie alarmuje — szum 2026-10-13."""
+    firings = _eval(
+        _snap(remaining_kwh=-0.04, consumption_w=600.0, charging_kw=0.0)
+    )
+    assert RULE_NET_NEGATIVE_EXPENSIVE not in _ids(firings)
+
+
+def test_morning_abnormal_ev_with_negative_balance_alerts() -> None:
+    firings = _eval(
+        _snap(remaining_kwh=-0.04, consumption_w=5000.0, charging_kw=4.4)
+    )
+    hit = next(f for f in firings if f.rule_id == RULE_NET_NEGATIVE_EXPENSIVE)
+    assert hit.title.startswith("Duży pobór")
+    assert hit.once_per_hour is True
+    assert hit.remind is False
+    assert "auto" in hit.body
 
 
 def test_negative_balance_at_night_is_silent() -> None:
@@ -179,8 +194,8 @@ def test_export_below_cheap_when_balance_exceeds_buffer() -> None:
         _snap(exec_mode="neutral", soc_pct=33.0, remaining_kwh=0.50, grid_w=800.0)
     )
     hit = next(f for f in firings if f.rule_id == RULE_EXPORT_BELOW_CHEAP)
-    assert hit.once_per_hour is False
-    assert hit.remind is True
+    assert hit.once_per_hour is True
+    assert hit.remind is False
     assert "0.50" in hit.body
 
 
@@ -229,6 +244,34 @@ def test_high_rce_export_is_silent() -> None:
     assert RULE_EXPORT_BELOW_CHEAP not in _ids(firings)
 
 
+def test_outlook_rce_is_export_settlement_not_raw_market(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Godzina 11 z 2026-10-08: panel 0,6144 zł, alert brał surowe 0,50 zł."""
+    import alert_store
+    import energy_pricing as ep
+
+    hourly = [0.5] * 24
+    hourly[11] = 0.499535
+    (tmp_path / "proxy_rce_2026-10-08.json").write_text(
+        json.dumps({"hourly_rce_pln_per_kwh": hourly}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(alert_store, "PRICING_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(
+        ep, "get_settings", lambda: SimpleNamespace(rce_export_multiplier=1.23)
+    )
+    monkeypatch.setattr(alert_store, "hourly_ev_kwh_from_telemetry", lambda _day: {})
+    monkeypatch.setattr(alert_store, "load_latest_plan", lambda: None)
+
+    outlook = alert_store.load_alert_outlook(
+        datetime(2026, 10, 8, 11, 20, tzinfo=TZ),
+        pace_remaining_kwh=None,
+        pace_dt_s=None,
+    )
+    assert outlook.rce_pln_kwh == pytest.approx(0.61442805)
+
+
 def test_live_streak_resets_when_the_hour_changes() -> None:
     firing = AlertFiring(rule_id=RULE_EXPORT_BELOW_CHEAP, title="Eksport", body="ponad bufor")
     state = AlertFileState()
@@ -272,6 +315,8 @@ def test_discharge_miss_when_battery_idle_and_still_short() -> None:
     )
     hit = next(f for f in firings if f.rule_id == RULE_PLAN_DISCHARGE_MISS)
     assert hit.immediate is False
+    assert hit.once_per_hour is True
+    assert hit.remind is False
 
 
 def test_discharge_miss_when_pace_will_not_reach_target() -> None:
@@ -287,7 +332,24 @@ def test_discharge_miss_when_pace_will_not_reach_target() -> None:
     )
     hit = next(f for f in firings if f.rule_id == RULE_PLAN_DISCHARGE_MISS)
     assert hit.immediate is True
+    assert hit.once_per_hour is True
     assert "2.5" in hit.body or "+1.60" in hit.body or "1.60" in hit.body
+
+
+def test_discharge_miss_ignores_absurd_pace_projection() -> None:
+    """Regresja 2026-10-13 19:xx: tempo −48 kWh nie jest sygnałem."""
+    firings = _eval(
+        _snap(
+            exec_mode="export_profit",
+            plan_target_net_kwh=3.0,
+            remaining_kwh=1.0,
+            battery_w=2000.0,
+            time_to_end_s=3000.0,
+        ),
+        # rate ≈ −60 kWh/h → projected ~ −50
+        _outlook(pace_remaining_kwh=6.0, pace_dt_s=300.0),
+    )
+    assert RULE_PLAN_DISCHARGE_MISS not in _ids(firings)
 
 
 def test_discharge_on_pace_is_silent() -> None:
@@ -362,19 +424,16 @@ def test_night_ev_import_is_allowed() -> None:
     assert RULE_PLAN_IMPORT not in _ids(firings)
 
 
-def test_planned_import_only_before_13() -> None:
+def test_planned_import_is_retired_as_noise() -> None:
+    """plan_import_unwanted wycofany — rano plan bywa ujemny z EV / charge_grid."""
     outlook = _outlook(
         plan_hours=[
             PlanSlot(hour=11, target_net_kwh=-0.4, ev_kwh=0.0, rce_pln_kwh=0.30),
             PlanSlot(hour=16, target_net_kwh=-0.4, ev_kwh=0.0, rce_pln_kwh=1.20),
-            PlanSlot(hour=17, target_net_kwh=-0.13, ev_kwh=0.0, rce_pln_kwh=1.30),
         ]
     )
     firings = _eval(_snap(remaining_kwh=0.1, consumption_w=500.0, charging_kw=0.0), outlook)
-    hit = next(f for f in firings if f.rule_id == RULE_PLAN_IMPORT)
-    assert "11:" in hit.body
-    assert "16:" not in hit.body
-    assert "17:" not in hit.body
+    assert RULE_PLAN_IMPORT not in _ids(firings)
 
 
 def test_planned_import_after_13_is_silent() -> None:
@@ -562,6 +621,6 @@ def test_process_cycle_pushes_negative_balance_not_ev_power(
     )
     process_cycle_alerts(now=t0, E_twc_kwh=100.0, **kwargs)
     assert len(sent) == 1
-    assert "poniżej zera" in sent[0][0]
+    assert "Duży pobór" in sent[0][0]
     process_cycle_alerts(now=t0 + timedelta(minutes=1), E_twc_kwh=100.07, **kwargs)
     assert len(sent) == 1

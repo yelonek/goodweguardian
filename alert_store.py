@@ -22,7 +22,7 @@ from anomaly_alerts import (
     day_is_armed,
     evaluate,
 )
-from energy_pricing import PRICING_CACHE_DIR
+from energy_pricing import PRICING_CACHE_DIR, adjust_rce_for_export_settlement
 from ev_charging_store import read_declaration
 from guardian_config import ANOMALY_ALERTS_PATH, TELEMETRY_TZ
 from guardian_settings import get_settings
@@ -214,6 +214,8 @@ def load_alert_outlook(
     tariff = g12_tariff_from_env()
     settings = get_settings()
     rce = _rce_from_disk(today)
+    if rce is not None:
+        rce = adjust_rce_for_export_settlement(rce)
     rce_now = rce[aware.hour] if rce is not None else None
 
     actual: dict[int, float] = {}

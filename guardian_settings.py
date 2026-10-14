@@ -217,8 +217,11 @@ class GuardianSettings(BaseModel):
         description="Ile kolejnych minut bilans, eksport albo stojąca bateria muszą trwać, zanim poleci alarm.",
     )
     anomaly_cooldown_min: int = Field(
-        5, ge=5, le=240, json_schema_extra=_meta("alerts", "min"),
-        description="Przypomnienie, dopóki alarm trwa. Nowy powód nie czeka na ten odstęp.",
+        30, ge=5, le=240, json_schema_extra=_meta("alerts", "min"),
+        description=(
+            "Przypomnienie, dopóki alarm trwa (minuty). Nowy powód nie czeka na ten odstęp. "
+            "Domyślnie 30 — wcześniej 5 min dawało spam rano."
+        ),
     )
     anomaly_clear_min: int = Field(
         2, ge=1, le=15, json_schema_extra=_meta("alerts", "min"),
