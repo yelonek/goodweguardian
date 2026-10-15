@@ -18,8 +18,10 @@ RULE_PLAN_DISCHARGE_MISS = "plan_discharge_miss"
 RULE_PLANNER_SILENT_FAIL = "planner_silent_fail"
 RULE_EV_OUTSIDE_CHEAP = "ev_outside_cheap"
 RULE_PLAN_IMPORT = "plan_import_unwanted"
+RULE_BATTERY_CYCLE = "battery_cycle"
 
 # Żywy bilans godziny. Pasmo pięciu minut nie przechodzi przez :00.
+# battery_cycle celowo poza listą: seria godzin (3→4→5) trzyma banner do hangover.
 LIVE_HOUR_RULES = frozenset(
     {
         RULE_NET_NEGATIVE_EXPENSIVE,
@@ -38,8 +40,14 @@ CURRENT_RULES = frozenset(
         RULE_PLANNER_SILENT_FAIL,
         RULE_EV_OUTSIDE_CHEAP,
         RULE_PLAN_IMPORT,
+        RULE_BATTERY_CYCLE,
     }
 )
+
+# Szum mocy baterii — poniżej nie liczymy do cyklu (jak BATTERY_DISCHARGE_W).
+CYCLE_BATTERY_IDLE_W = 150.0
+# Import na liczniku → ładunek z sieci (grid_w ujemny = import).
+CYCLE_GRID_IMPORT_W = -300.0
 
 # Do 13:00 ujemny bilans alarmuje sam. Od 13:00 do 22:00 tylko duży pobór.
 WATCH_HOURS = frozenset(range(6, 13))
@@ -90,6 +98,16 @@ class AnomalySnapshot(BaseModel):
     control_enabled: bool = True
     watchdog_reason: str = ""
     charging_kw: float | None = None
+    # Suma energii baterii w bieżącej godzinie (akumulator w alert_store).
+    cycle_charge_grid_kwh: float = 0.0
+    cycle_charge_pv_kwh: float = 0.0
+    cycle_discharge_kwh: float = 0.0
+    # True gdy najnowszy plan to fallback po padnięciu MILP.
+    planner_fallback: bool = False
+    # Godziny serii już wykryte (np. ["03", "04"]) — do treści i panelu.
+    cycle_series_hours: list[str] = Field(default_factory=list)
+    # True = ta seria już dostała push; kolejne godziny tylko banner.
+    cycle_series_pushed: bool = False
 
 
 class PlanSlot(BaseModel):
@@ -124,6 +142,8 @@ class AlertFiring(BaseModel):
     remind: bool = True
     # Pełna bateria: jeden push na godzinę zegarową, bez powtórki co 5 minut.
     once_per_hour: bool = False
+    # Aktualizuj banner / stan, ale nie wysyłaj ntfy (seria godzin po pierwszym pushu).
+    panel_only: bool = False
 
 
 def charging_kw_from_twc(
@@ -187,6 +207,7 @@ def _firing(
     immediate: bool = False,
     remind: bool = True,
     once_per_hour: bool = False,
+    panel_only: bool = False,
 ) -> AlertFiring:
     return AlertFiring(
         rule_id=rule_id,
@@ -195,6 +216,83 @@ def _firing(
         immediate=immediate,
         remind=remind,
         once_per_hour=once_per_hour,
+        panel_only=panel_only,
+    )
+
+
+def cycle_energy_kwh(battery_w: float, dt_s: float) -> float:
+    """|P_bat| → kWh za próbkę. Brak dt → zakładamy 60 s (cykl Guardiana)."""
+    span = float(dt_s) if dt_s > 0.0 else 60.0
+    span = min(span, 180.0)
+    return abs(float(battery_w)) / 1000.0 * (span / 3600.0)
+
+
+def accumulate_battery_cycle(
+    *,
+    charge_grid_kwh: float,
+    charge_pv_kwh: float,
+    discharge_kwh: float,
+    battery_w: float,
+    grid_w: float,
+    dt_s: float,
+) -> tuple[float, float, float]:
+    """Dopisz minutę do sum godziny. Znak: P_bat>0 = oddawanie, <0 = ładowanie."""
+    if abs(float(battery_w)) < CYCLE_BATTERY_IDLE_W:
+        return charge_grid_kwh, charge_pv_kwh, discharge_kwh
+    delta = cycle_energy_kwh(battery_w, dt_s)
+    if float(battery_w) < 0.0:
+        if float(grid_w) <= CYCLE_GRID_IMPORT_W:
+            return charge_grid_kwh + delta, charge_pv_kwh, discharge_kwh
+        return charge_grid_kwh, charge_pv_kwh + delta, discharge_kwh
+    return charge_grid_kwh, charge_pv_kwh, discharge_kwh + delta
+
+
+def _battery_cycle(
+    snap: AnomalySnapshot, *, threshold_kwh: float
+) -> AlertFiring | None:
+    """Ładowanie i rozładowanie w tej samej godzinie ≥ próg — bez blokady sterowania."""
+    charge = float(snap.cycle_charge_grid_kwh) + float(snap.cycle_charge_pv_kwh)
+    discharge = float(snap.cycle_discharge_kwh)
+    cycled = min(charge, discharge)
+    if cycled + 1e-9 < float(threshold_kwh):
+        return None
+    hour = snap.local_hour
+    series = list(snap.cycle_series_hours) or [f"{hour:02d}"]
+    if f"{hour:02d}" not in series:
+        series = series + [f"{hour:02d}"]
+    hours_label = ", ".join(series)
+    title = (
+        f"Bateria w kółko o {hours_label}"
+        if len(series) == 1
+        else f"Bateria w kółko ({hours_label})"
+    )
+    grid = float(snap.cycle_charge_grid_kwh)
+    pv = float(snap.cycle_charge_pv_kwh)
+    parts = [f"Weszło {charge:.2f} kWh"]
+    if grid > 1e-3 and pv > 1e-3:
+        parts[0] += f" (z sieci {grid:.2f}, ze słońca {pv:.2f})"
+    elif grid > 1e-3:
+        parts[0] += f" (z sieci {grid:.2f})"
+    elif pv > 1e-3:
+        parts[0] += f" (ze słońca {pv:.2f})"
+    parts.append(f"wyszło {discharge:.2f} kWh")
+    parts.append(f"w kółko {cycled:.2f} kWh")
+    body = ". ".join(parts) + "."
+    reason = (snap.watchdog_reason or "").strip()
+    if reason:
+        body += f" Teraz: {reason}."
+    if snap.planner_fallback:
+        body += " Plan: awaryjny (MILP bez rozwiązania)."
+    if (snap.watchdog_reason or "").startswith("other_eco_slot_active"):
+        body += " Działa slot spoza Guardiana."
+    return _firing(
+        RULE_BATTERY_CYCLE,
+        title,
+        body,
+        immediate=True,
+        remind=False,
+        once_per_hour=True,
+        panel_only=bool(snap.cycle_series_pushed),
     )
 
 
@@ -421,6 +519,7 @@ def evaluate(
         _ev_outside_cheap(view, night=night),
         # plan_import_unwanted: celowo nie wołamy — szum przy tanim buforze / EV.
         _plan_import(view),
+        _battery_cycle(snap, threshold_kwh=float(s.anomaly_battery_cycle_kwh)),
     ):
         if firing is not None:
             out.append(firing)

@@ -14,10 +14,12 @@ from pydantic import BaseModel, Field
 from anomaly_alerts import (
     CURRENT_RULES,
     LIVE_HOUR_RULES,
+    RULE_BATTERY_CYCLE,
     AlertFiring,
     AlertOutlook,
     AnomalySnapshot,
     PlanSlot,
+    accumulate_battery_cycle,
     charging_kw_from_twc,
     day_is_armed,
     evaluate,
@@ -64,6 +66,14 @@ class AlertFileState(BaseModel):
     digest_rule_ids: list[str] = Field(default_factory=list)
     pace: list[PaceSample] = Field(default_factory=list)
     rules: dict[str, RuleRuntime] = Field(default_factory=dict)
+    # Akumulator „bateria w kółko” — zerowany przy zmianie godziny zegarowej.
+    cycle_hour: str | None = None
+    cycle_charge_grid_kwh: float = 0.0
+    cycle_charge_pv_kwh: float = 0.0
+    cycle_discharge_kwh: float = 0.0
+    # Seria kolejnych godzin z cyklem (klucze ``YYYY-MM-DDTHH``).
+    cycle_series_hours: list[str] = Field(default_factory=list)
+    cycle_series_pushed: bool = False
 
 
 def _path() -> Path:
@@ -120,6 +130,43 @@ def _iso(now: datetime) -> str:
 def _hour_key(now: datetime) -> str:
     aware = _aware(now)
     return f"{aware.date().isoformat()}T{aware.hour:02d}"
+
+
+def _hour_labels(series_keys: list[str]) -> list[str]:
+    """``2026-10-13T03`` → ``03``."""
+    out: list[str] = []
+    for key in series_keys:
+        if "T" in key:
+            out.append(key.split("T", 1)[1][:2])
+        else:
+            out.append(key[-2:])
+    return out
+
+
+def _is_next_hour_key(prev: str, cur: str) -> bool:
+    """Czy ``cur`` jest godziną zaraz po ``prev`` (przez północ też)."""
+    try:
+        p = datetime.fromisoformat(prev)
+        c = datetime.fromisoformat(cur)
+    except ValueError:
+        return False
+    if p.tzinfo is None:
+        p = p.replace(tzinfo=ZoneInfo(TELEMETRY_TZ))
+    if c.tzinfo is None:
+        c = c.replace(tzinfo=ZoneInfo(TELEMETRY_TZ))
+    return c == p + timedelta(hours=1)
+
+
+def _planner_is_fallback() -> bool:
+    try:
+        plan = load_latest_plan()
+    except Exception as e:
+        log.warning("plan_latest for battery_cycle failed: %s", e)
+        return False
+    if plan is None:
+        return False
+    name = str(plan.optimizer or "")
+    return name.startswith("fallback")
 
 
 def _remember_pace(state: AlertFileState, now: datetime, remaining_kwh: float) -> None:
@@ -328,7 +375,20 @@ def apply_firings(
             rt.consecutive_miss += 1
             if rule_id not in CURRENT_RULES:
                 rt.consecutive_miss = max(rt.consecutive_miss, clear_min)
-            if rt.consecutive_miss >= clear_min:
+            # Seria battery_cycle: trzymaj banner przez następną godzinę zegarową
+            # (między 3:59 a 4:34), żeby panel mógł dopisać kolejne godziny.
+            hangover = False
+            if (
+                rule_id == RULE_BATTERY_CYCLE
+                and state.cycle_series_hours
+                and (
+                    state.cycle_series_hours[-1] == hour_key
+                    or _is_next_hour_key(state.cycle_series_hours[-1], hour_key)
+                )
+            ):
+                hangover = True
+                rt.active = True
+            if rt.consecutive_miss >= clear_min and not hangover:
                 rt.active = False
                 rt.activated_at = None
                 rt.title = ""
@@ -336,11 +396,18 @@ def apply_firings(
                 rt.est_pln_per_h = 0.0
                 rt.remind = True
                 rt.once_per_hour = False
+                if rule_id == RULE_BATTERY_CYCLE:
+                    state.cycle_series_hours = []
+                    state.cycle_series_pushed = False
         state.rules[rule_id] = rt
+
+    panel_only_ids = {f.rule_id for f in firings if f.panel_only}
 
     announced: list[tuple[str, RuleRuntime]] = []
     for rule_id, rt in state.rules.items():
         if not rt.active:
+            continue
+        if rule_id in panel_only_ids:
             continue
         if rt.once_per_hour and rt.pushed_hour == hour_key:
             continue
@@ -422,6 +489,47 @@ def process_cycle_alerts(
     charging_kw = charging_kw_from_twc(state.prev_e_twc_kwh, E_twc_kwh, dt_s)
     pace_remaining, pace_dt = _pace_window(state, aware)
 
+    hour_key = _hour_key(aware)
+    if state.cycle_hour != hour_key:
+        state.cycle_hour = hour_key
+        state.cycle_charge_grid_kwh = 0.0
+        state.cycle_charge_pv_kwh = 0.0
+        state.cycle_discharge_kwh = 0.0
+    (
+        state.cycle_charge_grid_kwh,
+        state.cycle_charge_pv_kwh,
+        state.cycle_discharge_kwh,
+    ) = accumulate_battery_cycle(
+        charge_grid_kwh=state.cycle_charge_grid_kwh,
+        charge_pv_kwh=state.cycle_charge_pv_kwh,
+        discharge_kwh=state.cycle_discharge_kwh,
+        battery_w=battery_w,
+        grid_w=grid_w,
+        dt_s=dt_s,
+    )
+
+    # Próg przekroczony w tej godzinie? (bez serii — tylko surowe sumy).
+    threshold = float(s.anomaly_battery_cycle_kwh)
+    charge_now = state.cycle_charge_grid_kwh + state.cycle_charge_pv_kwh
+    cycled_now = min(charge_now, state.cycle_discharge_kwh)
+    if cycled_now + 1e-9 >= threshold:
+        if not state.cycle_series_hours:
+            state.cycle_series_hours = [hour_key]
+            state.cycle_series_pushed = False
+        elif state.cycle_series_hours[-1] == hour_key:
+            pass
+        elif _is_next_hour_key(state.cycle_series_hours[-1], hour_key):
+            state.cycle_series_hours.append(hour_key)
+        else:
+            state.cycle_series_hours = [hour_key]
+            state.cycle_series_pushed = False
+    elif state.cycle_series_hours:
+        last = state.cycle_series_hours[-1]
+        # Przerwa ≥ 2 h od ostatniej godziny serii → kasuj (banner zdejmie clear_min).
+        if last != hour_key and not _is_next_hour_key(last, hour_key):
+            # Zostaw serię w hangover tylko godzinę; tu już za późno.
+            pass
+
     snap = AnomalySnapshot(
         local_hour=aware.hour,
         local_minute=aware.minute,
@@ -439,6 +547,12 @@ def process_cycle_alerts(
         control_enabled=control_enabled,
         watchdog_reason=watchdog_reason,
         charging_kw=charging_kw,
+        cycle_charge_grid_kwh=state.cycle_charge_grid_kwh,
+        cycle_charge_pv_kwh=state.cycle_charge_pv_kwh,
+        cycle_discharge_kwh=state.cycle_discharge_kwh,
+        planner_fallback=_planner_is_fallback(),
+        cycle_series_hours=_hour_labels(state.cycle_series_hours),
+        cycle_series_pushed=state.cycle_series_pushed,
     )
     view = outlook
     if view is None:
@@ -464,6 +578,8 @@ def process_cycle_alerts(
         )
 
     firings = evaluate(snap, view)
+    cycle_firing = next((f for f in firings if f.rule_id == RULE_BATTERY_CYCLE), None)
+
     to_push = apply_firings(
         state,
         firings,
@@ -472,6 +588,14 @@ def process_cycle_alerts(
         cooldown_min=int(s.anomaly_cooldown_min),
         clear_min=int(s.anomaly_clear_min),
     )
+    # Pierwszy push serii (nie panel_only) → kolejne godziny tylko w bannerze.
+    if (
+        to_push
+        and cycle_firing is not None
+        and not cycle_firing.panel_only
+    ):
+        state.cycle_series_pushed = True
+
     _remember_pace(state, aware, remaining_kwh)
     state.prev_e_twc_kwh = E_twc_kwh
     state.prev_soc_pct = soc_pct

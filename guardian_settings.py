@@ -251,6 +251,16 @@ class GuardianSettings(BaseModel):
         10, ge=0, le=50, json_schema_extra=_meta("alerts", "min"),
         description="Nieużywane. Tempo eksportu liczy się z ostatnich pięciu minut.",
     )
+    anomaly_battery_cycle_kwh: float = Field(
+        0.5,
+        ge=0.1,
+        le=5.0,
+        json_schema_extra=_meta("alerts", "kWh"),
+        description=(
+            "Alarm „bateria w kółko”: min(ładowanie, rozładowanie) w tej samej godzinie. "
+            "Nie blokuje sterowania — tylko ntfy / banner."
+        ),
+    )
 
 
 _FIELD_NAMES: frozenset[str] = frozenset(GuardianSettings.model_fields.keys())

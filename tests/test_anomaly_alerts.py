@@ -11,6 +11,7 @@ import pytest
 
 from alert_store import AlertFileState, RuleRuntime, apply_firings, process_cycle_alerts
 from anomaly_alerts import (
+    RULE_BATTERY_CYCLE,
     RULE_EV_OUTSIDE_CHEAP,
     RULE_EXPORT_BELOW_CHEAP,
     RULE_NET_NEGATIVE_EXPENSIVE,
@@ -22,6 +23,7 @@ from anomaly_alerts import (
     AlertOutlook,
     AnomalySnapshot,
     PlanSlot,
+    accumulate_battery_cycle,
     charging_kw_from_twc,
     day_is_armed,
     evaluate,
@@ -624,3 +626,236 @@ def test_process_cycle_pushes_negative_balance_not_ev_power(
     assert "Duży pobór" in sent[0][0]
     process_cycle_alerts(now=t0 + timedelta(minutes=1), E_twc_kwh=100.07, **kwargs)
     assert len(sent) == 1
+
+
+def test_accumulate_battery_cycle_splits_grid_and_pv() -> None:
+    g, p, d = 0.0, 0.0, 0.0
+    g, p, d = accumulate_battery_cycle(
+        charge_grid_kwh=g,
+        charge_pv_kwh=p,
+        discharge_kwh=d,
+        battery_w=-5400.0,
+        grid_w=-12000.0,
+        dt_s=60.0,
+    )
+    assert g == pytest.approx(5.4 / 60.0)
+    assert p == 0.0
+    assert d == 0.0
+    g, p, d = accumulate_battery_cycle(
+        charge_grid_kwh=g,
+        charge_pv_kwh=p,
+        discharge_kwh=d,
+        battery_w=-2000.0,
+        grid_w=800.0,
+        dt_s=60.0,
+    )
+    assert p == pytest.approx(2.0 / 60.0)
+    g, p, d = accumulate_battery_cycle(
+        charge_grid_kwh=g,
+        charge_pv_kwh=p,
+        discharge_kwh=d,
+        battery_w=5100.0,
+        grid_w=-7000.0,
+        dt_s=60.0,
+    )
+    assert d == pytest.approx(5.1 / 60.0)
+
+
+def test_battery_cycle_detector_fires_at_threshold() -> None:
+    """Regresja 2026-10-13 03:37 — ładowanie z sieci i oddawanie w tej samej h."""
+    firings = _eval(
+        _snap(
+            local_hour=3,
+            local_minute=37,
+            remaining_kwh=-8.0,
+            consumption_w=12000.0,
+            charging_kw=0.0,
+            cycle_charge_grid_kwh=1.25,
+            cycle_charge_pv_kwh=0.0,
+            cycle_discharge_kwh=0.53,
+            watchdog_reason="deficit_max_cap",
+            planner_fallback=True,
+        )
+    )
+    hit = next(f for f in firings if f.rule_id == RULE_BATTERY_CYCLE)
+    assert hit.immediate is True
+    assert hit.once_per_hour is True
+    assert hit.remind is False
+    assert hit.panel_only is False
+    assert "z sieci" in hit.body
+    assert "awaryjny" in hit.body
+    assert "03" in hit.title
+
+
+def test_battery_cycle_soak_only_is_silent() -> None:
+    """Samo chowanie słońca bez oddawania — nie alarmuje."""
+    firings = _eval(
+        _snap(
+            local_hour=12,
+            cycle_charge_grid_kwh=0.0,
+            cycle_charge_pv_kwh=1.2,
+            cycle_discharge_kwh=0.0,
+            remaining_kwh=0.4,
+            consumption_w=500.0,
+            charging_kw=0.0,
+        )
+    )
+    assert RULE_BATTERY_CYCLE not in _ids(firings)
+
+
+def test_battery_cycle_pv_then_discharge_alerts() -> None:
+    firings = _eval(
+        _snap(
+            local_hour=11,
+            cycle_charge_grid_kwh=0.0,
+            cycle_charge_pv_kwh=0.8,
+            cycle_discharge_kwh=0.6,
+            remaining_kwh=0.05,
+            consumption_w=800.0,
+            charging_kw=0.0,
+            watchdog_reason="neutral_hold",
+        )
+    )
+    hit = next(f for f in firings if f.rule_id == RULE_BATTERY_CYCLE)
+    assert "słońca" in hit.body
+    assert hit.panel_only is False
+
+
+def test_battery_cycle_series_second_hour_panel_only() -> None:
+    firings = _eval(
+        _snap(
+            local_hour=4,
+            cycle_charge_grid_kwh=1.8,
+            cycle_discharge_kwh=0.55,
+            cycle_series_hours=["03", "04"],
+            cycle_series_pushed=True,
+            remaining_kwh=-10.0,
+            consumption_w=12000.0,
+            charging_kw=0.0,
+        )
+    )
+    hit = next(f for f in firings if f.rule_id == RULE_BATTERY_CYCLE)
+    assert hit.panel_only is True
+    assert "03" in hit.title and "04" in hit.title
+
+
+def test_battery_cycle_series_one_push_then_panel(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Pierwsza godzina → ntfy; kolejna godzina serii → banner bez pusha."""
+    path = tmp_path / "alerts.json"
+    sent: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "alert_store.send_ntfy", lambda title, body: sent.append((title, body)) or True
+    )
+    monkeypatch.setattr("alert_store._planner_is_fallback", lambda: True)
+    monkeypatch.setattr(
+        "alert_store.get_settings",
+        lambda: SETTINGS.model_copy(
+            update={
+                "anomaly_debounce_min": 1,
+                "anomaly_cooldown_min": 5,
+                "anomaly_battery_cycle_kwh": 0.5,
+            }
+        ),
+    )
+    outlook = _outlook(rce_pln_kwh=0.8, cheap_import_pln_kwh=0.59)
+    base = dict(
+        pv_w=0.0,
+        consumption_w=12000.0,
+        soc_pct=25.0,
+        remaining_kwh=-8.0,
+        time_to_end_s=1500.0,
+        plan_target_net_kwh=-12.0,
+        exec_mode="charge_grid",
+        planner_execution_enabled=True,
+        policy_missing=False,
+        control_enabled=True,
+        watchdog_reason="deficit_max_cap",
+        path=path,
+        notify=True,
+        outlook=outlook,
+        E_twc_kwh=None,
+    )
+    t0 = datetime(2026, 10, 13, 3, 0, tzinfo=TZ)
+    # ~0.09 kWh/min przy 5400 W → po 6 min ładowania i 6 min oddawania przekroczymy 0,5.
+    for i in range(6):
+        process_cycle_alerts(
+            now=t0 + timedelta(minutes=i),
+            grid_w=-12000.0,
+            battery_w=-5400.0,
+            **base,
+        )
+    assert sent == []
+    for i in range(6, 12):
+        process_cycle_alerts(
+            now=t0 + timedelta(minutes=i),
+            grid_w=-7000.0,
+            battery_w=5400.0,
+            **base,
+        )
+    assert len(sent) == 1
+    assert "Bateria w kółko" in sent[0][0]
+    assert "z sieci" in sent[0][1]
+
+    state = AlertFileState.model_validate(json.loads(path.read_text(encoding="utf-8")))
+    assert state.cycle_series_pushed is True
+    assert state.rules[RULE_BATTERY_CYCLE].active is True
+
+    # Godzina 4: nowy akumulator, znowu cykl — panel bez drugiego pusha.
+    t1 = datetime(2026, 10, 13, 4, 0, tzinfo=TZ)
+    for i in range(6):
+        process_cycle_alerts(
+            now=t1 + timedelta(minutes=i),
+            grid_w=-12000.0,
+            battery_w=-5400.0,
+            **base,
+        )
+    for i in range(6, 12):
+        process_cycle_alerts(
+            now=t1 + timedelta(minutes=i),
+            grid_w=-7000.0,
+            battery_w=5400.0,
+            **base,
+        )
+    assert len(sent) == 1
+    state = AlertFileState.model_validate(json.loads(path.read_text(encoding="utf-8")))
+    assert state.rules[RULE_BATTERY_CYCLE].active is True
+    assert "03" in state.rules[RULE_BATTERY_CYCLE].title
+    assert "04" in state.rules[RULE_BATTERY_CYCLE].title
+    assert len(state.cycle_series_hours) == 2
+
+
+def test_panel_only_firing_updates_banner_without_push() -> None:
+    firing = AlertFiring(
+        rule_id=RULE_BATTERY_CYCLE,
+        title="Bateria w kółko (03, 04)",
+        body="kontynuacja",
+        immediate=True,
+        remind=False,
+        once_per_hour=True,
+        panel_only=True,
+    )
+    state = AlertFileState(
+        rules={
+            RULE_BATTERY_CYCLE: RuleRuntime(
+                active=True,
+                title="Bateria w kółko o 03",
+                body="pierwszy",
+                consecutive_hit=3,
+                activated_at="2026-10-13T03:37:00+02:00",
+                pushed_hour="2026-10-13T03",
+            )
+        },
+        cycle_series_hours=["2026-10-13T03", "2026-10-13T04"],
+        cycle_series_pushed=True,
+        streak_hour="2026-10-13T04",
+    )
+    now = datetime(2026, 10, 13, 4, 34, tzinfo=TZ)
+    got = apply_firings(
+        state, [firing], now=now, debounce_min=1, cooldown_min=5, clear_min=2
+    )
+    assert got == []
+    assert state.rules[RULE_BATTERY_CYCLE].title == "Bateria w kółko (03, 04)"
+    assert state.rules[RULE_BATTERY_CYCLE].body == "kontynuacja"
+    assert state.rules[RULE_BATTERY_CYCLE].active is True
