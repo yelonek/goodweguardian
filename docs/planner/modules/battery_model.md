@@ -2,6 +2,8 @@
 
 **Krok:** `e_bat_kwh` (znak: + ładuj / − oddawaj, strona AC) + **η_rt** → następny **SOC [kWh]**; clip do **[soc_min, soc_max]** i **|e_bat| ≤ P_BATTERY×1h**; przy rozładunku cap z **P_INVERTER** + `pv_plan[h]` (jedna formuła w kodzie).
 
+**Derating ładowania (MILP):** powyżej **90% SOC** moc ładowania ≤ **~2 kW** (`planner/milp_preferences.py`); poniżej — full `P_BATTERY`, z limitem czasu full-rate do dojścia do 90%.
+
 **η:** ustawienie `planner_battery_eta` = sprawność **round-trip** (`η_rt`). W kroku SOC i w MILP stosuje się **η₁ = √η_rt** po obu stronach:
 
 - ładowanie: `ΔSOC = E_ch_ac · η₁`

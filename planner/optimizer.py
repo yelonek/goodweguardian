@@ -24,6 +24,14 @@ from planner.hour_remainder import (
     remaining_battery_delta_kwh,
 )
 from planner.models import HourInputs, HourPlan, ScenariosDetail
+from planner.milp_preferences import (
+    add_charge_preference_constraints,
+    apply_charge_spread_tips,
+    apply_day_import_defer_tips,
+    mark_preference_integrality,
+    preference_aux_n_vars,
+    preference_indexers,
+)
 from planner.night_grid_policy import (
     add_green_stock_constraints,
     add_night_latch_constraints,
@@ -122,6 +130,8 @@ def _solve_milp(
 
     Wear: ``PLANNER_BATTERY_CYCLE_COST_PLN`` × kWh rozładowania (ład bez kary).
     Binarne z_h wymuszają wyłączność import/eksport (brak „mielenia” licznika).
+    Mikro-tipy: odkładanie importu w dzień przy remisie, anty-peak ładowania,
+    derating mocy powyżej 90% SOC — patrz ``milp_preferences``.
     """
     cycle_cost = float(PLANNER_BATTERY_CYCLE_COST_PLN)
     wear_per_dis_kwh = cycle_cost if cycle_cost > 0.0 else 0.0
@@ -132,7 +142,9 @@ def _solve_milp(
     _windows, night_pos = night_latch_layout(hours_in)
     n_night = len(night_pos)
     n_green = green_stock_n_vars(n_h)
-    n_vars = n_vars_core + 2 * n_night + n_green
+    pref_base = n_vars_core + 2 * n_night + n_green
+    n_vars = pref_base + preference_aux_n_vars(n_h)
+    t_lo_idx, b_hi_idx, peak_idx = preference_indexers(pref_base, n_h)
     big_m = _big_m(hours_in, params)
 
     def y_ch_idx(h: int) -> int:
@@ -153,6 +165,10 @@ def _solve_milp(
         c[i] = hin.import_pln_per_kwh
         c[e] = -hin.export_pln_per_kwh
         c[dis] += wear_per_dis_kwh
+    apply_day_import_defer_tips(
+        c, hours_in, imp_index=lambda h: hour_idx(h, layout["imp"])
+    )
+    apply_charge_spread_tips(c, peak_idx=peak_idx)
 
     soc0_kwh = soc_kwh(soc_start_pct, params)
     soc_floor = effective_soc_floor_kwh(soc_start_pct, params)
@@ -249,6 +265,21 @@ def _solve_milp(
             carry_in=night_charge_carry_in,
         )
 
+    add_charge_preference_constraints(
+        ineq_rows,
+        ineq_rhs,
+        n_vars=n_vars,
+        hours_in=hours_in,
+        params=params,
+        soc_index=lambda h: h,
+        ch_index=lambda h: hour_idx(h, layout["ch"]),
+        t_lo_index=t_lo_idx,
+        b_hi_index=b_hi_idx,
+        peak_idx=peak_idx,
+        lb=lb,
+        ub=ub,
+    )
+
     a_ub = np.vstack(ineq_rows)
     ub_constraint = LinearConstraint(a_ub, -np.inf * np.ones(len(ineq_rhs)), np.array(ineq_rhs))
 
@@ -273,6 +304,7 @@ def _solve_milp(
     for h in night_pos:
         integrality[y_ch_idx(h)] = 1
         integrality[latch_idx(h)] = 1
+    mark_preference_integrality(integrality, b_hi_index=b_hi_idx, n_hours=n_h)
 
     res = milp(
         c=c,

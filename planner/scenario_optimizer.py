@@ -33,6 +33,14 @@ from planner.night_grid_policy import (
     night_latch_layout,
     resolve_green0_kwh,
 )
+from planner.milp_preferences import (
+    add_charge_preference_constraints,
+    apply_charge_spread_tips,
+    apply_day_import_defer_tips,
+    mark_preference_integrality,
+    preference_aux_n_vars,
+    preference_indexers,
+)
 from planner.optimizer import OptimizeResult, _big_m, _soc_pct, _solve_milp
 from planner.scenarios import (
     PlanningScenario,
@@ -127,7 +135,9 @@ def _solve_shared_milp(
     _windows, night_pos = night_latch_layout(hours_in)
     n_night = len(night_pos)
     n_green = green_stock_n_vars(n_h)
-    n_vars = n_vars_core + 2 * n_night + n_green
+    pref_base = n_vars_core + 2 * n_night + n_green
+    n_vars = pref_base + preference_aux_n_vars(n_h)
+    t_lo_idx, b_hi_idx, peak_idx = preference_indexers(pref_base, n_h)
 
     def y_ch_idx(h: int) -> int:
         return n_vars_core + night_pos[h]
@@ -149,6 +159,15 @@ def _solve_shared_milp(
             c[exp_idx(s, h)] -= pi * hin.export_pln_per_kwh
     for h in range(n_h):
         c[dis_idx(h)] += wear_per_dis
+    for s, sc in enumerate(scenarios):
+        pi = float(sc.weight)
+        apply_day_import_defer_tips(
+            c,
+            hours_in,
+            imp_index=lambda h, s=s: imp_idx(s, h),
+            scale=pi,
+        )
+    apply_charge_spread_tips(c, peak_idx=peak_idx)
 
     eq_rows: list[np.ndarray] = []
     eq_rhs: list[float] = []
@@ -259,6 +278,21 @@ def _solve_shared_milp(
                 carry_in=night_charge_carry_in,
             )
 
+    add_charge_preference_constraints(
+        ineq_rows,
+        ineq_rhs,
+        n_vars=n_vars,
+        hours_in=hours_in,
+        params=params,
+        soc_index=soc_idx,
+        ch_index=ch_idx,
+        t_lo_index=t_lo_idx,
+        b_hi_index=b_hi_idx,
+        peak_idx=peak_idx,
+        lb=lb,
+        ub=ub,
+    )
+
     exclusivity_constraint = LinearConstraint(
         np.vstack(ineq_rows),
         -np.full(len(ineq_rhs), np.inf),
@@ -289,6 +323,7 @@ def _solve_shared_milp(
     for h in night_pos:
         integrality[y_ch_idx(h)] = 1
         integrality[latch_idx(h)] = 1
+    mark_preference_integrality(integrality, b_hi_index=b_hi_idx, n_hours=n_h)
 
     res = milp(
         c=c,

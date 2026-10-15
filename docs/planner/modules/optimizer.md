@@ -2,6 +2,8 @@
 
 **Cel:** max **Σ** `cashflow_pln(h)` po godzinach **z parą cen** (§12 pkt 8); `net_kwh(h)` z `pv_plan`, `load_plan`, `e_bat[h]` + **battery_model**.
 
+**Mikro-preferencje** (`milp_preferences`, nie przebijają groszy G12/RCE): w dzień przy remisie importu — kup później; anty-peak `ch` rozkłada ładowanie; derating >90% SOC.
+
 **Wejście:** `PlanSeries`, ceny, SOC start, limity, **η_rt** (bez scipy).
 
 **Wyjście:** `PlannerDecision` — `e_bat_kwh[h]`, `total_cashflow_pln`.
